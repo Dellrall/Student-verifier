@@ -381,16 +381,40 @@ async def on_member_join(member: discord.Member):
 
 
 @bot.command(name="verify")
-async def verify_command(ctx: commands.Context):
+async def verify_command(ctx: commands.Context, *args):
     """Fallback text command for members; points them to the /verify slash command for privacy."""
-    if ctx.guild is None:
+    # Delete invoking message if in a server channel to keep channels clean and protect privacy
+    if ctx.guild is not None:
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
+
+    # Check rate limit on text command
+    if is_rate_limited(ctx.author.id):
+        await db.log("WARNING", "RATE_LIMITED", f"{ctx.author} hit the attempt limit on !verify", user_id=ctx.author.id)
+        if ctx.guild is not None:
+            await ctx.send(
+                f"{ctx.author.mention} ⏳ You've made too many verification attempts. Please wait a few minutes before trying again.",
+                delete_after=15,
+            )
+        else:
+            await ctx.author.send("⏳ You've made too many verification attempts. Please wait a few minutes before trying again.")
         return
 
-    # Delete invoking message if possible to keep channels clean
-    try:
-        await ctx.message.delete()
-    except discord.HTTPException:
-        pass
+    # If called in DM with an ID argument (e.g. `!verify 23WMD09867`), process it directly
+    if ctx.guild is None:
+        if args:
+            response_text = await perform_verification(ctx.author, args[0])
+            await ctx.author.send(response_text)
+        else:
+            record_attempt(ctx.author.id)
+            await ctx.author.send(
+                "🎓 Please send your student ID (e.g., `23WMD09867`) directly here in DMs to verify."
+            )
+        return
+
+    record_attempt(ctx.author.id)
 
     # Check if user is already verified
     existing = await db.get_verification_by_user(ctx.author.id)
