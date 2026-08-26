@@ -30,6 +30,7 @@ from logging.handlers import RotatingFileHandler
 
 import aiosqlite
 import discord
+from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -280,6 +281,8 @@ intents.message_content = True
 class TARVeriBot(commands.Bot):
     async def setup_hook(self):
         await db.connect()
+        await self.tree.sync()
+        logger.info("Database connected and application command tree synced.")
 
     async def close(self):
         await db.close()
@@ -314,32 +317,65 @@ async def on_guild_remove(guild):
 
 
 @bot.event
-async def on_member_join(member):
+async def on_member_join(member: discord.Member):
+    # Auto-sync check: is the user already verified in our database?
+    existing = await db.get_verification_by_user(member.id)
+    if existing:
+        stored_hash, stored_faculty, _ = existing
+        faculty_role = faculty_roles.get(stored_faculty)
+        if faculty_role:
+            result = await assign_role_across_guilds(member.id, faculty_role, [member.guild])
+            verified_in, already_had_role_in, missing_role_in, failed_in = result
+            if verified_in:
+                await db.log(
+                    "INFO", "AUTO_SYNC_JOIN",
+                    f"Auto-assigned '{faculty_role}' to returning verified member {member} in '{member.guild.name}'",
+                    guild=member.guild, user_id=member.id,
+                )
+                try:
+                    await member.send(
+                        f"🎓 Welcome to **{member.guild.name}**! Because you are already verified with TARVeri, "
+                        f"you have automatically received your **{faculty_role}** role."
+                    )
+                except discord.Forbidden:
+                    pass
+                return
+
+    # If not verified or role assignment not completed, send welcome prompt
     try:
         await member.send(
-            "🎓 Welcome! Please enter your student ID (e.g., 23WMD09867) to get verified:"
+            f"🎓 Welcome to **{member.guild.name}**! Please verify your student status by typing "
+            f"`/verify` in the server or entering your student ID (e.g., `23WMD09867`) here in DMs:"
         )
     except discord.Forbidden:
         await db.log(
-            "WARNING", "DM_BLOCKED",
-            f"Couldn't send welcome DM to {member} (ID: {member.id}) — DMs closed",
+            "INFO", "DM_BLOCKED_JOIN",
+            f"Couldn't send welcome DM to {member} (ID: {member.id}) in '{member.guild.name}' — DMs closed. "
+            f"User can use /verify in server.",
             guild=member.guild, user_id=member.id,
         )
 
 
 @bot.command(name="verify")
-async def verify_command(ctx):
-    """Fallback for members who joined before the bot, or missed the welcome DM."""
+async def verify_command(ctx: commands.Context):
+    """Fallback text command for members; points them to the /verify slash command for privacy."""
     if ctx.guild is None:
         return
     try:
         await ctx.author.send(
-            "🎓 Please enter your student ID (e.g., 23WMD09867) to get verified:"
+            "🎓 Please enter your student ID (e.g., `23WMD09867`) here to get verified, "
+            "or use the `/verify` slash command directly in the server."
         )
-        await ctx.send(f"{ctx.author.mention} I've sent you a DM to continue verification.")
+        await ctx.send(
+            f"{ctx.author.mention} I've sent you a DM to continue verification. "
+            f"You can also use the `/verify` slash command directly in this server!",
+            delete_after=15,
+        )
     except discord.Forbidden:
         await ctx.send(
-            f"{ctx.author.mention} I couldn't DM you. Please enable DMs from server members and try again."
+            f"{ctx.author.mention} Your DMs are closed! Please use the `/verify` slash command "
+            f"directly in this server (only you will see the response).",
+            delete_after=20,
         )
 
 
@@ -438,32 +474,26 @@ def format_role_summary(verified_in, already_had_role_in, missing_role_in, faile
 _verification_lock = asyncio.Lock()
 
 
-async def process_verification(message: discord.Message):
-    """Handles a student ID submitted via DM: validates format, enforces
-    one-ID-per-account and one-account-per-ID, then assigns the faculty role
-    across every mutual server."""
-    user = message.author
-
+async def perform_verification(user: discord.User | discord.Member, raw_student_id: str) -> str:
+    """Core verification pipeline. Validates format, checks duplicate accounts/IDs,
+    assigns roles across mutual guilds, and returns a formatted status string."""
     if is_rate_limited(user.id):
-        await user.send(
+        await db.log("WARNING", "RATE_LIMITED", f"{user} hit the attempt limit", user_id=user.id)
+        return (
             "⏳ You've made too many verification attempts. Please wait a few minutes "
             "and try again, or contact an admin if this is a mistake."
         )
-        await db.log("WARNING", "RATE_LIMITED", f"{user} hit the attempt limit", user_id=user.id)
-        return
     record_attempt(user.id)
 
-    student_id = message.content.strip().upper()
+    student_id = raw_student_id.strip().upper()
 
     if not student_id_pattern.match(student_id):
-        await user.send("❌ Invalid student ID format. Please use the format like `23WMD09867`.")
-        return
+        return "❌ Invalid student ID format. Please use the format like `23WMD09867`."
 
     faculty_code = student_id[3]
     role_name = faculty_roles.get(faculty_code)
     if not role_name:
-        await user.send("❌ Student ID does not match any known faculty. Please check and try again.")
-        return
+        return "❌ Student ID does not match any known faculty. Please check and try again."
 
     id_hash = hash_student_id(student_id)
 
@@ -475,38 +505,32 @@ async def process_verification(message: discord.Message):
         if existing_for_user:
             stored_hash, stored_faculty, _ = existing_for_user
             if stored_hash != id_hash:
-                await user.send(
+                return (
                     "ℹ️ This Discord account is already verified under a different student ID. "
                     "If you need to change the ID on file (e.g. account transfer), contact an admin."
                 )
-                return
 
             mutual_guilds = await get_mutual_guilds_for_user(user.id)
             result = await assign_role_across_guilds(user.id, faculty_roles[stored_faculty], mutual_guilds)
             summary = format_role_summary(*result)
-            await user.send(summary or "ℹ️ You're already verified and up to date in every server I share with you.")
-            return
+            return summary or "ℹ️ You're already verified and up to date in every server I share with you."
 
         existing_for_id = await db.get_verification_by_id_hash(id_hash)
         if existing_for_id:
-            await user.send(
-                "❌ This student ID has already been used to verify a different Discord "
-                "account. If that wasn't you, contact an admin immediately."
-            )
             await db.log(
                 "WARNING", "DUPLICATE_ID_ATTEMPT",
                 f"{user} (ID: {user.id}) tried to reuse a student ID "
                 f"(masked: {mask_student_id(student_id)}) already bound to another account",
                 user_id=user.id,
             )
-            return
+            return (
+                "❌ This student ID has already been used to verify a different Discord "
+                "account. If that wasn't you, contact an admin immediately."
+            )
 
         mutual_guilds = await get_mutual_guilds_for_user(user.id)
         if not mutual_guilds:
-            await user.send(
-                "⚠️ I couldn't find you in any server I'm in. Please join the server first, then try again."
-            )
-            return
+            return "⚠️ I couldn't find you in any server I'm in. Please join the server first, then try again."
 
         verified_in, already_had_role_in, missing_role_in, failed_in = (
             await assign_role_across_guilds(user.id, role_name, mutual_guilds)
@@ -544,15 +568,63 @@ async def process_verification(message: discord.Message):
                     f"Verification collision for {user} (ID: {user.id}): {e}",
                     user_id=user.id,
                 )
-                await user.send(
+                return (
                     "❌ Verification failed due to a collision (the student ID or your account was just verified elsewhere). "
                     "Please contact an admin if this persists."
                 )
-                return
 
         summary = format_role_summary(verified_in, already_had_role_in, missing_role_in, failed_in)
-        if summary:
-            await user.send(summary)
+        return summary or "⚠️ Verification completed, but no roles could be assigned."
+
+
+class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
+    student_id = discord.ui.TextInput(
+        label="Student ID",
+        placeholder="e.g. 23WMD09867",
+        min_length=10,
+        max_length=10,
+        required=True,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        response_text = await perform_verification(interaction.user, self.student_id.value)
+        await interaction.followup.send(response_text, ephemeral=True)
+
+
+@bot.tree.command(name="verify", description="Verify your TARUMT student status and receive your faculty role.")
+@app_commands.describe(student_id="Your TARUMT student ID (e.g. 23WMD09867). Leave blank to open input window.")
+async def verify_slash_command(interaction: discord.Interaction, student_id: str | None = None):
+    if student_id:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        response_text = await perform_verification(interaction.user, student_id)
+        await interaction.followup.send(response_text, ephemeral=True)
+    else:
+        # Check if already verified; if so, resync directly and reply ephemerally without prompting
+        existing = await db.get_verification_by_user(interaction.user.id)
+        if existing:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            stored_hash, stored_faculty, _ = existing
+            mutual_guilds = await get_mutual_guilds_for_user(interaction.user.id)
+            result = await assign_role_across_guilds(
+                interaction.user.id, faculty_roles[stored_faculty], mutual_guilds
+            )
+            summary = format_role_summary(*result)
+            await interaction.followup.send(
+                summary or "ℹ️ You're already verified and up to date in every server I share with you.",
+                ephemeral=True,
+            )
+            return
+
+        # Otherwise, present the modal for in-server input without DMs
+        await interaction.response.send_modal(VerificationModal())
+
+
+async def process_verification(message: discord.Message):
+    """Handles a student ID submitted via direct message (DM)."""
+    response_text = await perform_verification(message.author, message.content)
+    if response_text:
+        await message.author.send(response_text)
 
 
 @bot.event
