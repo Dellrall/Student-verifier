@@ -23,6 +23,7 @@ import re
 import hmac
 import hashlib
 import logging
+import signal
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -169,9 +170,17 @@ class Database:
         await self._conn.commit()
 
     async def close(self):
+        """Flushes SQLite WAL to disk and closes the connection cleanly."""
         if self._conn:
-            await self._conn.close()
-            self._conn = None
+            try:
+                # Flush and truncate write-ahead log (WAL) into the main database file
+                await self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                await self._conn.commit()
+            except Exception as e:
+                logger.warning(f"Failed to checkpoint WAL during database shutdown: {e}")
+            finally:
+                await self._conn.close()
+                self._conn = None
 
     async def log(
         self,
@@ -285,7 +294,19 @@ class TARVeriBot(commands.Bot):
         logger.info("Database connected and application command tree synced.")
 
     async def close(self):
-        await db.close()
+        logger.info("Initiating graceful shutdown...")
+        try:
+            if db._conn:
+                await db.log("INFO", "SHUTDOWN", "TARVeri is shutting down gracefully.")
+        except Exception as e:
+            logger.warning(f"Could not log shutdown to DB: {e}")
+
+        try:
+            await db.close()
+            logger.info("Database connection closed cleanly with WAL checkpoint.")
+        except Exception as e:
+            logger.error(f"Error while closing database: {e}")
+
         await super().close()
 
 
@@ -635,5 +656,29 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
+async def main():
+    loop = asyncio.get_running_loop()
+
+    stop_event = asyncio.Event()
+
+    def handle_signal():
+        if not stop_event.is_set():
+            stop_event.set()
+            logger.info("Interrupt signal received (Ctrl+C / SIGINT / SIGTERM). Closing TARVeri...")
+            asyncio.create_task(bot.close())
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, handle_signal)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    async with bot:
+        await bot.start(BOT_TOKEN)
+
+
 if __name__ == "__main__":
-    bot.run(BOT_TOKEN)
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("TARVeri process stopped cleanly.")
