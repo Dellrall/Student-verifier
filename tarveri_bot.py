@@ -343,6 +343,27 @@ async def verify_command(ctx):
         )
 
 
+async def get_or_fetch_member(guild: discord.Guild, user_id: int) -> discord.Member | None:
+    """Retrieves a member from cache, or fetches from the Discord API if cache missed."""
+    member = guild.get_member(user_id)
+    if member is not None:
+        return member
+    try:
+        return await guild.fetch_member(user_id)
+    except (discord.NotFound, discord.HTTPException):
+        return None
+
+
+async def get_mutual_guilds_for_user(user_id: int) -> list[discord.Guild]:
+    """Finds all mutual guilds where the user is a member, handling cache misses."""
+    mutual = []
+    for guild in bot.guilds:
+        member = await get_or_fetch_member(guild, user_id)
+        if member is not None:
+            mutual.append(guild)
+    return mutual
+
+
 async def assign_role_across_guilds(user_id: int, role_name: str, guilds: list[discord.Guild]):
     """Shared by fresh verification and self-heal resync: ensures the given
     user holds `role_name` in every guild passed, creating the role if needed.
@@ -350,7 +371,7 @@ async def assign_role_across_guilds(user_id: int, role_name: str, guilds: list[d
     verified_in, already_had_role_in, missing_role_in, failed_in = [], [], [], []
 
     for guild in guilds:
-        member = guild.get_member(user_id)
+        member = await get_or_fetch_member(guild, user_id)
         if member is None:
             continue
 
@@ -460,7 +481,7 @@ async def process_verification(message: discord.Message):
                 )
                 return
 
-            mutual_guilds = [g for g in bot.guilds if g.get_member(user.id)]
+            mutual_guilds = await get_mutual_guilds_for_user(user.id)
             result = await assign_role_across_guilds(user.id, faculty_roles[stored_faculty], mutual_guilds)
             summary = format_role_summary(*result)
             await user.send(summary or "ℹ️ You're already verified and up to date in every server I share with you.")
@@ -480,7 +501,7 @@ async def process_verification(message: discord.Message):
             )
             return
 
-        mutual_guilds = [g for g in bot.guilds if g.get_member(user.id)]
+        mutual_guilds = await get_mutual_guilds_for_user(user.id)
         if not mutual_guilds:
             await user.send(
                 "⚠️ I couldn't find you in any server I'm in. Please join the server first, then try again."
@@ -507,7 +528,7 @@ async def process_verification(message: discord.Message):
                 for g_name, r_name in verified_in:
                     guild = discord.utils.get(bot.guilds, name=g_name)
                     if guild:
-                        member = guild.get_member(user.id)
+                        member = await get_or_fetch_member(guild, user.id)
                         if member:
                             r = discord.utils.get(guild.roles, name=r_name)
                             if r and r in member.roles:
