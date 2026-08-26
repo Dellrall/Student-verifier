@@ -382,6 +382,34 @@ async def verify_command(ctx: commands.Context):
     """Fallback text command for members; points them to the /verify slash command for privacy."""
     if ctx.guild is None:
         return
+
+    # Delete invoking message if possible to keep channels clean
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
+
+    # Check if user is already verified
+    existing = await db.get_verification_by_user(ctx.author.id)
+    if existing:
+        stored_hash, stored_faculty, _ = existing
+        faculty_role = faculty_roles.get(stored_faculty)
+        if faculty_role:
+            mutual_guilds = await get_mutual_guilds_for_user(ctx.author.id)
+            result = await assign_role_across_guilds(ctx.author.id, faculty_role, mutual_guilds)
+            summary = format_role_summary(*result)
+            try:
+                await ctx.author.send(
+                    summary or "ℹ️ You're already verified and up to date in every server I share with you."
+                )
+            except discord.Forbidden:
+                pass
+            await ctx.send(
+                f"{ctx.author.mention} ℹ️ You are already verified! Your roles have been synchronized.",
+                delete_after=15,
+            )
+            return
+
     try:
         await ctx.author.send(
             "🎓 Please enter your student ID (e.g., `23WMD09867`) here to get verified, "
