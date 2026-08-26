@@ -109,7 +109,10 @@ _attempt_log: dict[int, list[float]] = {}  # user_id -> list of unix timestamps
 def is_rate_limited(user_id: int) -> bool:
     now = time.time()
     attempts = [t for t in _attempt_log.get(user_id, []) if now - t < WINDOW_SECONDS]
-    _attempt_log[user_id] = attempts
+    if attempts:
+        _attempt_log[user_id] = attempts
+    else:
+        _attempt_log.pop(user_id, None)
     return len(attempts) >= MAX_ATTEMPTS
 
 
@@ -520,7 +523,8 @@ def format_role_summary(verified_in, already_had_role_in, missing_role_in, faile
     return "\n".join(lines)
 
 
-_verification_lock = asyncio.Lock()
+# Track in-flight verification requests per user to prevent duplicate concurrent processing
+_in_flight_users: set[int] = set()
 
 
 async def perform_verification(user: discord.User | discord.Member, raw_student_id: str) -> str:
@@ -532,21 +536,26 @@ async def perform_verification(user: discord.User | discord.Member, raw_student_
             "⏳ You've made too many verification attempts. Please wait a few minutes "
             "and try again, or contact an admin if this is a mistake."
         )
+
+    if user.id in _in_flight_users:
+        return "⏳ Your verification is already being processed. Please wait a moment."
+
     record_attempt(user.id)
+    _in_flight_users.add(user.id)
 
-    student_id = raw_student_id.strip().upper()
+    try:
+        student_id = raw_student_id.strip().upper()
 
-    if not student_id_pattern.match(student_id):
-        return "❌ Invalid student ID format. Please use the format like `23WMD09867`."
+        if not student_id_pattern.match(student_id):
+            return "❌ Invalid student ID format. Please use the format like `23WMD09867`."
 
-    faculty_code = student_id[3]
-    role_name = faculty_roles.get(faculty_code)
-    if not role_name:
-        return "❌ Student ID does not match any known faculty. Please check and try again."
+        faculty_code = student_id[3]
+        role_name = faculty_roles.get(faculty_code)
+        if not role_name:
+            return "❌ Student ID does not match any known faculty. Please check and try again."
 
-    id_hash = hash_student_id(student_id)
+        id_hash = hash_student_id(student_id)
 
-    async with _verification_lock:
         # --- Already-verified accounts: resync instead of flatly refusing.
         # This is what makes joining a NEW server after being verified elsewhere
         # actually grant the role there, instead of silently doing nothing.
@@ -596,7 +605,7 @@ async def perform_verification(user: discord.User | discord.Member, raw_student_
                     f"→ role '{role_name}' in {[g for g, _ in verified_in]}",
                     user_id=user.id,
                 )
-            except sqlite3.IntegrityError as e:
+            except (sqlite3.IntegrityError, aiosqlite.IntegrityError) as e:
                 # Rollback roles assigned during this colliding attempt
                 for g_name, r_name in verified_in:
                     guild = discord.utils.get(bot.guilds, name=g_name)
@@ -624,6 +633,8 @@ async def perform_verification(user: discord.User | discord.Member, raw_student_
 
         summary = format_role_summary(verified_in, already_had_role_in, missing_role_in, failed_in)
         return summary or "⚠️ Verification completed, but no roles could be assigned."
+    finally:
+        _in_flight_users.discard(user.id)
 
 
 class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
