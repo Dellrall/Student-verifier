@@ -400,12 +400,12 @@ async def verify_command(ctx: commands.Context):
             summary = format_role_summary(*result)
             try:
                 await ctx.author.send(
-                    summary or "ℹ️ You're already verified and up to date in every server I share with you."
+                    summary or "🪿 Beep boop! You're already in the verified club! No need to prove yourself twice, your roles are up to date across all servers! 🚀"
                 )
             except discord.Forbidden:
                 pass
             await ctx.send(
-                f"{ctx.author.mention} ℹ️ You are already verified! Your roles have been synchronized.",
+                f"{ctx.author.mention} Bro, you're already verified, you silly goose! 🪿🎓 Trying to graduate twice? I've resynced your roles anyway! ✨",
                 delete_after=15,
             )
             return
