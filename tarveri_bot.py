@@ -17,11 +17,13 @@ Safety improvements over the original version:
    unrelated errors; explicit permission checks before attempting role creation.
 """
 
+import asyncio
 import os
 import re
 import hmac
 import hashlib
 import logging
+import sqlite3
 import time
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -135,6 +137,8 @@ class Database:
         self._conn: aiosqlite.Connection | None = None
 
     async def connect(self):
+        if self._conn is not None:
+            return
         self._conn = await aiosqlite.connect(self.path)
         await self._conn.execute("PRAGMA foreign_keys = ON;")
         # WAL mode lets reads (e.g. admin queries on audit_log) proceed without
@@ -166,6 +170,7 @@ class Database:
     async def close(self):
         if self._conn:
             await self._conn.close()
+            self._conn = None
 
     async def log(
         self,
@@ -272,23 +277,26 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+class TARVeriBot(commands.Bot):
+    async def setup_hook(self):
+        await db.connect()
+
+    async def close(self):
+        await db.close()
+        await super().close()
+
+
+bot = TARVeriBot(command_prefix="!", intents=intents)
 
 
 @bot.event
 async def on_ready():
-    await db.connect()
     await db.log(
         "INFO",
         "STARTUP",
         f"Logged in as {bot.user} (ID: {bot.user.id}); in {len(bot.guilds)} server(s): "
         f"{[g.name for g in bot.guilds]}",
     )
-
-
-@bot.event
-async def on_close():
-    await db.close()
 
 
 @bot.event
@@ -406,6 +414,9 @@ def format_role_summary(verified_in, already_had_role_in, missing_role_in, faile
     return "\n".join(lines)
 
 
+_verification_lock = asyncio.Lock()
+
+
 async def process_verification(message: discord.Message):
     """Handles a student ID submitted via DM: validates format, enforces
     one-ID-per-account and one-account-per-ID, then assigns the faculty role
@@ -435,118 +446,92 @@ async def process_verification(message: discord.Message):
 
     id_hash = hash_student_id(student_id)
 
-    # --- Already-verified accounts: resync instead of flatly refusing.
-    # This is what makes joining a NEW server after being verified elsewhere
-    # actually grant the role there, instead of silently doing nothing.
-    existing_for_user = await db.get_verification_by_user(user.id)
-    if existing_for_user:
-        stored_hash, stored_faculty, _ = existing_for_user
-        if stored_hash != id_hash:
+    async with _verification_lock:
+        # --- Already-verified accounts: resync instead of flatly refusing.
+        # This is what makes joining a NEW server after being verified elsewhere
+        # actually grant the role there, instead of silently doing nothing.
+        existing_for_user = await db.get_verification_by_user(user.id)
+        if existing_for_user:
+            stored_hash, stored_faculty, _ = existing_for_user
+            if stored_hash != id_hash:
+                await user.send(
+                    "ℹ️ This Discord account is already verified under a different student ID. "
+                    "If you need to change the ID on file (e.g. account transfer), contact an admin."
+                )
+                return
+
+            mutual_guilds = [g for g in bot.guilds if g.get_member(user.id)]
+            result = await assign_role_across_guilds(user.id, faculty_roles[stored_faculty], mutual_guilds)
+            summary = format_role_summary(*result)
+            await user.send(summary or "ℹ️ You're already verified and up to date in every server I share with you.")
+            return
+
+        existing_for_id = await db.get_verification_by_id_hash(id_hash)
+        if existing_for_id:
             await user.send(
-                "ℹ️ This Discord account is already verified under a different student ID. "
-                "If you need to change the ID on file (e.g. account transfer), contact an admin."
+                "❌ This student ID has already been used to verify a different Discord "
+                "account. If that wasn't you, contact an admin immediately."
+            )
+            await db.log(
+                "WARNING", "DUPLICATE_ID_ATTEMPT",
+                f"{user} (ID: {user.id}) tried to reuse a student ID "
+                f"(masked: {mask_student_id(student_id)}) already bound to another account",
+                user_id=user.id,
             )
             return
 
         mutual_guilds = [g for g in bot.guilds if g.get_member(user.id)]
-        result = await assign_role_across_guilds(user.id, faculty_roles[stored_faculty], mutual_guilds)
-        summary = format_role_summary(*result)
-        await user.send(summary or "ℹ️ You're already verified and up to date in every server I share with you.")
-        return
-
-    existing_for_id = await db.get_verification_by_id_hash(id_hash)
-    if existing_for_id:
-        await user.send(
-            "❌ This student ID has already been used to verify a different Discord "
-            "account. If that wasn't you, contact an admin immediately."
-        )
-        await db.log(
-            "WARNING", "DUPLICATE_ID_ATTEMPT",
-            f"{user} (ID: {user.id}) tried to reuse a student ID "
-            f"(masked: {mask_student_id(student_id)}) already bound to another account",
-            user_id=user.id,
-        )
-        return
-
-    mutual_guilds = [g for g in bot.guilds if g.get_member(user.id)]
-    if not mutual_guilds:
-        await user.send(
-            "⚠️ I couldn't find you in any server I'm in. Please join the server first, then try again."
-        )
-        return
-
-    verified_in, already_had_role_in, missing_role_in, failed_in = [], [], [], []
-
-    for guild in mutual_guilds:
-        member = guild.get_member(user.id)
-
-        existing_roles = [r for r in member.roles if r.name in faculty_role_names]
-        if existing_roles:
-            already_had_role_in.append((guild.name, existing_roles[0].name))
-            continue
-
-        role = discord.utils.get(guild.roles, name=role_name)
-        if not role:
-            if not guild.me.guild_permissions.manage_roles:
-                missing_role_in.append(guild.name)
-                continue
-            try:
-                role = await guild.create_role(
-                    name=role_name,
-                    reason="TARVeri: auto-created missing faculty role for verification",
-                )
-                await db.log("INFO", "ROLE_CREATED", f"Created role '{role_name}'", guild=guild)
-            except discord.HTTPException as e:
-                await db.log(
-                    "ERROR", "ROLE_CREATE_FAILED",
-                    f"Failed to create role '{role_name}' in '{guild.name}': {e}",
-                    guild=guild,
-                )
-                missing_role_in.append(guild.name)
-                continue
-
-        if role >= guild.me.top_role or not guild.me.guild_permissions.manage_roles:
-            failed_in.append(guild.name)
-            continue
-
-        try:
-            await member.add_roles(role)
-            verified_in.append((guild.name, role_name))
-        except discord.HTTPException as e:
-            failed_in.append(guild.name)
-            await db.log(
-                "ERROR", "ROLE_ASSIGN_FAILED",
-                f"Failed to assign '{role_name}' to {user} in '{guild.name}': {e}",
-                guild=guild, user_id=user.id,
+        if not mutual_guilds:
+            await user.send(
+                "⚠️ I couldn't find you in any server I'm in. Please join the server first, then try again."
             )
+            return
 
-    # Only persist the verification if it succeeded in at least one server —
-    # avoids permanently binding an ID to a user who was never actually verified.
-    if verified_in:
-        await db.record_verification(user.id, id_hash, faculty_code)
-        await db.log(
-            "INFO", "VERIFIED",
-            f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}) "
-            f"→ role '{role_name}' in {[g for g, _ in verified_in]}",
-            user_id=user.id,
+        verified_in, already_had_role_in, missing_role_in, failed_in = (
+            await assign_role_across_guilds(user.id, role_name, mutual_guilds)
         )
 
-    lines = []
-    if verified_in:
-        lines.append("✅ You've been verified and given the following role(s):")
-        lines += [f"   • **{g}** → {r}" for g, r in verified_in]
-    if already_had_role_in:
-        lines.append("ℹ️ You already had a faculty role in:")
-        lines += [f"   • **{g}** → {r} (unchanged)" for g, r in already_had_role_in]
-    if missing_role_in:
-        lines.append("⚠️ I couldn't create/find the required role (contact an admin) in:")
-        lines += [f"   • **{g}** (I likely need 'Manage Roles' permission there)" for g in missing_role_in]
-    if failed_in:
-        lines.append("⚠️ I don't have permission to assign roles in:")
-        lines += [f"   • **{g}** (my role needs to be moved above the faculty roles)" for g in failed_in]
+        # Only persist the verification if it succeeded in at least one server —
+        # avoids permanently binding an ID to a user who was never actually verified.
+        if verified_in:
+            try:
+                await db.record_verification(user.id, id_hash, faculty_code)
+                await db.log(
+                    "INFO", "VERIFIED",
+                    f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}) "
+                    f"→ role '{role_name}' in {[g for g, _ in verified_in]}",
+                    user_id=user.id,
+                )
+            except sqlite3.IntegrityError as e:
+                # Rollback roles assigned during this colliding attempt
+                for g_name, r_name in verified_in:
+                    guild = discord.utils.get(bot.guilds, name=g_name)
+                    if guild:
+                        member = guild.get_member(user.id)
+                        if member:
+                            r = discord.utils.get(guild.roles, name=r_name)
+                            if r and r in member.roles:
+                                try:
+                                    await member.remove_roles(
+                                        r,
+                                        reason="TARVeri: Rollback due to verification database collision",
+                                    )
+                                except discord.HTTPException:
+                                    pass
+                await db.log(
+                    "ERROR", "INTEGRITY_CONFLICT",
+                    f"Verification collision for {user} (ID: {user.id}): {e}",
+                    user_id=user.id,
+                )
+                await user.send(
+                    "❌ Verification failed due to a collision (the student ID or your account was just verified elsewhere). "
+                    "Please contact an admin if this persists."
+                )
+                return
 
-    if lines:
-        await user.send("\n".join(lines))
+        summary = format_role_summary(verified_in, already_had_role_in, missing_role_in, failed_in)
+        if summary:
+            await user.send(summary)
 
 
 @bot.event
