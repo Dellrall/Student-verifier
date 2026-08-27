@@ -174,7 +174,9 @@ class AdminCog(commands.Cog, name="Admin"):
     async def resync(self, interaction: discord.Interaction, user: discord.User | None = None) -> None:
         """Resyncs roles for a user across all shared guilds."""
         target = user or interaction.user
-        if target.id != interaction.user.id and not self._check_admin(interaction):
+        is_admin = self._check_admin(interaction)
+
+        if target.id != interaction.user.id and not is_admin:
             await interaction.response.send_message(
                 "❌ You can only resync your own roles unless you are an administrator.", ephemeral=True
             )
@@ -198,11 +200,46 @@ class AdminCog(commands.Cog, name="Admin"):
 
         mutual_guilds = await self.service.get_mutual_guilds_for_user(target.id)
         result = await self.service.assign_role_across_guilds(target.id, faculty_role, mutual_guilds)
+
+        if target.id != interaction.user.id:
+            await self.db.log(
+                "INFO",
+                "ADMIN_RESYNC",
+                f"Admin {interaction.user} (ID: {interaction.user.id}) force-resynced roles for {target} (ID: {target.id})",
+                guild=interaction.guild,
+                user_id=target.id,
+            )
+
         summary = self.service.format_role_summary(result)
         await interaction.followup.send(
             summary or "ℹ️ All roles are already up to date.",
             ephemeral=True,
         )
+
+    @app_commands.command(name="backup", description="Create an immediate point-in-time database backup.")
+    async def backup(self, interaction: discord.Interaction) -> None:
+        """Creates a consistent SQLite backup snapshot."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            backup_path = await self.db.create_backup()
+            await self.db.log(
+                "INFO",
+                "ADMIN_BACKUP",
+                f"Admin {interaction.user} (ID: {interaction.user.id}) created database snapshot at '{backup_path}'",
+                guild=interaction.guild,
+                user_id=interaction.user.id,
+            )
+            await interaction.followup.send(
+                f"✅ Database backup created successfully at `{backup_path}`.", ephemeral=True
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Backup failed: {e}", ephemeral=True)
 
     @app_commands.command(name="sync_commands", description="Force sync application slash commands.")
     @app_commands.describe(guild_only="Sync only to this guild (faster) or globally")
@@ -219,13 +256,20 @@ class AdminCog(commands.Cog, name="Admin"):
             if guild_only and interaction.guild:
                 self.bot.tree.copy_global_to(guild=interaction.guild)
                 synced = await self.bot.tree.sync(guild=interaction.guild)
-                await interaction.followup.send(
-                    f"✅ Successfully synced {len(synced)} command(s) to this server.", ephemeral=True
-                )
+                scope = f"server '{interaction.guild.name}'"
             else:
                 synced = await self.bot.tree.sync()
-                await interaction.followup.send(
-                    f"✅ Successfully synced {len(synced)} command(s) globally.", ephemeral=True
-                )
+                scope = "globally"
+
+            await self.db.log(
+                "INFO",
+                "ADMIN_SYNC_COMMANDS",
+                f"Admin {interaction.user} (ID: {interaction.user.id}) synced {len(synced)} command(s) {scope}",
+                guild=interaction.guild,
+                user_id=interaction.user.id,
+            )
+            await interaction.followup.send(
+                f"✅ Successfully synced {len(synced)} command(s) {scope}.", ephemeral=True
+            )
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)

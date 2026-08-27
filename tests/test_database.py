@@ -1,3 +1,4 @@
+import os
 import pytest
 import sqlite3
 import aiosqlite
@@ -57,6 +58,29 @@ async def test_database_crud(tmp_path):
 
     await db.close()
     assert not db.is_connected
+
+
+@pytest.mark.asyncio
+async def test_database_backup(tmp_path):
+    db_file = str(tmp_path / "original.db")
+    backup_dir = str(tmp_path / "backups")
+    db = Database(db_file)
+    await db.connect()
+
+    await db.record_verification(2001, "hash2001", "M")
+    backup_path = await db.create_backup(backup_dir=backup_dir)
+
+    assert os.path.exists(backup_path)
+
+    # Verify backup contains the record
+    backup_db = Database(backup_path)
+    await backup_db.connect()
+    record = await backup_db.get_verification_by_user(2001)
+    assert record is not None
+    assert record[0] == "hash2001"
+
+    await backup_db.close()
+    await db.close()
 
 
 @pytest.mark.asyncio

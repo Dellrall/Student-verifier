@@ -1,10 +1,11 @@
 """
-Asynchronous SQLite database layer with WAL mode and indexing.
+Asynchronous SQLite database layer with WAL mode, indexing, schema versioning, and backup support.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,8 @@ import aiosqlite
 import discord
 
 logger = logging.getLogger("tarveri")
+
+SCHEMA_VERSION = 1
 
 
 class Database:
@@ -29,7 +32,7 @@ class Database:
         return self._conn is not None
 
     async def connect(self) -> None:
-        """Establishes connection and creates schema and indexes."""
+        """Establishes connection, verifies schema version, and creates schema and indexes."""
         if self._conn is not None:
             return
 
@@ -66,6 +69,14 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_verifications_faculty ON verifications(faculty_code);
             """
         )
+
+        cursor = await self._conn.execute("PRAGMA user_version;")
+        row = await cursor.fetchone()
+        current_version = row[0] if row else 0
+
+        if current_version == 0:
+            await self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
+
         await self._conn.commit()
 
     async def close(self) -> None:
@@ -88,6 +99,26 @@ class Database:
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.close()
 
+    async def create_backup(self, backup_dir: str = "backups") -> str:
+        """
+        Creates a consistent, point-in-time point-and-restore snapshot of the database
+        even while WAL writes are occurring.
+        """
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+
+        os.makedirs(backup_dir, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"tarveri_backup_{timestamp}.db"
+        backup_path = os.path.join(backup_dir, backup_filename)
+
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+
+        # VACUUM INTO safely creates an atomic copy of active database
+        await self._conn.execute(f"VACUUM INTO '{backup_path}';")
+        return backup_path
+
     async def log(
         self,
         level: str,
@@ -97,7 +128,6 @@ class Database:
         user_id: int | None = None,
     ) -> None:
         """Writes to both the DB audit table and standard application logger."""
-        # Always output to logger even if DB is unavailable
         log_func = getattr(logger, level.lower(), logger.info)
         log_func(f"[{event_type}] {message}")
 
