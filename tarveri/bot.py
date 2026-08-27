@@ -16,6 +16,7 @@ from tarveri.cogs.verification_cog import VerificationCog
 from tarveri.config import Settings, setup_logger
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
 
 logger = logging.getLogger("tarveri")
@@ -39,6 +40,16 @@ class TARVeriBot(commands.Bot):
             db=self.db,
             secret=settings.id_hash_secret,
             rate_limiter=self.rate_limiter,
+        )
+        self.update_checker = (
+            UpdateCheckerService(
+                bot=self,
+                db=self.db,
+                hoster_discord_id=settings.hoster_discord_id,
+                interval_hours=settings.update_check_interval_hours,
+            )
+            if settings.enable_update_checker
+            else None
         )
 
     async def setup_hook(self) -> None:
@@ -68,6 +79,9 @@ class TARVeriBot(commands.Bot):
         await self.tree.sync()
         logger.info("Database connected, cogs loaded, and application command tree synced.")
 
+        if self.update_checker:
+            self.update_checker.start()
+
     async def on_ready(self) -> None:
         if self.user:
             await self.db.log(
@@ -80,6 +94,10 @@ class TARVeriBot(commands.Bot):
     async def close(self) -> None:
         """Gracefully tears down the bot, logs shutdown, and flushes SQLite WAL."""
         logger.info("Initiating graceful shutdown...")
+
+        if self.update_checker:
+            self.update_checker.stop()
+
         try:
             if self.db.is_connected:
                 await self.db.log("INFO", "SHUTDOWN", "TARVeri is shutting down gracefully.")

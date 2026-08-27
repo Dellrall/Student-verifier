@@ -10,6 +10,8 @@ A high-performance Discord verification bot for TARUMT students that validates s
 - **Memory-Safe Rate Limiting**: Sliding window rate limiter with automatic garbage collection of expired entries.
 - **Auto-Sync & Self-Healing**: Automatically assigns faculty roles when verified members join new servers.
 - **Admin Management Suite**: Slash commands for statistics (`/stats`), account unlinking (`/unverify`), audit query (`/audit`), and role resync (`/resync`).
+- **Safe Backend Updater**: Automated pre-update database snapshot, git sync, dependency upgrade, pre-flight test validation, and automatic rollback on failure (`./scripts/update.sh`).
+- **Hoster Notifications**: Non-blocking background updater service that notifies the bot hoster (via server logs or private Discord DM) when upstream updates are available.
 - **Graceful Shutdown**: OS signal handling (SIGINT/SIGTERM) with database WAL checkpoint truncation.
 
 ---
@@ -45,6 +47,7 @@ Edit `.env`:
 * `TARVERI_ID_HASH_SECRET`: A secret string used to hash student IDs (generate one with `python3 -c "import secrets; print(secrets.token_hex(32))"`).
 * `TARVERI_DB_PATH`: *(Optional)* Path to SQLite database (default: `tarveri.db`).
 * `TARVERI_ADMIN_ROLE_NAME`: *(Optional)* Name of admin role for management commands (default: `TARVeri Admin`).
+* `TARVERI_HOSTER_DISCORD_ID`: *(Optional)* Host Maintainer Discord User ID (for receiving private update notifications).
 
 ### 4. Start the Bot
 
@@ -60,6 +63,29 @@ pytest -v
 
 ---
 
+## Safe Backend Updates & Maintenance
+
+TARVeri includes a repository-agnostic backend update script that automatically backs up your SQLite database, pulls changes from your configured upstream Git remote/fork, tests the build, and rolls back if anything fails.
+
+### Check for Available Updates
+```bash
+./scripts/update.sh --check
+```
+
+### Apply Update with Automated DB Backup & Pre-flight Testing
+```bash
+./scripts/update.sh
+```
+
+**Lifecycle Executed by `update.sh`**:
+1. 📦 **Database Snapshot**: Creates a timestamped `.db` backup in `backups/tarveri_pre_update_<timestamp>.db`.
+2. ⬇️ **Git Pull**: Pulls fast-forward upstream changes.
+3. 🐍 **Dependency Sync**: Upgrades packages in `.venv`.
+4. 🧪 **Pre-Flight Tests**: Executes `pytest`. If any test fails, it **instantly rolls back Git HEAD and restores the database snapshot**.
+5. 🚀 **Service Restart**: Restarts `systemd` service or outputs restart instructions.
+
+---
+
 ## Commands
 
 ### Student Commands
@@ -72,6 +98,7 @@ pytest -v
 * `/unverify <user> [reason]` — Unlinks student ID and removes faculty roles across shared servers.
 * `/audit [limit] [event_type]` — Views recent audit log entries.
 * `/resync [user]` — Forces role resynchronization.
+* `/backup` — Creates an immediate point-in-time database snapshot in `backups/`.
 * `/sync_commands [guild_only]` — Syncs application command tree.
 
 ---

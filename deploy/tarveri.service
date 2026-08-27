@@ -1,0 +1,28 @@
+[Unit]
+Description=TARVeri Discord Student Verification Bot
+After=network.target
+
+[Service]
+Type=simple
+# Replace 'username' and paths with your host server's user and directory
+User=username
+WorkingDirectory=/opt/Student-verifier
+ExecStart=/opt/Student-verifier/.venv/bin/python /opt/Student-verifier/tarveri_bot.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+# Environment
+EnvironmentFile=/opt/Student-verifier/.env
+StandardOutput=journal
+StandardError=journal
+
+# Security Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

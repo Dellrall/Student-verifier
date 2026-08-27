@@ -45,6 +45,9 @@ class Settings:
     log_backup_count: int = 5
     rate_limit_max_attempts: int = 5
     rate_limit_window_seconds: int = 600
+    hoster_discord_id: int | None = None
+    enable_update_checker: bool = True
+    update_check_interval_hours: int = 24
 
     @classmethod
     def from_env(cls, validate: bool = True) -> Settings:
@@ -53,6 +56,15 @@ class Settings:
         db_path = os.getenv("TARVERI_DB_PATH", "tarveri.db")
         admin_role_name = os.getenv("TARVERI_ADMIN_ROLE_NAME", "TARVeri Admin")
         log_file = os.getenv("TARVERI_LOG_FILE", "tarveri.log")
+
+        hoster_id_raw = os.getenv("TARVERI_HOSTER_DISCORD_ID", "").strip()
+        hoster_discord_id = int(hoster_id_raw) if hoster_id_raw.isdigit() else None
+
+        enable_checker_raw = os.getenv("TARVERI_ENABLE_UPDATE_CHECKER", "true").lower()
+        enable_update_checker = enable_checker_raw in ("true", "1", "yes")
+
+        interval_raw = os.getenv("TARVERI_UPDATE_CHECK_INTERVAL_HOURS", "24").strip()
+        update_check_interval_hours = int(interval_raw) if interval_raw.isdigit() else 24
 
         if validate:
             if not bot_token:
@@ -71,6 +83,9 @@ class Settings:
             db_path=db_path,
             admin_role_name=admin_role_name,
             log_file=log_file,
+            hoster_discord_id=hoster_discord_id,
+            enable_update_checker=enable_update_checker,
+            update_check_interval_hours=update_check_interval_hours,
         )
 
 
