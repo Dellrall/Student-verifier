@@ -1,0 +1,130 @@
+"""
+Configuration management, constants, and cryptographic/formatting utilities.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import logging
+import os
+import re
+from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
+from typing import Final
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Faculty code mapping (index 3 of student ID) -> Role Name
+FACULTY_ROLES: Final[dict[str, str]] = {
+    "B": "FAFB",
+    "K": "FCCI",
+    "L": "FOAS",
+    "J": "FSSH",
+    "V": "FOBE",
+    "F": "CPUS",
+    "M": "FOCS",
+    "G": "FOET",
+}
+FACULTY_ROLE_NAMES: Final[set[str]] = set(FACULTY_ROLES.values())
+
+# Pattern: 2 digits + 3 uppercase letters + 2 digits + 3 digits (e.g. 23WMD09867)
+STUDENT_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{2}[A-Z]{3}\d{2}\d{3}$")
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    bot_token: str
+    id_hash_secret: str
+    db_path: str = "tarveri.db"
+    admin_role_name: str = "TARVeri Admin"
+    log_file: str = "tarveri.log"
+    log_max_bytes: int = 2_000_000
+    log_backup_count: int = 5
+    rate_limit_max_attempts: int = 5
+    rate_limit_window_seconds: int = 600
+
+    @classmethod
+    def from_env(cls, validate: bool = True) -> Settings:
+        bot_token = os.getenv("TARVERI_BOT_TOKEN", "")
+        id_hash_secret = os.getenv("TARVERI_ID_HASH_SECRET", "")
+        db_path = os.getenv("TARVERI_DB_PATH", "tarveri.db")
+        admin_role_name = os.getenv("TARVERI_ADMIN_ROLE_NAME", "TARVeri Admin")
+        log_file = os.getenv("TARVERI_LOG_FILE", "tarveri.log")
+
+        if validate:
+            if not bot_token:
+                raise RuntimeError(
+                    "TARVERI_BOT_TOKEN is not set. Put it in a .env file or the environment."
+                )
+            if not id_hash_secret:
+                raise RuntimeError(
+                    "TARVERI_ID_HASH_SECRET is not set. Generate one with: "
+                    '`python -c "import secrets; print(secrets.token_hex(32))"`'
+                )
+
+        return cls(
+            bot_token=bot_token,
+            id_hash_secret=id_hash_secret,
+            db_path=db_path,
+            admin_role_name=admin_role_name,
+            log_file=log_file,
+        )
+
+
+def setup_logger(log_file: str = "tarveri.log", max_bytes: int = 2_000_000, backup_count: int = 5) -> logging.Logger:
+    logger = logging.getLogger("tarveri")
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    file_handler = RotatingFileHandler(
+        log_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+    )
+    file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    return logger
+
+
+def hash_student_id(student_id: str, secret: str) -> str:
+    """Deterministic HMAC-SHA256 hash — lets us detect duplicate IDs without
+    storing the raw ID at rest."""
+    return hmac.new(
+        secret.encode("utf-8"), student_id.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def mask_student_id(student_id: str) -> str:
+    """For logs and displays: keep enough to be useful for support, not enough to be sensitive."""
+    if len(student_id) >= 6:
+        return f"{student_id[:2]}***{student_id[-3:]}"
+    return "***"
+
+
+def validate_student_id(raw_id: str) -> tuple[bool, str, str | None, str | None]:
+    """
+    Validates and parses a student ID.
+    Returns (is_valid, normalized_id, faculty_code, faculty_role_name).
+    """
+    normalized = raw_id.strip().upper()
+    if not STUDENT_ID_PATTERN.match(normalized):
+        return False, normalized, None, None
+
+    faculty_code = normalized[3]
+    faculty_role = FACULTY_ROLES.get(faculty_code)
+    if not faculty_role:
+        return False, normalized, faculty_code, None
+
+    return True, normalized, faculty_code, faculty_role
