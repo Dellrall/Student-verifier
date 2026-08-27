@@ -85,9 +85,31 @@ if [ ! -d "${VENV_DIR}" ] || [ ! -x "${PYTHON_BIN}" ]; then
     exit 1
 fi
 
+# Check if git is installed
+if ! command -v git >/dev/null 2>&1; then
+    log_error "Git is not installed on this system. Please install git (e.g. 'sudo apt install git') to enable automated updates."
+    exit 1
+fi
+
+DEFAULT_REPO_URL="https://github.com/Dellrall/Student-verifier.git"
+REPO_URL="${TARVERI_REPO_URL:-${DEFAULT_REPO_URL}}"
+
+# Auto-initialize git if .git directory is missing
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    log_warn "No .git repository found in ${PROJECT_ROOT}."
+    log_info "Initializing git tracking from ${REPO_URL}..."
+    git init --quiet
+    git remote add origin "${REPO_URL}" 2>/dev/null || git remote set-url origin "${REPO_URL}"
+    log_info "Fetching upstream branch metadata..."
+    git fetch origin --quiet || true
+fi
+
 # Determine update stream (Priority: CLI argument > .env variable > current upstream/HEAD)
 CONFIGURED_STREAM="${CLI_STREAM:-${TARVERI_UPDATE_STREAM:-${TARVERI_UPDATE_BRANCH:-auto}}}"
-CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+if [ "${CURRENT_BRANCH}" = "HEAD" ]; then
+    CURRENT_BRANCH="main"
+fi
 
 if [ -n "${CONFIGURED_STREAM}" ] && [ "${CONFIGURED_STREAM}" != "auto" ]; then
     TARGET_BRANCH="${CONFIGURED_STREAM#origin/}"
@@ -101,31 +123,35 @@ log_info "Target update stream: ${TARGET_REMOTE} (Local branch: ${CURRENT_BRANCH
 
 # Fetch remote status for target stream
 log_info "Fetching latest remote status for '${TARGET_BRANCH}'..."
-git fetch origin "${TARGET_BRANCH}" --quiet 2>/dev/null || git fetch --quiet
+git fetch origin "${TARGET_BRANCH}" --quiet 2>/dev/null || git fetch origin --quiet 2>/dev/null || true
 
-LOCAL_HASH="$(git rev-parse HEAD)"
+LOCAL_HASH="$(git rev-parse HEAD 2>/dev/null || echo "uninitialized")"
 REMOTE_HASH="$(git rev-parse "${TARGET_REMOTE}" 2>/dev/null || true)"
 
 if [ -z "${REMOTE_HASH}" ]; then
-    log_error "Remote branch '${TARGET_REMOTE}' not found on remote. Check branch name."
+    log_error "Remote branch '${TARGET_REMOTE}' not found on remote. Check branch name or network connection."
     exit 1
 fi
 
-BEHIND_COUNT="$(git rev-list --count HEAD.."${TARGET_REMOTE}" 2>/dev/null || echo "0")"
-
-if [ "${LOCAL_HASH}" = "${REMOTE_HASH}" ] && [ "${CURRENT_BRANCH}" = "${TARGET_BRANCH}" ]; then
-    log_success "TARVeri is already on the latest version of stream '${TARGET_REMOTE}' (${LOCAL_HASH:0:7})."
-    if [ "${CHECK_ONLY}" = true ]; then
-        exit 0
+if [ "${LOCAL_HASH}" != "uninitialized" ]; then
+    BEHIND_COUNT="$(git rev-list --count HEAD.."${TARGET_REMOTE}" 2>/dev/null || echo "0")"
+    if [ "${LOCAL_HASH}" = "${REMOTE_HASH}" ] && [ "${CURRENT_BRANCH}" = "${TARGET_BRANCH}" ]; then
+        log_success "TARVeri is already on the latest version of stream '${TARGET_REMOTE}' (${LOCAL_HASH:0:7})."
+        if [ "${CHECK_ONLY}" = true ]; then
+            exit 0
+        fi
     fi
-fi
 
-if [ "${BEHIND_COUNT}" -gt 0 ] || [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
-    log_warn "Upstream '${TARGET_REMOTE}' is ${BEHIND_COUNT} commit(s) ahead (${LOCAL_HASH:0:7} -> ${REMOTE_HASH:0:7})."
+    if [ "${BEHIND_COUNT}" -gt 0 ] || [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
+        log_warn "Upstream '${TARGET_REMOTE}' is ${BEHIND_COUNT} commit(s) ahead (${LOCAL_HASH:0:7} -> ${REMOTE_HASH:0:7})."
+    fi
+else
+    BEHIND_COUNT="all"
+    log_warn "Repository was not previously git-tracked. Ready to sync with '${TARGET_REMOTE}' (${REMOTE_HASH:0:7})."
 fi
 
 if [ "${CHECK_ONLY}" = true ]; then
-    if [ "${BEHIND_COUNT}" -gt 0 ] || [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
+    if [ "${BEHIND_COUNT}" = "all" ] || [ "${BEHIND_COUNT}" -gt 0 ] || [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
         echo -e "\n🔔 ${YELLOW}Update available!${NC} Run './scripts/update.sh ${TARGET_BRANCH}' on this server to apply."
     fi
     exit 0
@@ -168,31 +194,38 @@ PREV_COMMIT="${LOCAL_HASH}"
 
 rollback() {
     log_error "Update failed! Initiating rollback..."
-    git checkout "${PREV_BRANCH}" 2>/dev/null || true
-    git reset --hard "${PREV_COMMIT}" 2>/dev/null || true
+    if [ "${PREV_COMMIT}" != "uninitialized" ]; then
+        git checkout "${PREV_BRANCH}" 2>/dev/null || true
+        git reset --hard "${PREV_COMMIT}" 2>/dev/null || true
+    fi
     
     if [ -f "${SNAPSHOT_PATH}" ] && [ -f "${DB_PATH}" ]; then
         log_info "Restoring database from ${SNAPSHOT_PATH}..."
         cp -f "${SNAPSHOT_PATH}" "${DB_PATH}"
     fi
     
-    log_warn "Rollback complete. System returned to branch '${PREV_BRANCH}' at commit ${PREV_COMMIT:0:7}."
+    log_warn "Rollback complete."
     exit 1
 }
 
 # Trap unexpected errors to trigger rollback
 trap rollback ERR
 
-if [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
-    log_info "Switching branch: '${CURRENT_BRANCH}' -> '${TARGET_BRANCH}'..."
-    if git show-ref --verify --quiet "refs/heads/${TARGET_BRANCH}"; then
-        git checkout "${TARGET_BRANCH}"
-    else
-        git checkout -b "${TARGET_BRANCH}" --track "${TARGET_REMOTE}"
+if [ "${LOCAL_HASH}" = "uninitialized" ]; then
+    log_info "Linking working tree to '${TARGET_REMOTE}'..."
+    git checkout -B "${TARGET_BRANCH}" "${TARGET_REMOTE}"
+else
+    if [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
+        log_info "Switching branch: '${CURRENT_BRANCH}' -> '${TARGET_BRANCH}'..."
+        if git show-ref --verify --quiet "refs/heads/${TARGET_BRANCH}"; then
+            git checkout "${TARGET_BRANCH}"
+        else
+            git checkout -b "${TARGET_BRANCH}" --track "${TARGET_REMOTE}"
+        fi
     fi
+    git pull origin "${TARGET_BRANCH}" --ff-only
 fi
 
-git pull origin "${TARGET_BRANCH}" --ff-only
 
 NEW_COMMIT="$(git rev-parse HEAD)"
 log_success "Successfully pulled code (now at commit ${NEW_COMMIT:0:7} on branch '${TARGET_BRANCH}')."
