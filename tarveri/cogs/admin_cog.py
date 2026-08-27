@@ -11,6 +11,7 @@ from discord.ext import commands
 from tarveri.config import FACULTY_ROLE_NAMES, FACULTY_ROLES
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
 
 
@@ -31,12 +32,14 @@ class AdminCog(commands.Cog, name="Admin"):
         service: VerificationService,
         rate_limiter: RateLimiter,
         admin_role_name: str,
+        update_checker: UpdateCheckerService | None = None,
     ):
         self.bot = bot
         self.db = db
         self.service = service
         self.rate_limiter = rate_limiter
         self.admin_role_name = admin_role_name
+        self.update_checker = update_checker
 
     def _check_admin(self, interaction: discord.Interaction) -> bool:
         return is_admin_or_has_role(interaction, self.admin_role_name)
@@ -273,3 +276,58 @@ class AdminCog(commands.Cog, name="Admin"):
             )
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
+
+    @app_commands.command(
+        name="check_updates",
+        description="Check if bot updates are available from git upstream.",
+    )
+    @app_commands.describe(
+        stream="Optional branch/stream name to check against (defaults to configured stream)"
+    )
+    async def check_updates(
+        self, interaction: discord.Interaction, stream: str | None = None
+    ) -> None:
+        """Checks git upstream for new commits on the configured or specified branch."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        checker = self.update_checker
+        if not checker:
+            checker = UpdateCheckerService(
+                bot=self.bot,
+                db=self.db,
+                update_stream=stream or "auto",
+            )
+
+        is_avail, count, local_h, remote_h, target_stream = await checker.check_for_updates(
+            custom_stream=stream
+        )
+
+        embed = discord.Embed(
+            title="🔄 TARVeri Update Status",
+            color=discord.Color.green() if not is_avail else discord.Color.gold(),
+        )
+        embed.add_field(name="Target Stream", value=f"`{target_stream}`", inline=False)
+        embed.add_field(name="Local Version", value=f"`{local_h[:7]}`" if local_h else "*Unknown*", inline=True)
+        embed.add_field(name="Remote Version", value=f"`{remote_h[:7]}`" if remote_h else "*Unknown*", inline=True)
+
+        if is_avail:
+            branch_arg = target_stream.replace("origin/", "").strip()
+            embed.description = (
+                f"🔔 **Update available!** Remote is **{count} commit(s)** ahead.\n\n"
+                f"To update, run on your server terminal:\n"
+                f"```bash\n./scripts/update.sh {branch_arg}\n```"
+            )
+        else:
+            if not remote_h:
+                embed.description = f"⚠️ Could not resolve remote branch `{target_stream}`. Check if the branch exists on remote."
+            else:
+                embed.description = "✅ TARVeri is up to date on this stream!"
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+

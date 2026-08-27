@@ -40,6 +40,14 @@ def test_validate_student_id_valid():
     assert f_code == "G"
     assert role == "FOET"
 
+    # Valid CPUS (P)
+    is_valid, norm_id, f_code, role = validate_student_id("24WPF00001")
+    assert is_valid is True
+    assert norm_id == "24WPF00001"
+    assert f_code == "P"
+    assert role == "CPUS"
+
+
 
 def test_validate_student_id_invalid():
     # Invalid length/format
@@ -51,3 +59,16 @@ def test_validate_student_id_invalid():
     assert is_valid is False
     assert f_code == "Z"
     assert role is None
+
+
+def test_settings_from_env(monkeypatch):
+    from tarveri.config import Settings
+    monkeypatch.setenv("TARVERI_BOT_TOKEN", "mock_token")
+    monkeypatch.setenv("TARVERI_ID_HASH_SECRET", "mock_secret")
+    monkeypatch.setenv("TARVERI_UPDATE_STREAM", "refactor/modular-optimization")
+
+    settings = Settings.from_env()
+    assert settings.bot_token == "mock_token"
+    assert settings.id_hash_secret == "mock_secret"
+    assert settings.update_stream == "refactor/modular-optimization"
+

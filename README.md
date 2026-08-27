@@ -43,10 +43,15 @@ python tarveri_bot.py
 To safely pull upstream updates with automatic database backup, dependency sync, and pre-flight testing:
 
 ```bash
+# Update according to configured stream in .env (or current upstream)
 ./scripts/update.sh
+
+# Or target a specific stream/branch directly
+./scripts/update.sh main
+./scripts/update.sh refactor/modular-optimization
 ```
 
-*(To only check if updates are available without applying: `./scripts/update.sh --check`)*
+*(To check if updates are available without applying: `./scripts/update.sh --check` or `./scripts/update.sh --check main`)*
 
 ## Usage
 
@@ -61,3 +66,5 @@ To safely pull upstream updates with automatic database backup, dependency sync,
 * `/audit` — View recent audit log entries.
 * `/backup` — Create an immediate database snapshot in `backups/`.
 * `/resync` — Re-check and update roles.
+* `/check_updates [stream]` — Check for new git updates on a specific or default stream directly from Discord.
+

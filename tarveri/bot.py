@@ -47,6 +47,7 @@ class TARVeriBot(commands.Bot):
                 db=self.db,
                 hoster_discord_id=settings.hoster_discord_id,
                 interval_hours=settings.update_check_interval_hours,
+                update_stream=settings.update_stream,
             )
             if settings.enable_update_checker
             else None
@@ -72,6 +73,7 @@ class TARVeriBot(commands.Bot):
                 service=self.service,
                 rate_limiter=self.rate_limiter,
                 admin_role_name=self.settings.admin_role_name,
+                update_checker=self.update_checker,
             )
         )
 

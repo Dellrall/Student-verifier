@@ -24,7 +24,7 @@ FACULTY_ROLES: Final[dict[str, str]] = {
     "L": "FOAS",
     "J": "FSSH",
     "V": "FOBE",
-    "F": "CPUS",
+    "P": "CPUS",
     "M": "FOCS",
     "G": "FOET",
 }
@@ -48,6 +48,7 @@ class Settings:
     hoster_discord_id: int | None = None
     enable_update_checker: bool = True
     update_check_interval_hours: int = 24
+    update_stream: str = "auto"
 
     @classmethod
     def from_env(cls, validate: bool = True) -> Settings:
@@ -65,6 +66,13 @@ class Settings:
 
         interval_raw = os.getenv("TARVERI_UPDATE_CHECK_INTERVAL_HOURS", "24").strip()
         update_check_interval_hours = int(interval_raw) if interval_raw.isdigit() else 24
+
+        update_stream_raw = (
+            os.getenv("TARVERI_UPDATE_STREAM")
+            or os.getenv("TARVERI_UPDATE_BRANCH")
+            or "auto"
+        ).strip()
+        update_stream = update_stream_raw if update_stream_raw else "auto"
 
         if validate:
             if not bot_token:
@@ -86,6 +94,7 @@ class Settings:
             hoster_discord_id=hoster_discord_id,
             enable_update_checker=enable_update_checker,
             update_check_interval_hours=update_check_interval_hours,
+            update_stream=update_stream,
         )
 
 
@@ -133,7 +142,7 @@ def validate_student_id(raw_id: str) -> tuple[bool, str, str | None, str | None]
     Validates and parses a student ID.
     Returns (is_valid, normalized_id, faculty_code, faculty_role_name).
     """
-    normalized = raw_id.strip().upper()
+    normalized = raw_id.strip().upper().replace("-", "").replace(" ", "")
     if not STUDENT_ID_PATTERN.match(normalized):
         return False, normalized, None, None
 
@@ -143,3 +152,5 @@ def validate_student_id(raw_id: str) -> tuple[bool, str, str | None, str | None]
         return False, normalized, faculty_code, None
 
     return True, normalized, faculty_code, faculty_role
+
+

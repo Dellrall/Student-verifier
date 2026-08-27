@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # TARVeri — Safe Backend Updater with Pre-Update DB Backup & Auto-Rollback
+# Supports custom update streams/branches via CLI args or .env configuration.
 # ==============================================================================
 
 set -eo pipefail
@@ -9,6 +10,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${PROJECT_ROOT}"
+
+# Load environment configuration if available
+if [ -f "${PROJECT_ROOT}/.env" ]; then
+    # shellcheck source=/dev/null
+    set -a
+    source "${PROJECT_ROOT}/.env"
+    set +a
+fi
 
 # Configuration
 VENV_DIR="${PROJECT_ROOT}/.venv"
@@ -42,38 +51,82 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Parse CLI arguments
+CHECK_ONLY=false
+CLI_STREAM=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --check)
+            CHECK_ONLY=true
+            shift
+            ;;
+        --stream|--branch)
+            CLI_STREAM="$2"
+            shift 2
+            ;;
+        -*)
+            log_error "Unknown option: $1"
+            echo "Usage: $0 [--check] [--stream <branch_name>] [<branch_name>]"
+            exit 1
+            ;;
+        *)
+            if [ -z "${CLI_STREAM}" ]; then
+                CLI_STREAM="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
 # Verify virtual environment
 if [ ! -d "${VENV_DIR}" ] || [ ! -x "${PYTHON_BIN}" ]; then
     log_error "Virtual environment not found at ${VENV_DIR}. Please set it up first."
     exit 1
 fi
 
-# Fetch remote status
-log_info "Checking upstream for updates..."
-git fetch --quiet
-
+# Determine update stream (Priority: CLI argument > .env variable > current upstream/HEAD)
+CONFIGURED_STREAM="${CLI_STREAM:-${TARVERI_UPDATE_STREAM:-${TARVERI_UPDATE_BRANCH:-auto}}}"
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-UPSTREAM_BRANCH="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "origin/${CURRENT_BRANCH}")"
+
+if [ -n "${CONFIGURED_STREAM}" ] && [ "${CONFIGURED_STREAM}" != "auto" ]; then
+    TARGET_BRANCH="${CONFIGURED_STREAM#origin/}"
+    TARGET_REMOTE="origin/${TARGET_BRANCH}"
+else
+    TARGET_REMOTE="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "origin/${CURRENT_BRANCH}")"
+    TARGET_BRANCH="${TARGET_REMOTE#origin/}"
+fi
+
+log_info "Target update stream: ${TARGET_REMOTE} (Local branch: ${CURRENT_BRANCH})"
+
+# Fetch remote status for target stream
+log_info "Fetching latest remote status for '${TARGET_BRANCH}'..."
+git fetch origin "${TARGET_BRANCH}" --quiet 2>/dev/null || git fetch --quiet
 
 LOCAL_HASH="$(git rev-parse HEAD)"
-REMOTE_HASH="$(git rev-parse "${UPSTREAM_BRANCH}" 2>/dev/null || echo "${LOCAL_HASH}")"
+REMOTE_HASH="$(git rev-parse "${TARGET_REMOTE}" 2>/dev/null || true)"
 
-if [ "${LOCAL_HASH}" = "${REMOTE_HASH}" ]; then
-    log_success "TARVeri is already on the latest version (${LOCAL_HASH:0:7})."
-    if [ "$1" = "--check" ]; then
+if [ -z "${REMOTE_HASH}" ]; then
+    log_error "Remote branch '${TARGET_REMOTE}' not found on remote. Check branch name."
+    exit 1
+fi
+
+BEHIND_COUNT="$(git rev-list --count HEAD.."${TARGET_REMOTE}" 2>/dev/null || echo "0")"
+
+if [ "${LOCAL_HASH}" = "${REMOTE_HASH}" ] && [ "${CURRENT_BRANCH}" = "${TARGET_BRANCH}" ]; then
+    log_success "TARVeri is already on the latest version of stream '${TARGET_REMOTE}' (${LOCAL_HASH:0:7})."
+    if [ "${CHECK_ONLY}" = true ]; then
         exit 0
     fi
 fi
 
-BEHIND_COUNT="$(git rev-list --count HEAD.."${UPSTREAM_BRANCH}" 2>/dev/null || echo "0")"
-
-if [ "${BEHIND_COUNT}" -gt 0 ]; then
-    log_warn "Upstream is ${BEHIND_COUNT} commit(s) ahead (${LOCAL_HASH:0:7} -> ${REMOTE_HASH:0:7})."
+if [ "${BEHIND_COUNT}" -gt 0 ] || [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
+    log_warn "Upstream '${TARGET_REMOTE}' is ${BEHIND_COUNT} commit(s) ahead (${LOCAL_HASH:0:7} -> ${REMOTE_HASH:0:7})."
 fi
 
-if [ "$1" = "--check" ]; then
-    if [ "${BEHIND_COUNT}" -gt 0 ]; then
-        echo -e "\n🔔 ${YELLOW}Update available!${NC} Run './scripts/update.sh' on this server to apply."
+if [ "${CHECK_ONLY}" = true ]; then
+    if [ "${BEHIND_COUNT}" -gt 0 ] || [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
+        echo -e "\n🔔 ${YELLOW}Update available!${NC} Run './scripts/update.sh ${TARGET_BRANCH}' on this server to apply."
     fi
     exit 0
 fi
@@ -87,7 +140,6 @@ SNAPSHOT_PATH="${BACKUP_DIR}/tarveri_pre_update_${TIMESTAMP}.db"
 
 log_info "[1/5] Creating pre-update database backup..."
 if [ -f "${DB_PATH}" ]; then
-    # Use SQLite vacuum / copy for snapshot
     ${PYTHON_BIN} -c "
 import sqlite3, sys
 try:
@@ -108,31 +160,42 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# STEP 2: Pull Upstream Changes
+# STEP 2: Pull Upstream Changes & Switch Stream If Requested
 # ------------------------------------------------------------------------------
-log_info "[2/5] Pulling upstream changes from ${UPSTREAM_BRANCH}..."
+log_info "[2/5] Updating code to stream ${TARGET_REMOTE}..."
+PREV_BRANCH="${CURRENT_BRANCH}"
 PREV_COMMIT="${LOCAL_HASH}"
 
 rollback() {
     log_error "Update failed! Initiating rollback..."
-    git reset --hard "${PREV_COMMIT}" || true
+    git checkout "${PREV_BRANCH}" 2>/dev/null || true
+    git reset --hard "${PREV_COMMIT}" 2>/dev/null || true
     
     if [ -f "${SNAPSHOT_PATH}" ] && [ -f "${DB_PATH}" ]; then
         log_info "Restoring database from ${SNAPSHOT_PATH}..."
         cp -f "${SNAPSHOT_PATH}" "${DB_PATH}"
     fi
     
-    log_warn "Rollback complete. System returned to commit ${PREV_COMMIT:0:7}."
+    log_warn "Rollback complete. System returned to branch '${PREV_BRANCH}' at commit ${PREV_COMMIT:0:7}."
     exit 1
 }
 
 # Trap unexpected errors to trigger rollback
 trap rollback ERR
 
-git pull --ff-only
+if [ "${CURRENT_BRANCH}" != "${TARGET_BRANCH}" ]; then
+    log_info "Switching branch: '${CURRENT_BRANCH}' -> '${TARGET_BRANCH}'..."
+    if git show-ref --verify --quiet "refs/heads/${TARGET_BRANCH}"; then
+        git checkout "${TARGET_BRANCH}"
+    else
+        git checkout -b "${TARGET_BRANCH}" --track "${TARGET_REMOTE}"
+    fi
+fi
+
+git pull origin "${TARGET_BRANCH}" --ff-only
 
 NEW_COMMIT="$(git rev-parse HEAD)"
-log_success "Successfully pulled code (now at ${NEW_COMMIT:0:7})."
+log_success "Successfully pulled code (now at commit ${NEW_COMMIT:0:7} on branch '${TARGET_BRANCH}')."
 
 # ------------------------------------------------------------------------------
 # STEP 3: Sync Python Dependencies
@@ -171,6 +234,7 @@ else
 fi
 
 echo -e "\n=============================================================================="
-log_success "TARVeri update to ${NEW_COMMIT:0:7} completed cleanly!"
+log_success "TARVeri update on stream '${TARGET_REMOTE}' (${NEW_COMMIT:0:7}) completed cleanly!"
 log_info "Pre-update backup preserved at: ${SNAPSHOT_PATH}"
 echo -e "==============================================================================\n"
+
