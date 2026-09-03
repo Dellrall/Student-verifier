@@ -63,6 +63,13 @@ class Database:
                 message TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS guild_settings (
+                guild_id INTEGER PRIMARY KEY,
+                welcome_channel_id INTEGER,
+                help_channel_id INTEGER,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log(event_type);
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
             CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_log(user_id);
@@ -244,3 +251,44 @@ class Database:
                 (limit, offset),
             )
         return await cursor.fetchall()
+
+    async def get_guild_settings(self, guild_id: int) -> tuple[int | None, int | None] | None:
+        """Returns (welcome_channel_id, help_channel_id) for the given guild, or None if not set."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            "SELECT welcome_channel_id, help_channel_id FROM guild_settings WHERE guild_id = ?",
+            (guild_id,),
+        )
+        return await cursor.fetchone()
+
+    async def set_guild_welcome_channel(self, guild_id: int, channel_id: int | None) -> None:
+        """Sets or clears the welcome channel ID for a guild."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        await self._conn.execute(
+            """INSERT INTO guild_settings (guild_id, welcome_channel_id, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET
+                   welcome_channel_id = excluded.welcome_channel_id,
+                   updated_at = excluded.updated_at""",
+            (guild_id, channel_id, ts),
+        )
+        await self._conn.commit()
+
+    async def set_guild_help_channel(self, guild_id: int, channel_id: int | None) -> None:
+        """Sets or clears the help channel ID for a guild."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        await self._conn.execute(
+            """INSERT INTO guild_settings (guild_id, help_channel_id, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET
+                   help_channel_id = excluded.help_channel_id,
+                   updated_at = excluded.updated_at""",
+            (guild_id, channel_id, ts),
+        )
+        await self._conn.commit()
+

@@ -100,3 +100,32 @@ async def test_database_unique_constraints(tmp_path):
         await db.record_verification(1002, "hash_one", "G")
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_database_guild_settings(tmp_path):
+    db_file = str(tmp_path / "test_guild_settings.db")
+    db = Database(db_file)
+    await db.connect()
+
+    guild_id = 999111
+    # Initially None
+    assert await db.get_guild_settings(guild_id) is None
+
+    # Set welcome channel
+    await db.set_guild_welcome_channel(guild_id, 123456)
+    settings = await db.get_guild_settings(guild_id)
+    assert settings == (123456, None)
+
+    # Set help channel
+    await db.set_guild_help_channel(guild_id, 654321)
+    settings = await db.get_guild_settings(guild_id)
+    assert settings == (123456, 654321)
+
+    # Reset welcome channel
+    await db.set_guild_welcome_channel(guild_id, None)
+    settings = await db.get_guild_settings(guild_id)
+    assert settings == (None, 654321)
+
+    await db.close()
+

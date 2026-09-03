@@ -65,10 +65,13 @@ To safely pull upstream updates with automatic database backup, dependency sync,
 * **Smart Role Help Tips**: When an unverified user asks questions like *"How to get role"* or mentions *"role"* in a help/support channel, the bot replies with helpful tips explaining how to verify.
 
 ### Admins
-* `/stats` — View verification numbers and faculty breakdown.
+* `/setwelcomec [channel]` — Configure or reset the server's welcome channel for new member verification tags.
+* `/sethelpc [channel]` — Configure or reset the server's specific help channel for automated role tips.
+* `/stats` — View verification numbers, faculty breakdown, and configured channels.
 * `/unverify @user` — Unlink a student ID and remove their roles.
 * `/audit` — View recent audit log entries.
 * `/backup` — Create an immediate database snapshot in `backups/`.
 * `/resync` — Re-check and update roles.
 * `/check_updates [stream]` — Check for new git updates on a specific or default stream directly from Discord.
+
 

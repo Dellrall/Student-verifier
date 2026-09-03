@@ -32,6 +32,7 @@ def mock_rate_limiter():
 @pytest.mark.asyncio
 async def test_is_help_channel_with_configured_id(mock_bot, mock_service, mock_rate_limiter, tmp_path):
     db = Database(str(tmp_path / "cog_test.db"))
+    await db.connect()
     settings = Settings(
         bot_token="token",
         id_hash_secret="secret",
@@ -39,29 +40,66 @@ async def test_is_help_channel_with_configured_id(mock_bot, mock_service, mock_r
     )
     cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter, settings=settings)
 
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 12345
+
     # Channel matching configured ID
     ch_match = MagicMock(spec=discord.TextChannel)
     ch_match.id = 998877
-    assert cog.is_help_channel(ch_match) is True
+    ch_match.guild = guild
+    assert await cog.is_help_channel(ch_match) is True
 
     # Channel with different ID and non-help name
     ch_other = MagicMock(spec=discord.TextChannel)
     ch_other.id = 12345
     ch_other.name = "general"
-    assert cog.is_help_channel(ch_other) is False
+    ch_other.guild = guild
+    assert await cog.is_help_channel(ch_other) is False
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_is_help_channel_per_guild_db_override(mock_bot, mock_service, mock_rate_limiter, tmp_path):
+    db = Database(str(tmp_path / "cog_override_test.db"))
+    await db.connect()
+    guild_id = 777888
+    # Save per-guild help channel 55555
+    await db.set_guild_help_channel(guild_id, 55555)
+
+    cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = guild_id
+
+    ch_per_guild = MagicMock(spec=discord.TextChannel)
+    ch_per_guild.id = 55555
+    ch_per_guild.name = "custom-ask"
+    ch_per_guild.guild = guild
+    assert await cog.is_help_channel(ch_per_guild) is True
+
+    ch_other = MagicMock(spec=discord.TextChannel)
+    ch_other.id = 99999
+    ch_other.name = "help"
+    ch_other.guild = guild
+    assert await cog.is_help_channel(ch_other) is False
+
+    await db.close()
 
 
 @pytest.mark.asyncio
 async def test_is_help_channel_autodetect_keyword_and_permissions(mock_bot, mock_service, mock_rate_limiter, tmp_path):
-    db = Database(str(tmp_path / "cog_test.db"))
+    db = Database(str(tmp_path / "cog_test2.db"))
+    await db.connect()
     cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
 
     guild = MagicMock(spec=discord.Guild)
+    guild.id = 23456
     default_role = MagicMock(spec=discord.Role)
     guild.default_role = default_role
 
     # Channel named "help" where @everyone can send messages
     ch_help = MagicMock(spec=discord.TextChannel)
+    ch_help.id = 101
     ch_help.name = "verification-help"
     ch_help.guild = guild
     perms_allowed = MagicMock()
@@ -69,10 +107,11 @@ async def test_is_help_channel_autodetect_keyword_and_permissions(mock_bot, mock
     perms_allowed.send_messages = True
     ch_help.permissions_for.return_value = perms_allowed
 
-    assert cog.is_help_channel(ch_help) is True
+    assert await cog.is_help_channel(ch_help) is True
 
     # Channel named "help" but @everyone cannot send messages (read-only announcements)
     ch_locked = MagicMock(spec=discord.TextChannel)
+    ch_locked.id = 102
     ch_locked.name = "help-desk"
     ch_locked.guild = guild
     perms_locked = MagicMock()
@@ -80,12 +119,19 @@ async def test_is_help_channel_autodetect_keyword_and_permissions(mock_bot, mock
     perms_locked.send_messages = False
     ch_locked.permissions_for.return_value = perms_locked
 
-    assert cog.is_help_channel(ch_locked) is False
+    assert await cog.is_help_channel(ch_locked) is False
+
+    await db.close()
 
 
 @pytest.mark.asyncio
 async def test_get_welcome_or_verify_channel_priority(mock_bot, mock_service, mock_rate_limiter, tmp_path):
-    db = Database(str(tmp_path / "cog_test.db"))
+    db = Database(str(tmp_path / "cog_test3.db"))
+    await db.connect()
+    guild_id = 888999
+    # Set per-guild welcome channel in DB
+    await db.set_guild_welcome_channel(guild_id, 333)
+
     settings = Settings(
         bot_token="token",
         id_hash_secret="secret",
@@ -95,30 +141,35 @@ async def test_get_welcome_or_verify_channel_priority(mock_bot, mock_service, mo
     cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter, settings=settings)
 
     guild = MagicMock(spec=discord.Guild)
-    ch_welcome_configured = MagicMock(spec=discord.TextChannel)
-    ch_welcome_configured.id = 111
-    guild.get_channel.side_effect = lambda cid: ch_welcome_configured if cid == 111 else None
+    guild.id = guild_id
+    guild.me = MagicMock()
 
-    # Priority 1: Configured welcome channel
-    found = cog.get_welcome_or_verify_channel(guild)
-    assert found == ch_welcome_configured
+    ch_guild_configured = MagicMock(spec=discord.TextChannel)
+    ch_guild_configured.id = 333
+    perms_guild = MagicMock()
+    perms_guild.view_channel = True
+    perms_guild.send_messages = True
+    ch_guild_configured.permissions_for.return_value = perms_guild
 
-    # Priority 2: Autodetect welcome/verify keyword
-    cog.settings = Settings(bot_token="token", id_hash_secret="secret")
-    ch_verify = MagicMock(spec=discord.TextChannel)
-    ch_verify.name = "verify-here"
-    perms = MagicMock()
-    perms.view_channel = True
-    perms.send_messages = True
-    ch_verify.permissions_for.return_value = perms
+    guild.get_channel.side_effect = lambda cid: ch_guild_configured if cid == 333 else None
 
-    guild.get_channel.side_effect = None
-    guild.get_channel.return_value = None
-    guild.text_channels = [ch_verify]
-    guild.system_channel = None
+    # Priority 0: Per-guild database setting overrides global settings
+    found = await cog.get_welcome_or_verify_channel(guild)
+    assert found == ch_guild_configured
 
-    found = cog.get_welcome_or_verify_channel(guild)
-    assert found == ch_verify
+    # Reset per-guild setting: falls back to global welcome_channel_id (111)
+    await db.set_guild_welcome_channel(guild_id, None)
+    cog.invalidate_guild_cache(guild_id)
+
+    ch_global_welcome = MagicMock(spec=discord.TextChannel)
+    ch_global_welcome.id = 111
+    ch_global_welcome.permissions_for.return_value = perms_guild
+    guild.get_channel.side_effect = lambda cid: ch_global_welcome if cid == 111 else None
+
+    found = await cog.get_welcome_or_verify_channel(guild)
+    assert found == ch_global_welcome
+
+    await db.close()
 
 
 @pytest.mark.asyncio
@@ -195,6 +246,7 @@ async def test_on_message_ignores_verified_member(mock_bot, mock_service, mock_r
     cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
 
     guild = MagicMock(spec=discord.Guild)
+    guild.id = 123
     channel = MagicMock(spec=discord.TextChannel)
     channel.name = "help"
     channel.guild = guild

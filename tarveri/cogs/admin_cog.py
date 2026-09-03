@@ -78,6 +78,20 @@ class AdminCog(commands.Cog, name="Admin"):
         else:
             embed.add_field(name="Faculty Breakdown", value="No verifications recorded yet.", inline=False)
 
+        if interaction.guild:
+            guild_settings = await self.db.get_guild_settings(interaction.guild.id)
+            w_id = guild_settings[0] if guild_settings else None
+            h_id = guild_settings[1] if guild_settings else None
+
+            w_ch = interaction.guild.get_channel(w_id) if w_id else None
+            h_ch = interaction.guild.get_channel(h_id) if h_id else None
+
+            w_display = w_ch.mention if w_ch else (f"`ID: {w_id}`" if w_id else "*Auto-detect*")
+            h_display = h_ch.mention if h_ch else (f"`ID: {h_id}`" if h_id else "*Auto-detect*")
+
+            embed.add_field(name="Welcome Channel", value=w_display, inline=True)
+            embed.add_field(name="Help Channel", value=h_display, inline=True)
+
         embed.set_footer(text=f"TARVeri Bot • Active in {len(self.bot.guilds)} servers")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -330,4 +344,111 @@ class AdminCog(commands.Cog, name="Admin"):
                 embed.description = "✅ TARVeri is up to date on this stream!"
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="setwelcomec",
+        description="Set or reset the server's welcome channel where new members are tagged to verify.",
+    )
+    @app_commands.describe(
+        channel="The text channel where new members will be tagged (leave empty to reset to auto-detect)"
+    )
+    async def setwelcomec(
+        self, interaction: discord.Interaction, channel: discord.TextChannel | None = None
+    ) -> None:
+        """Configures or clears the welcome channel for this server."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ This command can only be used inside a server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel_id = channel.id if channel else None
+        await self.db.set_guild_welcome_channel(interaction.guild.id, channel_id)
+
+        # Invalidate VerificationCog channel cache if loaded
+        verification_cog = self.bot.get_cog("Verification")
+        if verification_cog and hasattr(verification_cog, "invalidate_guild_cache"):
+            verification_cog.invalidate_guild_cache(interaction.guild.id)
+
+        await self.db.log(
+            "INFO",
+            "CONFIG_WELCOME_CHANNEL",
+            f"Admin {interaction.user} set welcome channel to '{channel.name if channel else 'Auto-detect'}' (ID: {channel_id})",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
+
+        if channel:
+            await interaction.followup.send(
+                f"✅ Welcome channel set to {channel.mention}.\n"
+                f"New unverified members joining this server will be tagged here with verification instructions.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "🔄 Welcome channel reset to **auto-detect** mode (searches for #welcome, #verify, or system channel).",
+                ephemeral=True,
+            )
+
+    @app_commands.command(
+        name="sethelpc",
+        description="Set or reset the server's help channel for automated role verification tips.",
+    )
+    @app_commands.describe(
+        channel="The text channel for role help tips (leave empty to reset to auto-detect)"
+    )
+    async def sethelpc(
+        self, interaction: discord.Interaction, channel: discord.TextChannel | None = None
+    ) -> None:
+        """Configures or clears the help channel for this server."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ This command can only be used inside a server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel_id = channel.id if channel else None
+        await self.db.set_guild_help_channel(interaction.guild.id, channel_id)
+
+        # Invalidate VerificationCog channel cache if loaded
+        verification_cog = self.bot.get_cog("Verification")
+        if verification_cog and hasattr(verification_cog, "invalidate_guild_cache"):
+            verification_cog.invalidate_guild_cache(interaction.guild.id)
+
+        await self.db.log(
+            "INFO",
+            "CONFIG_HELP_CHANNEL",
+            f"Admin {interaction.user} set help channel to '{channel.name if channel else 'Auto-detect'}' (ID: {channel_id})",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
+
+        if channel:
+            await interaction.followup.send(
+                f"✅ Help channel set to {channel.mention}.\n"
+                f"Unverified members asking about roles in {channel.mention} will receive helpful verification tips.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "🔄 Help channel reset to **auto-detect** mode (searches for channels with 'help', 'support', 'faq', etc.).",
+                ephemeral=True,
+            )
+
 

@@ -58,6 +58,7 @@ class VerificationCog(commands.Cog, name="Verification"):
         self.rate_limiter = rate_limiter
         self.settings = settings or getattr(bot, "settings", None)
         self._tip_cooldowns: dict[int, float] = {}
+        self._guild_channels_cache: dict[int, tuple[int | None, int | None]] = {}
 
     @app_commands.command(
         name="verify",
@@ -164,16 +165,41 @@ class VerificationCog(commands.Cog, name="Verification"):
                 delete_after=20,
             )
 
-    def is_help_channel(self, channel: discord.TextChannel) -> bool:
-        """Determines if a channel is the designated help channel or autodetected by keyword & permission."""
-        if not isinstance(channel, discord.TextChannel):
+    def invalidate_guild_cache(self, guild_id: int | None = None) -> None:
+        """Clears cached channel settings for a guild or all guilds."""
+        if guild_id is not None:
+            self._guild_channels_cache.pop(guild_id, None)
+        else:
+            self._guild_channels_cache.clear()
+
+    async def get_guild_channel_ids(self, guild_id: int) -> tuple[int | None, int | None]:
+        """Fetches (welcome_channel_id, help_channel_id) for a guild with memory caching."""
+        if not isinstance(guild_id, int):
+            return (None, None)
+        if guild_id in self._guild_channels_cache:
+            return self._guild_channels_cache[guild_id]
+
+        row = await self.db.get_guild_settings(guild_id)
+        settings = (row[0], row[1]) if row else (None, None)
+        self._guild_channels_cache[guild_id] = settings
+        return settings
+
+    async def is_help_channel(self, channel: discord.TextChannel) -> bool:
+        """Determines if a channel is the designated help channel (per-guild DB, env setting, or keyword)."""
+        if not isinstance(channel, discord.TextChannel) or not channel.guild:
             return False
 
+        # 1. Per-server configured help channel in database
+        _, guild_help_id = await self.get_guild_channel_ids(channel.guild.id)
+        if guild_help_id is not None:
+            return channel.id == guild_help_id
+
+        # 2. Global fallback setting from environment
         if self.settings and self.settings.help_channel_id:
             if channel.id == self.settings.help_channel_id:
                 return True
 
-        # Check name keywords: help, support, bantuan, faq, verify, verification
+        # 3. Autodetect: keywords: help, support, bantuan, faq, verify, verification
         keywords = ("help", "support", "bantuan", "faq", "verify", "verification")
         name_lower = channel.name.lower()
         matches_keyword = any(k in name_lower for k in keywords)
@@ -188,39 +214,45 @@ class VerificationCog(commands.Cog, name="Verification"):
 
         return True
 
-    def get_welcome_or_verify_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+    async def get_welcome_or_verify_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         """Finds the best channel to tag newly joined members for verification."""
-        # 1. Configured welcome channel ID
-        if self.settings and self.settings.welcome_channel_id:
-            ch = guild.get_channel(self.settings.welcome_channel_id)
-            if isinstance(ch, discord.TextChannel):
-                return ch
-
-        # 2. Configured help channel ID
-        if self.settings and self.settings.help_channel_id:
-            ch = guild.get_channel(self.settings.help_channel_id)
-            if isinstance(ch, discord.TextChannel):
-                return ch
-
-        # Helper to check if bot can send messages in channel
         def _can_bot_send(c: discord.TextChannel) -> bool:
             if not hasattr(c, "permissions_for") or not hasattr(guild, "me") or not guild.me:
                 return True
             perms = c.permissions_for(guild.me)
             return bool(perms.view_channel and perms.send_messages)
 
-        # 3. Autodetect channel by priority keywords: welcome, verify, verification, start-here, help
+        # 1. Per-server configured welcome channel in database
+        guild_welcome_id, _ = await self.get_guild_channel_ids(guild.id)
+        if guild_welcome_id is not None:
+            ch = guild.get_channel(guild_welcome_id)
+            if isinstance(ch, discord.TextChannel) and _can_bot_send(ch):
+                return ch
+
+        # 2. Global configured welcome channel ID from settings (.env)
+        if self.settings and self.settings.welcome_channel_id:
+            ch = guild.get_channel(self.settings.welcome_channel_id)
+            if isinstance(ch, discord.TextChannel) and _can_bot_send(ch):
+                return ch
+
+        # 3. Global configured help channel ID from settings (.env)
+        if self.settings and self.settings.help_channel_id:
+            ch = guild.get_channel(self.settings.help_channel_id)
+            if isinstance(ch, discord.TextChannel) and _can_bot_send(ch):
+                return ch
+
+        # 4. Autodetect channel by priority keywords: welcome, verify, verification, start-here, help
         keywords = ("welcome", "verify", "verification", "start-here", "gate", "rules", "help")
         for kw in keywords:
             for ch in guild.text_channels:
                 if kw in ch.name.lower() and _can_bot_send(ch):
                     return ch
 
-        # 4. Guild system channel (standard Discord welcome channel)
+        # 5. Guild system channel (standard Discord welcome channel)
         if guild.system_channel and _can_bot_send(guild.system_channel):
             return guild.system_channel
 
-        # 5. First text channel bot can send to
+        # 6. First text channel bot can send to
         for ch in guild.text_channels:
             if _can_bot_send(ch):
                 return ch
@@ -319,7 +351,7 @@ class VerificationCog(commands.Cog, name="Verification"):
                     return
 
         # New unverified member: Tag them in the server welcome/verification channel
-        welcome_channel = self.get_welcome_or_verify_channel(member.guild)
+        welcome_channel = await self.get_welcome_or_verify_channel(member.guild)
         if welcome_channel:
             welcome_tag_msg = (
                 f"👋 Welcome {member.mention} to **{member.guild.name}**! 🎓\n"
@@ -367,7 +399,7 @@ class VerificationCog(commands.Cog, name="Verification"):
                 if response:
                     await message.author.send(response)
         else:
-            if isinstance(message.channel, discord.TextChannel) and self.is_help_channel(message.channel):
+            if isinstance(message.channel, discord.TextChannel) and await self.is_help_channel(message.channel):
                 await self.handle_help_channel_message(message)
 
     @commands.Cog.listener()

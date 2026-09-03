@@ -37,3 +37,67 @@ def test_is_admin_or_has_role():
     member_regular.roles = [other_role]
     interaction.user = member_regular
     assert is_admin_or_has_role(interaction, admin_role_name) is False
+
+
+@pytest.mark.asyncio
+async def test_setwelcomec_and_sethelpc(tmp_path):
+    from unittest.mock import AsyncMock
+    from tarveri.cogs.admin_cog import AdminCog
+    from tarveri.database import Database
+
+    db_path = str(tmp_path / "admin_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = MagicMock()
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 12345
+    guild.name = "My Server"
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+    admin_user.__str__.return_value = "Admin#0001"
+
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 98765
+    channel.name = "welcome"
+    channel.mention = "<#98765>"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # 1. Set welcome channel
+    await cog.setwelcomec.callback(cog, interaction, channel=channel)
+    interaction.followup.send.assert_called_once()
+    assert "<#98765>" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(12345)
+    assert settings[0] == 98765
+
+    # 2. Reset welcome channel
+    interaction.followup.send.reset_mock()
+    await cog.setwelcomec.callback(cog, interaction, channel=None)
+    assert "auto-detect" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(12345)
+    assert settings[0] is None
+
+    # 3. Set help channel
+    help_channel = MagicMock(spec=discord.TextChannel)
+    help_channel.id = 54321
+    help_channel.name = "help"
+    help_channel.mention = "<#54321>"
+
+    interaction.followup.send.reset_mock()
+    await cog.sethelpc.callback(cog, interaction, channel=help_channel)
+    assert "<#54321>" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(12345)
+    assert settings[1] == 54321
+
+    await db.close()
+
