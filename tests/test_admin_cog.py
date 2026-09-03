@@ -101,3 +101,42 @@ async def test_setwelcomec_and_sethelpc(tmp_path):
 
     await db.close()
 
+
+@pytest.mark.asyncio
+async def test_sync_prefix(tmp_path):
+    from unittest.mock import AsyncMock
+    from tarveri.cogs.admin_cog import AdminCog
+    from tarveri.database import Database
+
+    db_path = str(tmp_path / "sync_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    bot.tree = MagicMock()
+    bot.tree.sync = AsyncMock(return_value=[MagicMock(), MagicMock()])
+    service = MagicMock()
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.name = "Test Guild"
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+
+    ctx = MagicMock()
+    ctx.guild = guild
+    ctx.author = admin_user
+    msg = MagicMock()
+    msg.edit = AsyncMock()
+    ctx.send = AsyncMock(return_value=msg)
+
+    await cog.sync_prefix.callback(cog, ctx, scope="guild")
+    ctx.send.assert_called_once()
+    msg.edit.assert_called_once()
+    assert "Instantly synced **2** slash command(s)" in msg.edit.call_args[1]["content"]
+
+    await db.close()
+
+

@@ -291,6 +291,34 @@ class AdminCog(commands.Cog, name="Admin"):
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
 
+    @commands.command(name="sync", aliases=["sync_commands"])
+    async def sync_prefix(self, ctx: commands.Context, scope: str = "guild") -> None:
+        """Text fallback command to immediately sync slash commands to this server."""
+        if not ctx.guild or not isinstance(ctx.author, discord.Member):
+            return
+        if not (ctx.author.guild_permissions.administrator or any(r.name == self.admin_role_name for r in ctx.author.roles)):
+            await ctx.send("❌ You do not have permission to sync commands.", delete_after=10)
+            return
+
+        msg = await ctx.send("🔄 Syncing slash commands to this server...")
+        try:
+            if scope.lower() in ("guild", "here"):
+                self.bot.tree.copy_global_to(guild=ctx.guild)
+                synced = await self.bot.tree.sync(guild=ctx.guild)
+                await msg.edit(
+                    content=(
+                        f"✅ Instantly synced **{len(synced)}** slash command(s) to **{ctx.guild.name}**!\n"
+                        f"*(Tip: If they don't show up in your autocomplete immediately, press `Ctrl + R` on Discord Desktop or restart your app to refresh your cache)*"
+                    )
+                )
+            else:
+                synced = await self.bot.tree.sync()
+                await msg.edit(
+                    content=f"✅ Synced **{len(synced)}** global command(s)! (Note: Global commands take up to 1 hour to propagate across Discord)."
+                )
+        except Exception as e:
+            await msg.edit(content=f"❌ Failed to sync commands: {e}")
+
     @app_commands.command(
         name="check_updates",
         description="Check if bot updates are available from git upstream.",
