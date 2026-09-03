@@ -115,17 +115,23 @@ async def test_database_guild_settings(tmp_path):
     # Set welcome channel
     await db.set_guild_welcome_channel(guild_id, 123456)
     settings = await db.get_guild_settings(guild_id)
-    assert settings == (123456, None)
+    assert settings == (123456, None, "Guest", None)
 
     # Set help channel
     await db.set_guild_help_channel(guild_id, 654321)
     settings = await db.get_guild_settings(guild_id)
-    assert settings == (123456, 654321)
+    assert settings == (123456, 654321, "Guest", None)
+
+    # Set guest role and review channel
+    await db.set_guild_guest_role(guild_id, "Guest (Approved)")
+    await db.set_guild_review_channel(guild_id, 999000)
+    settings = await db.get_guild_settings(guild_id)
+    assert settings == (123456, 654321, "Guest (Approved)", 999000)
 
     # Reset welcome channel
     await db.set_guild_welcome_channel(guild_id, None)
     settings = await db.get_guild_settings(guild_id)
-    assert settings == (None, 654321)
+    assert settings == (None, 654321, "Guest (Approved)", 999000)
 
     await db.close()
 

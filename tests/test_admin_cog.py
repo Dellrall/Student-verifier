@@ -140,3 +140,55 @@ async def test_sync_prefix(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_setguestrole_and_setreviewchannel(tmp_path):
+    from unittest.mock import AsyncMock
+    from tarveri.cogs.admin_cog import AdminCog
+    from tarveri.database import Database
+
+    db_path = str(tmp_path / "admin_guest_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = MagicMock()
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 998877
+    guild.name = "Guest Test Guild"
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = 776655
+    channel.name = "guest-tickets"
+    channel.mention = "<#776655>"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # 1. Set guest role
+    await cog.setguestrole.callback(cog, interaction, role_name="Guest (Approved)")
+    interaction.followup.send.assert_called_once()
+    assert "Guest (Approved)" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(998877)
+    assert settings[2] == "Guest (Approved)"
+
+    # 2. Set review channel
+    interaction.followup.send.reset_mock()
+    await cog.setreviewchannel.callback(cog, interaction, channel=channel)
+    interaction.followup.send.assert_called_once()
+    assert "<#776655>" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(998877)
+    assert settings[3] == 776655
+
+    await db.close()
+
+
+

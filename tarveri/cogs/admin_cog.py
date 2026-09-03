@@ -479,4 +479,88 @@ class AdminCog(commands.Cog, name="Admin"):
                 ephemeral=True,
             )
 
+    @app_commands.command(
+        name="setguestrole",
+        description="Set or reset the server's custom role name for verified guests (default: Guest).",
+    )
+    @app_commands.describe(role_name="The name of the guest role (leave empty to reset to 'Guest')")
+    async def setguestrole(
+        self, interaction: discord.Interaction, role_name: str | None = None
+    ) -> None:
+        """Configures or clears the guest role name for this server."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ This command can only be used inside a server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        role_to_set = role_name.strip() if role_name else "Guest"
+        await self.db.set_guild_guest_role(interaction.guild.id, role_to_set)
+
+        await self.db.log(
+            "INFO",
+            "CONFIG_GUEST_ROLE",
+            f"Admin {interaction.user} set guest role for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{role_to_set}'",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
+
+        await interaction.followup.send(
+            f"✅ Guest role name for this server set to **{role_to_set}**.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="setreviewchannel",
+        description="Set or reset the parent channel where private guest review threads are created.",
+    )
+    @app_commands.describe(channel="The text channel for private review threads (leave empty for auto-detect)")
+    async def setreviewchannel(
+        self, interaction: discord.Interaction, channel: discord.TextChannel | None = None
+    ) -> None:
+        """Configures or clears the parent review channel for private guest threads."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ This command can only be used inside a server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        channel_id = channel.id if channel else None
+        await self.db.set_guild_review_channel(interaction.guild.id, channel_id)
+
+        await self.db.log(
+            "INFO",
+            "CONFIG_REVIEW_CHANNEL",
+            f"Admin {interaction.user} set guest review channel for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{channel.name if channel else 'Auto-detect'}' (Channel ID: {channel_id})",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
+
+        if channel:
+            await interaction.followup.send(
+                f"✅ Guest review channel set to {channel.mention}.\n"
+                f"Private review threads for guest applications will be created under this channel.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "🔄 Guest review channel reset to **auto-detect** mode.",
+                ephemeral=True,
+            )
+
+
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
@@ -67,15 +68,55 @@ class Database:
                 guild_id INTEGER PRIMARY KEY,
                 welcome_channel_id INTEGER,
                 help_channel_id INTEGER,
+                guest_role_name TEXT DEFAULT 'Guest',
+                review_channel_id INTEGER,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS referral_codes (
+                code TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL,
+                referrer_discord_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                used_by_discord_id INTEGER,
+                used_at TEXT,
+                status TEXT NOT NULL DEFAULT 'ACTIVE'
+            );
+
+            CREATE TABLE IF NOT EXISTS guest_tickets (
+                ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                applicant_id INTEGER NOT NULL,
+                referrer_id INTEGER,
+                channel_id INTEGER NOT NULL,
+                referral_code TEXT,
+                reason TEXT,
+                vouch_note TEXT,
+                status TEXT NOT NULL DEFAULT 'OPEN',
+                created_at TEXT NOT NULL,
+                closed_at TEXT,
+                closed_by_admin_id INTEGER
             );
 
             CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log(event_type);
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
             CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_log(user_id);
             CREATE INDEX IF NOT EXISTS idx_verifications_faculty ON verifications(faculty_code);
+            CREATE INDEX IF NOT EXISTS idx_referral_guild_referrer ON referral_codes(guild_id, referrer_discord_id);
+            CREATE INDEX IF NOT EXISTS idx_referral_status ON referral_codes(status);
+            CREATE INDEX IF NOT EXISTS idx_guest_tickets_guild ON guest_tickets(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_guest_tickets_channel ON guest_tickets(channel_id);
+            CREATE INDEX IF NOT EXISTS idx_guest_tickets_applicant ON guest_tickets(applicant_id);
             """
         )
+
+        # Migration helper for existing databases: ensure new columns in guild_settings exist
+        cursor = await self._conn.execute("PRAGMA table_info(guild_settings);")
+        existing_cols = {row[1] for row in await cursor.fetchall()}
+        for col, col_def in [("guest_role_name", "TEXT DEFAULT 'Guest'"), ("review_channel_id", "INTEGER")]:
+            if col not in existing_cols:
+                await self._conn.execute(f"ALTER TABLE guild_settings ADD COLUMN {col} {col_def};")
 
         cursor = await self._conn.execute("PRAGMA user_version;")
         row = await cursor.fetchone()
@@ -253,12 +294,15 @@ class Database:
             )
         return await cursor.fetchall()
 
-    async def get_guild_settings(self, guild_id: int) -> tuple[int | None, int | None] | None:
-        """Returns (welcome_channel_id, help_channel_id) for the given guild, or None if not set."""
+    async def get_guild_settings(
+        self, guild_id: int
+    ) -> tuple[int | None, int | None, str | None, int | None] | None:
+        """Returns (welcome_channel_id, help_channel_id, guest_role_name, review_channel_id) for the given guild, or None."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         cursor = await self._conn.execute(
-            "SELECT welcome_channel_id, help_channel_id FROM guild_settings WHERE guild_id = ?",
+            """SELECT welcome_channel_id, help_channel_id, guest_role_name, review_channel_id
+               FROM guild_settings WHERE guild_id = ?""",
             (guild_id,),
         )
         return await cursor.fetchone()
@@ -292,4 +336,270 @@ class Database:
             (guild_id, channel_id, ts),
         )
         await self._conn.commit()
+
+    async def set_guild_guest_role(self, guild_id: int, guest_role_name: str | None) -> None:
+        """Sets or clears the custom guest role name for a guild (defaults to 'Guest' if None)."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        role_to_set = guest_role_name.strip() if guest_role_name else "Guest"
+        await self._conn.execute(
+            """INSERT INTO guild_settings (guild_id, guest_role_name, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET
+                   guest_role_name = excluded.guest_role_name,
+                   updated_at = excluded.updated_at""",
+            (guild_id, role_to_set, ts),
+        )
+        await self._conn.commit()
+
+    async def set_guild_review_channel(self, guild_id: int, channel_id: int | None) -> None:
+        """Sets or clears the designated parent review channel for private guest threads."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        await self._conn.execute(
+            """INSERT INTO guild_settings (guild_id, review_channel_id, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET
+                   review_channel_id = excluded.review_channel_id,
+                   updated_at = excluded.updated_at""",
+            (guild_id, channel_id, ts),
+        )
+        await self._conn.commit()
+
+    async def create_referral_code(
+        self, code: str, guild_id: int, referrer_discord_id: int, expires_at: str
+    ) -> None:
+        """Saves a newly generated referral code."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        await self._conn.execute(
+            """INSERT INTO referral_codes (code, guild_id, referrer_discord_id, created_at, expires_at, status)
+               VALUES (?, ?, ?, ?, ?, 'ACTIVE')""",
+            (code, guild_id, referrer_discord_id, ts, expires_at),
+        )
+        await self._conn.commit()
+
+    async def get_referral_code(self, code: str, guild_id: int) -> dict[str, Any] | None:
+        """Fetches referral code information."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT code, guild_id, referrer_discord_id, created_at, expires_at, used_by_discord_id, used_at, status
+               FROM referral_codes WHERE code = ? AND guild_id = ?""",
+            (code.strip().upper(), guild_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "code": row[0],
+            "guild_id": row[1],
+            "referrer_discord_id": row[2],
+            "created_at": row[3],
+            "expires_at": row[4],
+            "used_by_discord_id": row[5],
+            "used_at": row[6],
+            "status": row[7],
+        }
+
+    async def count_active_referrals_for_user(self, guild_id: int, referrer_discord_id: int) -> int:
+        """Counts how many active (unexpired, unused) referral codes a student currently holds."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self._conn.execute(
+            """SELECT COUNT(*) FROM referral_codes
+               WHERE guild_id = ? AND referrer_discord_id = ?
+               AND status IN ('ACTIVE', 'PENDING_APPROVAL')
+               AND expires_at > ?""",
+            (guild_id, referrer_discord_id, ts),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def get_user_referrals(
+        self, guild_id: int, referrer_discord_id: int, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Lists referral codes created by a user."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT code, created_at, expires_at, used_by_discord_id, status
+               FROM referral_codes
+               WHERE guild_id = ? AND referrer_discord_id = ?
+               ORDER BY created_at DESC LIMIT ?""",
+            (guild_id, referrer_discord_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "code": r[0],
+                "created_at": r[1],
+                "expires_at": r[2],
+                "used_by_discord_id": r[3],
+                "status": r[4],
+            }
+            for r in rows
+        ]
+
+    async def update_referral_code_status(
+        self, code: str, guild_id: int, status: str, used_by_discord_id: int | None = None
+    ) -> bool:
+        """Updates referral code status (e.g., PENDING_APPROVAL, USED, REJECTED, ACTIVE)."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        if used_by_discord_id is not None:
+            cursor = await self._conn.execute(
+                """UPDATE referral_codes
+                   SET status = ?, used_by_discord_id = ?, used_at = ?
+                   WHERE code = ? AND guild_id = ?""",
+                (status, used_by_discord_id, ts, code.strip().upper(), guild_id),
+            )
+        else:
+            cursor = await self._conn.execute(
+                """UPDATE referral_codes
+                   SET status = ?
+                   WHERE code = ? AND guild_id = ?""",
+                (status, code.strip().upper(), guild_id),
+            )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def create_guest_ticket(
+        self,
+        guild_id: int,
+        applicant_id: int,
+        channel_id: int,
+        referrer_id: int | None = None,
+        referral_code: str | None = None,
+        reason: str | None = None,
+    ) -> int:
+        """Creates a guest ticket record and returns its ticket_id."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self._conn.execute(
+            """INSERT INTO guest_tickets
+               (guild_id, applicant_id, referrer_id, channel_id, referral_code, reason, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+            (guild_id, applicant_id, referrer_id, channel_id, referral_code, reason, ts),
+        )
+        await self._conn.commit()
+        return cursor.lastrowid or 0
+
+    async def get_guest_ticket_by_channel(self, channel_id: int) -> dict[str, Any] | None:
+        """Fetches guest ticket by thread/channel ID."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
+                      reason, vouch_note, status, created_at, closed_at, closed_by_admin_id
+               FROM guest_tickets WHERE channel_id = ?""",
+            (channel_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "ticket_id": row[0],
+            "guild_id": row[1],
+            "applicant_id": row[2],
+            "referrer_id": row[3],
+            "channel_id": row[4],
+            "referral_code": row[5],
+            "reason": row[6],
+            "vouch_note": row[7],
+            "status": row[8],
+            "created_at": row[9],
+            "closed_at": row[10],
+            "closed_by_admin_id": row[11],
+        }
+
+    async def get_guest_ticket_by_id(self, ticket_id: int) -> dict[str, Any] | None:
+        """Fetches guest ticket by ticket ID."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
+                      reason, vouch_note, status, created_at, closed_at, closed_by_admin_id
+               FROM guest_tickets WHERE ticket_id = ?""",
+            (ticket_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "ticket_id": row[0],
+            "guild_id": row[1],
+            "applicant_id": row[2],
+            "referrer_id": row[3],
+            "channel_id": row[4],
+            "referral_code": row[5],
+            "reason": row[6],
+            "vouch_note": row[7],
+            "status": row[8],
+            "created_at": row[9],
+            "closed_at": row[10],
+            "closed_by_admin_id": row[11],
+        }
+
+    async def get_open_guest_ticket_for_applicant(
+        self, guild_id: int, applicant_id: int
+    ) -> dict[str, Any] | None:
+        """Checks if the user already has an active open ticket in this guild."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
+                      reason, vouch_note, status, created_at
+               FROM guest_tickets
+               WHERE guild_id = ? AND applicant_id = ? AND status = 'OPEN'""",
+            (guild_id, applicant_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "ticket_id": row[0],
+            "guild_id": row[1],
+            "applicant_id": row[2],
+            "referrer_id": row[3],
+            "channel_id": row[4],
+            "referral_code": row[5],
+            "reason": row[6],
+            "vouch_note": row[7],
+            "status": row[8],
+            "created_at": row[9],
+        }
+
+    async def update_guest_ticket_vouch(self, ticket_id: int, vouch_note: str) -> bool:
+        """Saves a student vouch statement on a guest ticket."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            "UPDATE guest_tickets SET vouch_note = ? WHERE ticket_id = ?",
+            (vouch_note, ticket_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def close_guest_ticket(
+        self, ticket_id: int, status: str, closed_by_admin_id: int | None = None
+    ) -> bool:
+        """Closes a guest ticket with status ('APPROVED', 'REJECTED', 'EXPIRED')."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self._conn.execute(
+            """UPDATE guest_tickets
+               SET status = ?, closed_at = ?, closed_by_admin_id = ?
+               WHERE ticket_id = ?""",
+            (status, ts, closed_by_admin_id, ticket_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
 

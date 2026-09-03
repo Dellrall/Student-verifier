@@ -12,10 +12,12 @@ import discord
 from discord.ext import commands
 
 from tarveri.cogs.admin_cog import AdminCog
+from tarveri.cogs.guest_cog import GuestCog, GuestReviewThreadView, VerificationGatewayView
 from tarveri.cogs.verification_cog import VerificationCog
 from tarveri.config import Settings, setup_logger
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.services.guest_service import GuestService
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
 
@@ -28,18 +30,27 @@ class TARVeriBot(commands.Bot):
         intents.members = True
         intents.message_content = True
 
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(
+            command_prefix=commands.when_mentioned_or("!"),
+            intents=intents,
+            help_command=None,
+        )
         self.settings = settings
-        self.db = Database(settings.db_path)
+        self.db = Database(settings.database_path)
         self.rate_limiter = RateLimiter(
-            max_attempts=settings.rate_limit_max_attempts,
-            window_seconds=settings.rate_limit_window_seconds,
+            limit=settings.rate_limit_requests,
+            window=settings.rate_limit_window_seconds,
         )
         self.service = VerificationService(
             bot=self,
             db=self.db,
             secret=settings.id_hash_secret,
             rate_limiter=self.rate_limiter,
+        )
+        self.guest_service = GuestService(
+            bot=self,
+            db=self.db,
+            admin_role_name=settings.admin_role_name,
         )
         self.update_checker = (
             UpdateCheckerService(
@@ -54,10 +65,10 @@ class TARVeriBot(commands.Bot):
         )
 
     async def setup_hook(self) -> None:
-        """Initializes database and registers cogs during bot startup."""
+        """Initializes database and registers cogs and persistent views during bot startup."""
         await self.db.connect()
 
-        # Add verification & admin cogs
+        # Add cogs
         await self.add_cog(
             VerificationCog(
                 bot=self,
@@ -77,10 +88,22 @@ class TARVeriBot(commands.Bot):
                 update_checker=self.update_checker,
             )
         )
+        await self.add_cog(
+            GuestCog(
+                bot=self,
+                db=self.db,
+                guest_service=self.guest_service,
+                verification_service=self.service,
+            )
+        )
+
+        # Register persistent views so buttons work across bot reboots
+        self.add_view(VerificationGatewayView(self.service, self.guest_service))
+        self.add_view(GuestReviewThreadView(self.guest_service))
 
         # Sync application commands
         await self.tree.sync()
-        logger.info("Database connected, cogs loaded, and application command tree synced.")
+        logger.info("Database connected, cogs loaded, persistent views registered, and command tree synced.")
 
         if self.update_checker:
             self.update_checker.start()
@@ -98,12 +121,19 @@ class TARVeriBot(commands.Bot):
                 row = await self.db.get_guild_settings(guild.id)
                 w_id = row[0] if row else None
                 h_id = row[1] if row else None
+                g_role = row[2] if row and row[2] else "Guest"
+                r_id = row[3] if row and len(row) > 3 else None
+
                 w_ch = guild.get_channel(w_id) if w_id else None
                 h_ch = guild.get_channel(h_id) if h_id else None
+                r_ch = guild.get_channel(r_id) if r_id else None
 
                 w_info = f"#{w_ch.name} (ID: {w_id})" if w_ch else (f"ID: {w_id} (missing)" if w_id else "Auto-detect")
                 h_info = f"#{h_ch.name} (ID: {h_id})" if h_ch else (f"ID: {h_id} (missing)" if h_id else "Auto-detect")
-                logger.info(f" • Server '{guild.name}' (ID: {guild.id}) -> Welcome: {w_info} | Help: {h_info}")
+                r_info = f"#{r_ch.name} (ID: {r_id})" if r_ch else (f"ID: {r_id}" if r_id else "Auto-detect")
+                logger.info(
+                    f" • Server '{guild.name}' (ID: {guild.id}) -> Welcome: {w_info} | Help: {h_info} | Guest Role: '{g_role}' | Review Ch: {r_info}"
+                )
             logger.info("==================================================================")
 
     async def close(self) -> None:
