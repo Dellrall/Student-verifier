@@ -51,6 +51,7 @@ class TARVeriBot(commands.Bot):
             bot=self,
             db=self.db,
             admin_role_name=settings.admin_role_name,
+            rate_limiter=self.rate_limiter,
         )
         self.update_checker = (
             UpdateCheckerService(

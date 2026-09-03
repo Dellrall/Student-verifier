@@ -14,6 +14,7 @@ from typing import Any
 import discord
 
 from tarveri.database import Database
+from tarveri.rate_limiter import RateLimiter
 
 logger = logging.getLogger("tarveri")
 
@@ -28,10 +29,17 @@ def generate_code_string(length: int = 6) -> str:
 
 
 class GuestService:
-    def __init__(self, bot: discord.Client, db: Database, admin_role_name: str = "TARVeri Admin"):
+    def __init__(
+        self,
+        bot: discord.Client,
+        db: Database,
+        admin_role_name: str = "TARVeri Admin",
+        rate_limiter: RateLimiter | None = None,
+    ):
         self.bot = bot
         self.db = db
         self.admin_role_name = admin_role_name
+        self.rate_limiter = rate_limiter
         self._lock = asyncio.Lock()
 
     async def create_referral_code(
@@ -78,20 +86,21 @@ class GuestService:
         """
         Validates whether a referral code is usable in this guild.
         Returns (is_valid, error_reason_if_any, code_record).
+        Uses a uniform generic error message to prevent oracle/enumeration attacks.
         """
+        generic_error = "❌ Invalid, expired, or already used referral code. Please check with your friend and try again."
         normalized = code.strip().upper()
         record = await self.db.get_referral_code(normalized, guild_id)
         if not record:
-            return False, "❌ Invalid referral code. Please double-check the code and try again.", None
+            return False, generic_error, None
 
         if record["status"] != "ACTIVE":
-            status_text = record["status"].lower().replace("_", " ")
-            return False, f"❌ This referral code is already **{status_text}**.", record
+            return False, generic_error, record
 
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         if record["expires_at"] <= now_str:
             await self.db.update_referral_code_status(normalized, guild_id, "EXPIRED")
-            return False, "❌ This referral code has expired.", record
+            return False, generic_error, record
 
         return True, "", record
 
@@ -212,7 +221,24 @@ class GuestService:
         Creates a private review thread, invites the applicant & referring student,
         and posts the review embed with action buttons.
         """
-        # 1. Prevent duplicate open tickets
+        # 1. Rate limiting on guest/referral attempts
+        if self.rate_limiter:
+            if self.rate_limiter.is_rate_limited(applicant.id):
+                await self.db.log(
+                    "WARNING",
+                    "RATE_LIMITED",
+                    f"{applicant} exceeded guest application attempt limit",
+                    user_id=applicant.id,
+                    guild=guild,
+                )
+                return (
+                    False,
+                    "⏳ You've made too many attempts recently. Please wait a few minutes before trying again.",
+                    None,
+                )
+            self.rate_limiter.record_attempt(applicant.id)
+
+        # 2. Prevent duplicate open tickets
         existing_open = await self.db.get_open_guest_ticket_for_applicant(guild.id, applicant.id)
         if existing_open:
             return (
@@ -221,7 +247,7 @@ class GuestService:
                 None,
             )
 
-        # 2. If referral code is used, validate and lock code status
+        # 3. If referral code is used, validate and lock code status
         if referral_code:
             is_valid, err_msg, record = await self.validate_referral_code(guild.id, referral_code)
             if not is_valid or not record:

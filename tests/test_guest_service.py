@@ -55,7 +55,7 @@ async def test_create_and_validate_referral_code(tmp_path):
     # 5. Invalid code validation
     is_valid_fake, err_fake, _ = await service.validate_referral_code(guild_id, "TAR-INVALID")
     assert is_valid_fake is False
-    assert "Invalid referral code" in err_fake
+    assert "Invalid, expired, or already used" in err_fake
 
     # 6. Wrong guild code validation
     is_valid_wrong_guild, err_wg, _ = await service.validate_referral_code(111222, code)
