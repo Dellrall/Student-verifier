@@ -260,8 +260,15 @@ class VerificationCog(commands.Cog, name="Verification"):
         return None
 
     def is_unverified_member(self, member: discord.Member) -> bool:
-        """Checks if a member does not hold any TARVeri faculty role."""
-        return not any(r.name in FACULTY_ROLE_NAMES for r in member.roles)
+        """Checks if a member does not hold any TARVeri faculty role or approved guest role."""
+        if any(r.name in FACULTY_ROLE_NAMES for r in member.roles):
+            return False
+        # Treat members with Guest roles as verified
+        for r in member.roles:
+            norm = r.name.lower().replace(" ", "")
+            if "guest" in norm:
+                return False
+        return True
 
     async def handle_help_channel_message(self, message: discord.Message) -> None:
         """Alerts unverified members asking about roles with helpful verification tips."""

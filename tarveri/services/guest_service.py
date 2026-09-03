@@ -128,30 +128,76 @@ class GuestService:
         return None
 
     async def get_or_create_guest_role(self, guild: discord.Guild) -> discord.Role | None:
-        """Retrieves or creates the configured Guest role for the guild."""
+        """
+        Retrieves the guest role for the guild.
+        First checks server configuration in DB, then searches for existing roles matching
+        'Guest(Approved)', 'Guest (Approved)', 'Guest', etc.
+        Only creates a new 'Guest(Approved)' role if no matching guest role exists.
+        """
         settings = await self.db.get_guild_settings(guild.id)
-        role_name = (settings[2] if settings and settings[2] else "Guest").strip()
-        role = discord.utils.get(guild.roles, name=role_name)
-        if role:
-            return role
+        configured_name = settings[2].strip() if settings and settings[2] else None
 
+        # 1. If explicitly configured, search by configured name first
+        if configured_name:
+            role = discord.utils.get(guild.roles, name=configured_name)
+            if role:
+                return role
+            for r in guild.roles:
+                if r.name.lower() == configured_name.lower():
+                    return r
+
+        # 2. Search for existing roles in priority order (Guest(Approved), Guest (Approved), Guest, etc.)
+        known_aliases = [
+            "Guest(Approved)",
+            "Guest (Approved)",
+            "Guest",
+            "Approved Guest",
+            "Guest(approved)",
+            "Guest (approved)",
+        ]
+        for alias in known_aliases:
+            role = discord.utils.get(guild.roles, name=alias)
+            if role:
+                return role
+
+        # Fuzzy check across existing server roles
+        for r in guild.roles:
+            normalized_name = r.name.lower().replace(" ", "").replace("_", "")
+            if normalized_name in ("guest(approved)", "guestapproved", "guest"):
+                return r
+
+        # 3. If no existing guest role was found, auto-create "Guest(Approved)"
         if not guild.me.guild_permissions.manage_roles:
             return None
 
+        role_name_to_create = configured_name or "Guest(Approved)"
         try:
+            permissions = discord.Permissions(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True,
+                add_reactions=True,
+                use_external_emojis=True,
+                connect=True,
+                speak=True,
+                use_voice_activation=True,
+            )
             role = await guild.create_role(
-                name=role_name,
-                reason="TARVeri: Auto-created guest role for guest entry",
+                name=role_name_to_create,
+                permissions=permissions,
+                reason="TARVeri: Auto-created Guest(Approved) role for verified guests",
             )
             await self.db.log(
                 "INFO",
                 "ROLE_CREATED",
-                f"Created guest role '{role_name}' in '{guild.name}' (Guild ID: {guild.id})",
+                f"Created guest role '{role_name_to_create}' in '{guild.name}' (Guild ID: {guild.id})",
                 guild=guild,
             )
             return role
         except discord.HTTPException as e:
-            logger.warning(f"Could not create guest role '{role_name}' in '{guild.name}': {e}")
+            logger.warning(f"Could not create guest role '{role_name_to_create}' in '{guild.name}': {e}")
             return None
 
     async def open_guest_review_ticket(

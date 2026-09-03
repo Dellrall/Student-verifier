@@ -197,3 +197,44 @@ async def test_guest_ticket_approval_and_rejection_lifecycle(tmp_path):
     assert ticket2_after["status"] == "REJECTED"
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_guest_role_finds_existing(tmp_path):
+    db_path = str(tmp_path / "role_reuse_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock(spec=discord.Client)
+    service = GuestService(bot, db)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 112233
+    guild.name = "Role Test Guild"
+
+    # Server already has an existing "Guest(Approved)" role
+    existing_guest_role = MagicMock(spec=discord.Role)
+    existing_guest_role.name = "Guest(Approved)"
+    guild.roles = [existing_guest_role]
+    guild.create_role = AsyncMock()
+
+    found_role = await service.get_or_create_guest_role(guild)
+    assert found_role == existing_guest_role
+    # Should not have called create_role because existing role was found
+    guild.create_role.assert_not_called()
+
+    # If role doesn't exist, create_role is called
+    guild.roles = []
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    new_role = MagicMock(spec=discord.Role)
+    new_role.name = "Guest(Approved)"
+    guild.create_role = AsyncMock(return_value=new_role)
+
+    created = await service.get_or_create_guest_role(guild)
+    assert created == new_role
+    guild.create_role.assert_called_once()
+    assert guild.create_role.call_args[1]["name"] == "Guest(Approved)"
+
+    await db.close()
+
