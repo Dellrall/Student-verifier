@@ -111,31 +111,13 @@ class TARVeriBot(commands.Bot):
 
     async def on_ready(self) -> None:
         if self.user:
+            total_verified = await self.db.total_verified()
+            guild_names = [g.name for g in self.guilds]
             await self.db.log(
                 "INFO",
                 "STARTUP",
-                f"Logged in as {self.user} (ID: {self.user.id}); in {len(self.guilds)} server(s): "
-                f"{[g.name for g in self.guilds]}",
+                f"Logged in as {self.user} (ID: {self.user.id}) | Connected to {len(self.guilds)} server(s): {guild_names} | Total verified students: {total_verified}",
             )
-            logger.info("=== Per-Server Channel Configurations (SQLite guild_settings) ===")
-            for guild in self.guilds:
-                row = await self.db.get_guild_settings(guild.id)
-                w_id = row[0] if row else None
-                h_id = row[1] if row else None
-                g_role = row[2] if row and row[2] else "Guest"
-                r_id = row[3] if row and len(row) > 3 else None
-
-                w_ch = guild.get_channel(w_id) if w_id else None
-                h_ch = guild.get_channel(h_id) if h_id else None
-                r_ch = guild.get_channel(r_id) if r_id else None
-
-                w_info = f"#{w_ch.name} (ID: {w_id})" if w_ch else (f"ID: {w_id} (missing)" if w_id else "Auto-detect")
-                h_info = f"#{h_ch.name} (ID: {h_id})" if h_ch else (f"ID: {h_id} (missing)" if h_id else "Auto-detect")
-                r_info = f"#{r_ch.name} (ID: {r_id})" if r_ch else (f"ID: {r_id}" if r_id else "Auto-detect")
-                logger.info(
-                    f" • Server '{guild.name}' (ID: {guild.id}) -> Welcome: {w_info} | Help: {h_info} | Guest Role: '{g_role}' | Review Ch: {r_info}"
-                )
-            logger.info("==================================================================")
 
     async def close(self) -> None:
         """Gracefully tears down the bot, logs shutdown, and flushes SQLite WAL."""

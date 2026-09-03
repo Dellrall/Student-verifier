@@ -175,8 +175,15 @@ class VerificationService:
         5. Role assignment across mutual guilds
         6. Atomic database recording with rollback on collision
         """
+        guild_ctx = getattr(user, "guild", None)
         if self.rate_limiter.is_rate_limited(user.id):
-            await self.db.log("WARNING", "RATE_LIMITED", f"{user} hit the attempt limit", user_id=user.id)
+            await self.db.log(
+                "WARNING",
+                "RATE_LIMITED",
+                f"{user} hit the attempt limit",
+                user_id=user.id,
+                guild=guild_ctx,
+            )
             return (
                 "⏳ You've made too many verification attempts. Please wait a few minutes "
                 "and try again, or contact an admin if this is a mistake."
@@ -225,6 +232,7 @@ class VerificationService:
                     f"{user} (ID: {user.id}) tried to reuse a student ID "
                     f"(masked: {mask_student_id(student_id)}) already bound to account ID {existing_for_id[0]}",
                     user_id=user.id,
+                    guild=guild_ctx,
                 )
                 return (
                     "❌ This student ID has already been used to verify a different Discord "
@@ -247,6 +255,7 @@ class VerificationService:
                         f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}) "
                         f"→ role '{role_name}' in {[g for g, _ in sync_result.verified_in]}",
                         user_id=user.id,
+                        guild=guild_ctx,
                     )
                 except (sqlite3.IntegrityError, aiosqlite.IntegrityError) as e:
                     # Rollback assigned roles if database collision occurs
@@ -268,6 +277,7 @@ class VerificationService:
                         "INTEGRITY_CONFLICT",
                         f"Verification collision for {user} (ID: {user.id}): {e}",
                         user_id=user.id,
+                        guild=guild_ctx,
                     )
                     return (
                         "❌ Verification failed due to a collision (the student ID or your account was just verified elsewhere). "
