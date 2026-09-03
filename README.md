@@ -60,6 +60,10 @@ To safely pull upstream updates with automatic database backup, dependency sync,
 * `!verify` — Fallback prefix command.
 * Or DM your student ID (e.g. `23WMD09867`) directly to the bot.
 
+### Automated Server Assistance
+* **New Member Onboarding**: When a new unverified student joins the server, the bot tags them in the welcome/verification channel with clear verification instructions.
+* **Smart Role Help Tips**: When an unverified user asks questions like *"How to get role"* or mentions *"role"* in a help/support channel, the bot replies with helpful tips explaining how to verify.
+
 ### Admins
 * `/stats` — View verification numbers and faculty breakdown.
 * `/unverify @user` — Unlink a student ID and remove their roles.

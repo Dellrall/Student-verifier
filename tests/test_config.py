@@ -66,9 +66,34 @@ def test_settings_from_env(monkeypatch):
     monkeypatch.setenv("TARVERI_BOT_TOKEN", "mock_token")
     monkeypatch.setenv("TARVERI_ID_HASH_SECRET", "mock_secret")
     monkeypatch.setenv("TARVERI_UPDATE_STREAM", "refactor/modular-optimization")
+    monkeypatch.setenv("TARVERI_HELP_CHANNEL_ID", "1122334455")
+    monkeypatch.setenv("TARVERI_WELCOME_CHANNEL_ID", "6677889900")
 
     settings = Settings.from_env()
     assert settings.bot_token == "mock_token"
     assert settings.id_hash_secret == "mock_secret"
     assert settings.update_stream == "refactor/modular-optimization"
+    assert settings.help_channel_id == 1122334455
+    assert settings.welcome_channel_id == 6677889900
+
+
+def test_role_help_keywords_pattern():
+    from tarveri.config import ROLE_HELP_KEYWORDS_PATTERN
+
+    # Matching cases
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("How to get role?") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("how do i get a role") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("Where to verify") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("how to verify?") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("I need role please") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("can you give role") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("i have no role") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("claim role") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("faculty role") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("what is my role") is not None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("roles") is not None
+
+    # Non-matching cases
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("hello everyone") is None
+    assert ROLE_HELP_KEYWORDS_PATTERN.search("good morning") is None
 

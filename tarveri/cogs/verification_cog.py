@@ -4,14 +4,24 @@ Discord UI and Commands for Student Verification.
 
 from __future__ import annotations
 
+import logging
+import time
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from tarveri.config import FACULTY_ROLES
+from tarveri.config import (
+    FACULTY_ROLE_NAMES,
+    FACULTY_ROLES,
+    ROLE_HELP_KEYWORDS_PATTERN,
+    Settings,
+)
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.verification_service import VerificationService
+
+logger = logging.getLogger("tarveri")
 
 
 class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
@@ -34,11 +44,20 @@ class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
 
 
 class VerificationCog(commands.Cog, name="Verification"):
-    def __init__(self, bot: commands.Bot, db: Database, service: VerificationService, rate_limiter: RateLimiter):
+    def __init__(
+        self,
+        bot: commands.Bot,
+        db: Database,
+        service: VerificationService,
+        rate_limiter: RateLimiter,
+        settings: Settings | None = None,
+    ):
         self.bot = bot
         self.db = db
         self.service = service
         self.rate_limiter = rate_limiter
+        self.settings = settings or getattr(bot, "settings", None)
+        self._tip_cooldowns: dict[int, float] = {}
 
     @app_commands.command(
         name="verify",
@@ -145,9 +164,137 @@ class VerificationCog(commands.Cog, name="Verification"):
                 delete_after=20,
             )
 
+    def is_help_channel(self, channel: discord.TextChannel) -> bool:
+        """Determines if a channel is the designated help channel or autodetected by keyword & permission."""
+        if not isinstance(channel, discord.TextChannel):
+            return False
+
+        if self.settings and self.settings.help_channel_id:
+            if channel.id == self.settings.help_channel_id:
+                return True
+
+        # Check name keywords: help, support, bantuan, faq, verify, verification
+        keywords = ("help", "support", "bantuan", "faq", "verify", "verification")
+        name_lower = channel.name.lower()
+        matches_keyword = any(k in name_lower for k in keywords)
+
+        if not matches_keyword:
+            return False
+
+        # Verify default role (@everyone) can view and send messages (unverified users can chat)
+        if hasattr(channel, "permissions_for") and hasattr(channel.guild, "default_role"):
+            everyone_perms = channel.permissions_for(channel.guild.default_role)
+            return bool(everyone_perms.view_channel and everyone_perms.send_messages)
+
+        return True
+
+    def get_welcome_or_verify_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+        """Finds the best channel to tag newly joined members for verification."""
+        # 1. Configured welcome channel ID
+        if self.settings and self.settings.welcome_channel_id:
+            ch = guild.get_channel(self.settings.welcome_channel_id)
+            if isinstance(ch, discord.TextChannel):
+                return ch
+
+        # 2. Configured help channel ID
+        if self.settings and self.settings.help_channel_id:
+            ch = guild.get_channel(self.settings.help_channel_id)
+            if isinstance(ch, discord.TextChannel):
+                return ch
+
+        # Helper to check if bot can send messages in channel
+        def _can_bot_send(c: discord.TextChannel) -> bool:
+            if not hasattr(c, "permissions_for") or not hasattr(guild, "me") or not guild.me:
+                return True
+            perms = c.permissions_for(guild.me)
+            return bool(perms.view_channel and perms.send_messages)
+
+        # 3. Autodetect channel by priority keywords: welcome, verify, verification, start-here, help
+        keywords = ("welcome", "verify", "verification", "start-here", "gate", "rules", "help")
+        for kw in keywords:
+            for ch in guild.text_channels:
+                if kw in ch.name.lower() and _can_bot_send(ch):
+                    return ch
+
+        # 4. Guild system channel (standard Discord welcome channel)
+        if guild.system_channel and _can_bot_send(guild.system_channel):
+            return guild.system_channel
+
+        # 5. First text channel bot can send to
+        for ch in guild.text_channels:
+            if _can_bot_send(ch):
+                return ch
+
+        return None
+
+    def is_unverified_member(self, member: discord.Member) -> bool:
+        """Checks if a member does not hold any TARVeri faculty role."""
+        return not any(r.name in FACULTY_ROLE_NAMES for r in member.roles)
+
+    async def handle_help_channel_message(self, message: discord.Message) -> None:
+        """Alerts unverified members asking about roles with helpful verification tips."""
+        if not isinstance(message.author, discord.Member) or message.author.bot:
+            return
+
+        # Do not respond to commands or prefixes
+        prefix = self.bot.command_prefix
+        if isinstance(prefix, str) and message.content.startswith(prefix):
+            return
+        if message.content.startswith("/"):
+            return
+
+        # Only trigger for members who do not have any faculty role
+        if not self.is_unverified_member(message.author):
+            return
+
+        # Check if already verified in database
+        existing = await self.db.get_verification_by_user(message.author.id)
+        if existing:
+            return
+
+        # Check if message contains role inquiry keywords
+        if not ROLE_HELP_KEYWORDS_PATTERN.search(message.content):
+            return
+
+        # Rate limit tips per user (60-second cooldown) to avoid spamming chat
+        now = time.monotonic()
+        last_time = self._tip_cooldowns.get(message.author.id, 0.0)
+        if now - last_time < 60.0:
+            return
+        self._tip_cooldowns[message.author.id] = now
+
+        if len(self._tip_cooldowns) > 1000:
+            self._tip_cooldowns = {uid: t for uid, t in self._tip_cooldowns.items() if now - t < 60.0}
+
+        tip_text = (
+            f"👋 Hello {message.author.mention}! Looking to get your student/faculty role?\n\n"
+            f"Here is how to get verified:\n"
+            f"1️⃣ Type `/verify` in any channel to open the verification form and enter your TARUMT Student ID (e.g. `23WMD09867`).\n"
+            f"2️⃣ Or send your Student ID directly to me in a private DM!\n\n"
+            f"*(Once verified, your faculty role will be assigned automatically.)* 🎓"
+        )
+
+        try:
+            await message.reply(tip_text, mention_author=True)
+        except (discord.HTTPException, discord.Forbidden):
+            try:
+                await message.channel.send(tip_text)
+            except (discord.HTTPException, discord.Forbidden) as e:
+                logger.warning(f"Could not send role help tip in #{message.channel.name}: {e}")
+                return
+
+        if message.guild:
+            await self.db.log(
+                "INFO",
+                "ROLE_HELP_TIP",
+                f"Alerted unverified user {message.author} (ID: {message.author.id}) with role tips in #{message.channel.name}",
+                guild=message.guild,
+                user_id=message.author.id,
+            )
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        """Automatically assigns faculty roles if member is already verified, else prompts."""
+        """Automatically assigns faculty roles if member is already verified, else prompts and tags."""
         existing = await self.db.get_verification_by_user(member.id)
         if existing:
             _, stored_faculty, _ = existing
@@ -171,6 +318,29 @@ class VerificationCog(commands.Cog, name="Verification"):
                         pass
                     return
 
+        # New unverified member: Tag them in the server welcome/verification channel
+        welcome_channel = self.get_welcome_or_verify_channel(member.guild)
+        if welcome_channel:
+            welcome_tag_msg = (
+                f"👋 Welcome {member.mention} to **{member.guild.name}**! 🎓\n"
+                f"Please verify your TARUMT student status to receive your faculty role and unlock server access.\n"
+                f"• Type `/verify` in the server to submit your Student ID, or\n"
+                f"• Send your Student ID (e.g., `23WMD09867`) directly to me in a private DM!"
+            )
+            try:
+                await welcome_channel.send(welcome_tag_msg)
+                await self.db.log(
+                    "INFO",
+                    "MEMBER_JOIN_TAGGED",
+                    f"Tagged new member {member} (ID: {member.id}) for verification in #{welcome_channel.name}",
+                    guild=member.guild,
+                    user_id=member.id,
+                )
+            except (discord.HTTPException, discord.Forbidden) as e:
+                logger.warning(
+                    f"Failed to tag new member {member} in #{welcome_channel.name} ({member.guild.name}): {e}"
+                )
+
         try:
             await member.send(
                 f"🎓 Welcome to **{member.guild.name}**! Please verify your student status by typing "
@@ -187,12 +357,18 @@ class VerificationCog(commands.Cog, name="Verification"):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        """Handles student ID messages in direct messages (DMs)."""
-        if message.guild is None and not message.author.bot:
+        """Handles student ID messages in direct messages (DMs) and role tips in help channels."""
+        if message.author.bot:
+            return
+
+        if message.guild is None:
             if not message.content.startswith(self.bot.command_prefix):  # type: ignore
                 response = await self.service.perform_verification(message.author, message.content)
                 if response:
                     await message.author.send(response)
+        else:
+            if isinstance(message.channel, discord.TextChannel) and self.is_help_channel(message.channel):
+                await self.handle_help_channel_message(message)
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:

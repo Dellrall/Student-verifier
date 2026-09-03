@@ -33,6 +33,23 @@ FACULTY_ROLE_NAMES: Final[set[str]] = set(FACULTY_ROLES.values())
 # Pattern: 2 digits + 3 uppercase letters + 2 digits + 3 digits (e.g. 23WMD09867)
 STUDENT_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{2}[A-Z]{3}\d{2}\d{3}$")
 
+# Pattern matching role inquiries or help queries from members
+ROLE_HELP_KEYWORDS_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b("
+    r"how\s+(?:to|do\s+i)\s+get\s+(?:a\s+)?role|"
+    r"how\s+(?:to|do\s+i)\s+verify|"
+    r"where\s+(?:to|do\s+i)\s+verify|"
+    r"get\s+role|"
+    r"need\s+role|"
+    r"give\s+role|"
+    r"claim\s+role|"
+    r"no\s+role|"
+    r"faculty\s+role|"
+    r"roles?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -49,6 +66,8 @@ class Settings:
     enable_update_checker: bool = True
     update_check_interval_hours: int = 24
     update_stream: str = "auto"
+    help_channel_id: int | None = None
+    welcome_channel_id: int | None = None
 
     @classmethod
     def from_env(cls, validate: bool = True) -> Settings:
@@ -74,6 +93,12 @@ class Settings:
         ).strip()
         update_stream = update_stream_raw if update_stream_raw else "auto"
 
+        help_channel_raw = os.getenv("TARVERI_HELP_CHANNEL_ID", "").strip()
+        help_channel_id = int(help_channel_raw) if help_channel_raw.isdigit() else None
+
+        welcome_channel_raw = os.getenv("TARVERI_WELCOME_CHANNEL_ID", "").strip()
+        welcome_channel_id = int(welcome_channel_raw) if welcome_channel_raw.isdigit() else None
+
         if validate:
             if not bot_token:
                 raise RuntimeError(
@@ -95,6 +120,8 @@ class Settings:
             enable_update_checker=enable_update_checker,
             update_check_interval_hours=update_check_interval_hours,
             update_stream=update_stream,
+            help_channel_id=help_channel_id,
+            welcome_channel_id=welcome_channel_id,
         )
 
 

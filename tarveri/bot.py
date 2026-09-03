@@ -64,6 +64,7 @@ class TARVeriBot(commands.Bot):
                 db=self.db,
                 service=self.service,
                 rate_limiter=self.rate_limiter,
+                settings=self.settings,
             )
         )
         await self.add_cog(
