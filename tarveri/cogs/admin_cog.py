@@ -45,6 +45,7 @@ class AdminCog(commands.Cog, name="Admin"):
         return is_admin_or_has_role(interaction, self.admin_role_name)
 
     @app_commands.command(name="stats", description="View student verification statistics.")
+    @app_commands.default_permissions(administrator=True)
     async def stats(self, interaction: discord.Interaction) -> None:
         """Displays total verifications, faculty breakdown, and recent activity."""
         if not self._check_admin(interaction):
@@ -106,6 +107,7 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="unverify", description="Unlink a member's student ID and revoke faculty roles.")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(user="The Discord user to unverify", reason="Optional reason for unlinking")
     async def unverify(
         self, interaction: discord.Interaction, user: discord.User, reason: str = "Admin unverified"
@@ -156,6 +158,7 @@ class AdminCog(commands.Cog, name="Admin"):
         )
 
     @app_commands.command(name="audit", description="Query recent audit log entries.")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         limit="Number of entries to fetch (max 25)",
         event_type="Filter by event type (e.g. VERIFIED, RATE_LIMITED, ADMIN_UNVERIFY)",
@@ -197,6 +200,7 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="resync", description="Force resynchronization of verification roles.")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(user="User to resynchronize (defaults to yourself if omitted)")
     async def resync(self, interaction: discord.Interaction, user: discord.User | None = None) -> None:
         """Resyncs roles for a user across all shared guilds."""
@@ -244,6 +248,7 @@ class AdminCog(commands.Cog, name="Admin"):
         )
 
     @app_commands.command(name="backup", description="Create an immediate point-in-time database backup.")
+    @app_commands.default_permissions(administrator=True)
     async def backup(self, interaction: discord.Interaction) -> None:
         """Creates a consistent SQLite backup snapshot."""
         if not self._check_admin(interaction):
@@ -269,6 +274,7 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.followup.send(f"❌ Backup failed: {e}", ephemeral=True)
 
     @app_commands.command(name="sync_commands", description="Force sync application slash commands.")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(guild_only="Sync only to this guild (faster) or globally")
     async def sync_commands(self, interaction: discord.Interaction, guild_only: bool = False) -> None:
         """Manually forces a sync of the Discord application command tree."""
@@ -333,6 +339,7 @@ class AdminCog(commands.Cog, name="Admin"):
         name="check_updates",
         description="Check if bot updates are available from git upstream.",
     )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         stream="Optional branch/stream name to check against (defaults to configured stream)"
     )
@@ -387,6 +394,7 @@ class AdminCog(commands.Cog, name="Admin"):
         name="setwelcomec",
         description="Set or reset the server's welcome channel where new members are tagged to verify.",
     )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         channel="The text channel where new members will be tagged (leave empty to reset to auto-detect)"
     )
@@ -440,6 +448,7 @@ class AdminCog(commands.Cog, name="Admin"):
         name="sethelpc",
         description="Set or reset the server's help channel for automated role verification tips.",
     )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         channel="The text channel for role help tips (leave empty to reset to auto-detect)"
     )
@@ -493,6 +502,7 @@ class AdminCog(commands.Cog, name="Admin"):
         name="setguestrole",
         description="Set or reset the server's custom role name for verified guests (default: Guest).",
     )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(role_name="The name of the guest role (leave empty to reset to 'Guest')")
     async def setguestrole(
         self, interaction: discord.Interaction, role_name: str | None = None
@@ -531,6 +541,7 @@ class AdminCog(commands.Cog, name="Admin"):
         name="setreviewchannel",
         description="Set or reset the parent channel where private guest review threads are created.",
     )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(channel="The text channel for private review threads (leave empty for auto-detect)")
     async def setreviewchannel(
         self, interaction: discord.Interaction, channel: discord.TextChannel | None = None

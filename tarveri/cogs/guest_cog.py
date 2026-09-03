@@ -527,6 +527,7 @@ class GuestCog(commands.Cog, name="Guest"):
         name="send_gateway_panel",
         description="Send the interactive 3-button verification gateway panel to a channel.",
     )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(channel="Target channel (defaults to current channel)")
     async def send_gateway_panel(
         self, interaction: discord.Interaction, channel: discord.TextChannel | None = None
