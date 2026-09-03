@@ -11,12 +11,28 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${PROJECT_ROOT}"
 
-# Load environment configuration if available
+# Load environment configuration if available (safely without executing unquoted spaces)
 if [ -f "${PROJECT_ROOT}/.env" ]; then
-    # shellcheck source=/dev/null
-    set -a
-    source "${PROJECT_ROOT}/.env"
-    set +a
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Trim leading whitespace
+        line="${line#"${line%%[![:space:]]*}"}"
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            # Strip surrounding quotes if present, along with trailing comments
+            if [[ "$val" =~ ^\"(.*)\"[[:space:]]*(#.*)?$ ]]; then
+                val="${BASH_REMATCH[1]}"
+            elif [[ "$val" =~ ^\x27(.*)\x27[[:space:]]*(#.*)?$ ]]; then
+                val="${BASH_REMATCH[1]}"
+            else
+                val="${val%%#*}"
+                val="${val%"${val##*[![:space:]]}"}"
+            fi
+            export "$key=$val"
+        fi
+    done < "${PROJECT_ROOT}/.env"
 fi
 
 # Configuration
