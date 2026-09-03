@@ -28,8 +28,8 @@ class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
     student_id = discord.ui.TextInput(
         label="Student ID",
         placeholder="e.g. 23WMD09867",
-        min_length=10,
-        max_length=10,
+        min_length=7,
+        max_length=20,
         required=True,
     )
 
