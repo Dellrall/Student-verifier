@@ -36,10 +36,10 @@ class TARVeriBot(commands.Bot):
             help_command=None,
         )
         self.settings = settings
-        self.db = Database(settings.database_path)
+        self.db = Database(settings.db_path)
         self.rate_limiter = RateLimiter(
-            limit=settings.rate_limit_requests,
-            window=settings.rate_limit_window_seconds,
+            max_attempts=settings.rate_limit_max_attempts,
+            window_seconds=settings.rate_limit_window_seconds,
         )
         self.service = VerificationService(
             bot=self,

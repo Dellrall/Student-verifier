@@ -69,6 +69,14 @@ class Settings:
     help_channel_id: int | None = None
     welcome_channel_id: int | None = None
 
+    @property
+    def database_path(self) -> str:
+        return self.db_path
+
+    @property
+    def rate_limit_requests(self) -> int:
+        return self.rate_limit_max_attempts
+
     @classmethod
     def from_env(cls, validate: bool = True) -> Settings:
         bot_token = os.getenv("TARVERI_BOT_TOKEN", "")
