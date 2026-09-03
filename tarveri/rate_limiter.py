@@ -24,7 +24,7 @@ class RateLimiter:
         """Checks whether the user has exceeded the allowed attempt limit within the sliding window."""
         self._maybe_cleanup()
 
-        now = time.time()
+        now = time.monotonic()
         user_attempts = self._attempts.get(user_id)
         if not user_attempts:
             return False
@@ -40,7 +40,7 @@ class RateLimiter:
     def record_attempt(self, user_id: int) -> None:
         """Records an attempt for the user."""
         self._maybe_cleanup()
-        now = time.time()
+        now = time.monotonic()
         if user_id not in self._attempts:
             self._attempts[user_id] = [now]
         else:
@@ -55,13 +55,12 @@ class RateLimiter:
 
     def _maybe_cleanup(self) -> None:
         """Periodically cleans up expired keys to prevent memory leaks."""
-        now_mono = time.monotonic()
+        now = time.monotonic()
         # Run cleanup at most once per 60 seconds, or if tracked users exceed capacity
-        if (now_mono - self._last_cleanup < 60) and (len(self._attempts) < self.max_tracked_users):
+        if (now - self._last_cleanup < 60) and (len(self._attempts) < self.max_tracked_users):
             return
 
-        self._last_cleanup = now_mono
-        now = time.time()
+        self._last_cleanup = now
         expired_keys = []
         for uid, timestamps in self._attempts.items():
             valid = [t for t in timestamps if now - t < self.window_seconds]

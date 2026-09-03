@@ -43,6 +43,9 @@ class Database:
         # blocking on writes (verifications), which matters as guild count grows.
         await self._conn.execute("PRAGMA journal_mode = WAL;")
         await self._conn.execute("PRAGMA synchronous = NORMAL;")
+        await self._conn.execute("PRAGMA cache_size = -4000;")  # 4MB in-memory page cache
+        await self._conn.execute("PRAGMA temp_store = MEMORY;")  # Keep temp tables & sorts in RAM
+        await self._conn.execute("PRAGMA mmap_size = 67108864;")  # 64MB memory-mapped I/O
 
         await self._conn.executescript(
             """
@@ -603,4 +606,17 @@ class Database:
         )
         await self._conn.commit()
         return cursor.rowcount > 0
+
+    async def cleanup_expired_referrals(self) -> int:
+        """Bulk updates all expired active referral codes to EXPIRED status."""
+        if not self._conn:
+            return 0
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self._conn.execute(
+            """UPDATE referral_codes SET status = 'EXPIRED'
+               WHERE status = 'ACTIVE' AND expires_at <= ?""",
+            (ts,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount
 
