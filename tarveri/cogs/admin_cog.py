@@ -409,7 +409,7 @@ class AdminCog(commands.Cog, name="Admin"):
         await self.db.log(
             "INFO",
             "CONFIG_WELCOME_CHANNEL",
-            f"Admin {interaction.user} set welcome channel to '{channel.name if channel else 'Auto-detect'}' (ID: {channel_id})",
+            f"Admin {interaction.user} set welcome channel for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{channel.name if channel else 'Auto-detect'}' (Channel ID: {channel_id})",
             guild=interaction.guild,
             user_id=interaction.user.id,
         )
@@ -462,7 +462,7 @@ class AdminCog(commands.Cog, name="Admin"):
         await self.db.log(
             "INFO",
             "CONFIG_HELP_CHANNEL",
-            f"Admin {interaction.user} set help channel to '{channel.name if channel else 'Auto-detect'}' (ID: {channel_id})",
+            f"Admin {interaction.user} set help channel for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{channel.name if channel else 'Auto-detect'}' (Channel ID: {channel_id})",
             guild=interaction.guild,
             user_id=interaction.user.id,
         )

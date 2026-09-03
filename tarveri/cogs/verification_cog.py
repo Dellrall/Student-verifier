@@ -319,7 +319,7 @@ class VerificationCog(commands.Cog, name="Verification"):
             await self.db.log(
                 "INFO",
                 "ROLE_HELP_TIP",
-                f"Alerted unverified user {message.author} (ID: {message.author.id}) with role tips in #{message.channel.name}",
+                f"Alerted unverified user {message.author} (ID: {message.author.id}) with role tips in #{message.channel.name} of '{message.guild.name}' (Guild ID: {message.guild.id})",
                 guild=message.guild,
                 user_id=message.author.id,
             )
@@ -364,7 +364,7 @@ class VerificationCog(commands.Cog, name="Verification"):
                 await self.db.log(
                     "INFO",
                     "MEMBER_JOIN_TAGGED",
-                    f"Tagged new member {member} (ID: {member.id}) for verification in #{welcome_channel.name}",
+                    f"Tagged new member {member} (ID: {member.id}) for verification in #{welcome_channel.name} of '{member.guild.name}' (Guild ID: {member.guild.id})",
                     guild=member.guild,
                     user_id=member.id,
                 )

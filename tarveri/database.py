@@ -136,7 +136,8 @@ class Database:
     ) -> None:
         """Writes to both the DB audit table and standard application logger."""
         log_func = getattr(logger, level.lower(), logger.info)
-        log_func(f"[{event_type}] {message}")
+        guild_ctx = f" [{guild.name}]" if guild else ""
+        log_func(f"[{event_type}]{guild_ctx} {message}")
 
         if not self._conn:
             return
