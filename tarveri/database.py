@@ -164,7 +164,8 @@ class Database:
             os.remove(backup_path)
 
         # VACUUM INTO safely creates an atomic copy of active database
-        await self._conn.execute(f"VACUUM INTO '{backup_path}';")
+        safe_path = backup_path.replace("'", "''")
+        await self._conn.execute(f"VACUUM INTO '{safe_path}';")
         return backup_path
 
     async def log(

@@ -82,15 +82,25 @@ class AdminCog(commands.Cog, name="Admin"):
             guild_settings = await self.db.get_guild_settings(interaction.guild.id)
             w_id = guild_settings[0] if guild_settings else None
             h_id = guild_settings[1] if guild_settings else None
+            g_role = (
+                guild_settings[2]
+                if guild_settings and len(guild_settings) > 2 and guild_settings[2]
+                else "Guest(Approved)"
+            )
+            r_id = guild_settings[3] if guild_settings and len(guild_settings) > 3 else None
 
             w_ch = interaction.guild.get_channel(w_id) if w_id else None
             h_ch = interaction.guild.get_channel(h_id) if h_id else None
+            r_ch = interaction.guild.get_channel(r_id) if r_id else None
 
             w_display = w_ch.mention if w_ch else (f"`ID: {w_id}`" if w_id else "*Auto-detect*")
             h_display = h_ch.mention if h_ch else (f"`ID: {h_id}`" if h_id else "*Auto-detect*")
+            r_display = r_ch.mention if r_ch else (f"`ID: {r_id}`" if r_id else "*Auto-detect*")
 
             embed.add_field(name="Welcome Channel", value=w_display, inline=True)
             embed.add_field(name="Help Channel", value=h_display, inline=True)
+            embed.add_field(name="Guest Role", value=f"`{g_role}`", inline=True)
+            embed.add_field(name="Review Channel", value=r_display, inline=True)
 
         embed.set_footer(text=f"TARVeri Bot • Active in {len(self.bot.guilds)} servers")
         await interaction.followup.send(embed=embed, ephemeral=True)
