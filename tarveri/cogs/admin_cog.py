@@ -330,7 +330,7 @@ class AdminCog(commands.Cog, name="Admin"):
         if not ctx.guild or not isinstance(ctx.author, discord.Member):
             return
         if not (ctx.author.guild_permissions.administrator or any(r.name == self.admin_role_name for r in ctx.author.roles)):
-            await ctx.send("❌ You do not have permission to sync commands.", delete_after=10)
+            await ctx.send("❌ You do not have permission to sync commands.")
             return
 
         msg = await ctx.send("🔄 Syncing slash commands to this server...")
@@ -351,7 +351,6 @@ class AdminCog(commands.Cog, name="Admin"):
                 )
         except Exception as e:
             await msg.edit(content=f"❌ Failed to sync commands: {e}")
-        schedule_ttl_delete(msg, delay=60.0)
 
     @app_commands.command(
         name="check_updates",

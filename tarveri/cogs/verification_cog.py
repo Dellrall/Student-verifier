@@ -117,7 +117,7 @@ class VerificationCog(commands.Cog, name="Verification"):
             )
             msg = "⏳ You've made too many verification attempts. Please wait a few minutes before trying again."
             if ctx.guild is not None:
-                await ctx.send(f"{ctx.author.mention} {msg}", delete_after=15)
+                await ctx.send(f"{ctx.author.mention} {msg}")
             else:
                 await ctx.author.send(msg)
             return
@@ -151,8 +151,7 @@ class VerificationCog(commands.Cog, name="Verification"):
                 except discord.Forbidden:
                     pass
                 await ctx.send(
-                    f"{ctx.author.mention} Bro, you're already verified, you silly goose! 🪿🎓 Roles resynced! ✨",
-                    delete_after=15,
+                    f"{ctx.author.mention} Bro, you're already verified, you silly goose! 🪿🎓 Roles resynced! ✨"
                 )
                 return
 
@@ -163,14 +162,12 @@ class VerificationCog(commands.Cog, name="Verification"):
             )
             await ctx.send(
                 f"{ctx.author.mention} I've sent you a DM to continue verification. "
-                "You can also use `/verify` directly in this server!",
-                delete_after=15,
+                "You can also use `/verify` directly in this server!"
             )
         except discord.Forbidden:
             await ctx.send(
                 f"{ctx.author.mention} Your DMs are closed! Please use the `/verify` slash command "
-                "directly in this server (only you will see the response).",
-                delete_after=20,
+                "directly in this server (only you will see the response)."
             )
 
     def invalidate_guild_cache(self, guild_id: int | None = None) -> None:
