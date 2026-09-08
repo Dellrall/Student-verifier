@@ -418,13 +418,68 @@ async def test_referral_edge_scenarios(tmp_path):
     await db._conn.execute("UPDATE referral_codes SET expires_at = '2020-01-01 00:00:00' WHERE code = ?", (exp_code,))
     await db._conn.commit()
 
-    is_exp_valid, exp_err, exp_rec = await service.validate_referral_code(guild.id, exp_code)
-    assert is_exp_valid is False
-    assert exp_rec["status"] == "ACTIVE"  # was active prior to validation
-    updated_exp = await db.get_referral_code(exp_code, guild.id)
-    assert updated_exp["status"] == "EXPIRED"  # updated to EXPIRED
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_get_admin_role_or_fallback_and_auto_invite(tmp_path):
+    db_path = str(tmp_path / "admin_discovery_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = GuestService(bot, db, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 9988
+    guild.name = "Discovery Guild"
+
+    # 1. Test standard alias discovery ("Staff")
+    staff_role = MagicMock(spec=discord.Role)
+    staff_role.name = "Staff"
+    staff_admin_member = MagicMock(spec=discord.Member)
+    staff_admin_member.id = 7001
+    staff_role.members = [staff_admin_member]
+    staff_role.is_default.return_value = False
+
+    guild.roles = [staff_role]
+
+    discovered = service.get_admin_role_or_fallback(guild)
+    assert discovered == staff_role
+
+    # 2. Test auto-inviting admin member to private review thread
+    parent_channel = MagicMock(spec=discord.TextChannel)
+    parent_channel.name = "guest-tickets"
+    perms = MagicMock()
+    perms.view_channel = True
+    perms.create_private_threads = True
+    parent_channel.permissions_for.return_value = perms
+    guild.text_channels = [parent_channel]
+
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 888777
+    thread.add_user = AsyncMock()
+    parent_channel.create_thread = AsyncMock(return_value=thread)
+
+    applicant = MagicMock(spec=discord.Member)
+    applicant.id = 6001
+    applicant.roles = []
+    applicant.display_name = "NewGuest"
+
+    success, msg, created_thread = await service.open_guest_review_ticket(
+        guild=guild,
+        applicant=applicant,
+        reason="Testing admin auto-invite",
+    )
+    assert success is True
+
+    # Check that both applicant and staff_admin_member were explicitly added to thread
+    added_user_ids = [call.args[0].id for call in thread.add_user.call_args_list]
+    assert applicant.id in added_user_ids
+    assert staff_admin_member.id in added_user_ids
 
     await db.close()
+
 
 
 

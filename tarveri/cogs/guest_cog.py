@@ -22,13 +22,75 @@ from tarveri.utils import schedule_ttl_delete
 logger = logging.getLogger("tarveri")
 
 
+def get_admin_role_or_fallback(guild: discord.Guild, configured_role_name: str = "TARVeri Admin") -> discord.Role | None:
+    """
+    Intelligently discovers the server's administrator/moderator role in priority order:
+    1. Configured admin role name (e.g. 'TARVeri Admin' or custom setting)
+    2. Common administrative role names: 'Admin', 'Administrator', 'Staff', 'Moderator', 'Mod'
+    3. Server roles with Administrator or Manage Guild permissions.
+    """
+    if not guild or not hasattr(guild, "roles"):
+        return None
+
+    roles = list(guild.roles) if isinstance(guild.roles, (list, tuple, set)) else []
+    if not roles:
+        return None
+
+    if configured_role_name:
+        for r in roles:
+            if r.name == configured_role_name or r.name.lower() == configured_role_name.lower():
+                return r
+
+    aliases = (
+        "admin",
+        "administrator",
+        "administrators",
+        "staff",
+        "moderator",
+        "moderators",
+        "mod",
+        "mods",
+        "management",
+        "server admin",
+        "tarveri admin",
+    )
+    for alias in aliases:
+        for r in roles:
+            if r.name.lower() == alias:
+                return r
+
+    for r in reversed(roles):
+        if getattr(r, "is_default", lambda: False)():
+            continue
+        perms = getattr(r, "permissions", None)
+        if perms and (getattr(perms, "administrator", False) or getattr(perms, "manage_guild", False)):
+            return r
+
+    return None
+
+
+
+def get_admin_role_mention(guild: discord.Guild, admin_role_name: str = "TARVeri Admin") -> str:
+    """Returns a clickable role mention or owner mention if no admin role found."""
+    role = get_admin_role_or_fallback(guild, admin_role_name)
+    if role:
+        return role.mention
+    if getattr(guild, "owner", None):
+        return f"<@{guild.owner_id}>"
+    return "@here"
+
+
 def is_admin_or_has_role(interaction: discord.Interaction, admin_role_name: str) -> bool:
-    """Checks if the user has Administrator permission or the configured admin role."""
+    """Checks if the user has Administrator permission, the configured admin role, or standard admin roles."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return False
     if interaction.user.guild_permissions.administrator:
         return True
-    return any(r.name == admin_role_name for r in interaction.user.roles)
+    admin_role = get_admin_role_or_fallback(interaction.guild, admin_role_name)
+    if admin_role and admin_role in interaction.user.roles:
+        return True
+    return any(r.name.lower() == admin_role_name.lower() for r in interaction.user.roles)
+
 
 
 class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verification"):
@@ -100,6 +162,7 @@ class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral
                 content=f"{admin_mention} {vouch_prompt}",
                 embed=embed,
                 view=view,
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=True),
             )
 
         await interaction.followup.send(
@@ -159,6 +222,7 @@ class GuestApplicationModal(discord.ui.Modal, title="🌐 Guest Access Applicati
                 content=f"{admin_mention} New guest application from {interaction.user.mention}:",
                 embed=embed,
                 view=view,
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=True),
             )
 
         await interaction.followup.send(
@@ -258,13 +322,9 @@ class VouchModal(discord.ui.Modal, title="🤝 Confirm Referral Vouch"):
             await interaction.channel.send(
                 f"🤝 **Voucher {interaction.user.mention} confirmed vouch for <@{self.ticket['applicant_id']}>:**\n"
                 f"> {note}\n\n"
-                f"{admin_mention} **Step 1/2 of Double Verification complete!** Please review and click **`Approve Guest`** to admit or **`Reject / Veto`** to decline."
+                f"{admin_mention} **Step 1/2 of Double Verification complete!** Please review and click **`Approve Guest`** to admit or **`Reject / Veto`** to decline.",
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=True),
             )
-
-
-def get_admin_role_mention(guild: discord.Guild, admin_role_name: str) -> str:
-    role = discord.utils.get(guild.roles, name=admin_role_name)
-    return role.mention if role else "@Staff"
 
 
 def build_review_embed(

@@ -213,6 +213,56 @@ class GuestService:
             logger.warning(f"Could not create guest role '{role_name_to_create}' in '{guild.name}': {e}")
             return None
 
+    def get_admin_role_or_fallback(self, guild: discord.Guild) -> discord.Role | None:
+        """
+        Intelligently discovers the server's administrator or staff role in priority order:
+        1. Configured admin role name (e.g. self.admin_role_name or 'TARVeri Admin')
+        2. Common administrative role names: 'Admin', 'Administrator', 'Staff', 'Moderator', 'Mod'
+        3. Server roles with Administrator or Manage Guild permissions.
+        """
+        if not guild or not hasattr(guild, "roles"):
+            return None
+
+        roles = list(guild.roles) if isinstance(guild.roles, (list, tuple, set)) else []
+        if not roles:
+            return None
+
+        # 1. Configured name
+        if self.admin_role_name:
+            for r in roles:
+                if r.name == self.admin_role_name or r.name.lower() == self.admin_role_name.lower():
+                    return r
+
+        # 2. Known administrative aliases
+        aliases = (
+            "admin",
+            "administrator",
+            "administrators",
+            "staff",
+            "moderator",
+            "moderators",
+            "mod",
+            "mods",
+            "management",
+            "server admin",
+            "tarveri admin",
+        )
+        for alias in aliases:
+            for r in roles:
+                if r.name.lower() == alias:
+                    return r
+
+        # 3. Roles with Administrator or Manage Guild permissions (highest role first)
+        for r in reversed(roles):
+            if getattr(r, "is_default", lambda: False)():
+                continue
+            perms = getattr(r, "permissions", None)
+            if perms and (getattr(perms, "administrator", False) or getattr(perms, "manage_guild", False)):
+                return r
+
+        return None
+
+
     async def open_guest_review_ticket(
         self,
         guild: discord.Guild,
@@ -316,10 +366,10 @@ class GuestService:
                 logger.error(f"Failed to create private thread in #{parent_ch.name} ({guild.name}): {e}")
                 return False, f"❌ Failed to create private thread: {e}", None
 
-            # 8. Invite applicant and referrer
+            # 8. Invite applicant, referrer, and admin team members
             try:
                 await thread.add_user(applicant)
-            except discord.HTTPException:
+            except (discord.HTTPException, discord.Forbidden):
                 pass
 
             referrer_member: discord.Member | None = None
@@ -328,8 +378,24 @@ class GuestService:
                 if referrer_member:
                     try:
                         await thread.add_user(referrer_member)
-                    except discord.HTTPException:
+                    except (discord.HTTPException, discord.Forbidden):
                         pass
+
+            # Auto-invite admin team members to private review thread
+            admin_role = self.get_admin_role_or_fallback(guild)
+            if admin_role and hasattr(admin_role, "members") and admin_role.members:
+                for adm_m in admin_role.members[:10]:
+                    if adm_m.id not in (applicant.id, referrer_id):
+                        try:
+                            await thread.add_user(adm_m)
+                        except (discord.HTTPException, discord.Forbidden):
+                            pass
+            elif getattr(guild, "owner", None) and guild.owner.id not in (applicant.id, referrer_id):
+                try:
+                    await thread.add_user(guild.owner)
+                except (discord.HTTPException, discord.Forbidden):
+                    pass
+
 
             # 9. Save ticket to database
             ticket_id = await self.db.create_guest_ticket(

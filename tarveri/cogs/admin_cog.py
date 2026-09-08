@@ -17,12 +17,17 @@ from tarveri.utils import schedule_ttl_delete
 
 
 def is_admin_or_has_role(interaction: discord.Interaction, admin_role_name: str) -> bool:
-    """Checks if invoking user has Administrator permission or the configured Admin role."""
+    """Checks if invoking user has Administrator permission, the configured Admin role, or a standard admin/staff role."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return False
     if interaction.user.guild_permissions.administrator:
         return True
-    return any(r.name == admin_role_name for r in interaction.user.roles)
+    from tarveri.cogs.guest_cog import get_admin_role_or_fallback
+    admin_role = get_admin_role_or_fallback(interaction.guild, admin_role_name)
+    if admin_role and admin_role in interaction.user.roles:
+        return True
+    return any(r.name.lower() == admin_role_name.lower() for r in interaction.user.roles)
+
 
 
 class AdminCog(commands.Cog, name="Admin"):
