@@ -766,6 +766,55 @@ class Database:
         await self._conn.commit()
         return cursor.rowcount > 0
 
+    async def list_guest_tickets(
+        self, guild_id: int, status: str | None = None, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """Returns recent guest tickets for a guild, optionally filtered by status."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        if status:
+            cursor = await self._conn.execute(
+                """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
+                          reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
+                          closed_by_admin_id, close_reason, ticket_seq
+                   FROM guest_tickets
+                   WHERE guild_id = ? AND status = ?
+                   ORDER BY ticket_id DESC LIMIT ?""",
+                (guild_id, status.upper(), limit),
+            )
+        else:
+            cursor = await self._conn.execute(
+                """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
+                          reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
+                          closed_by_admin_id, close_reason, ticket_seq
+                   FROM guest_tickets
+                   WHERE guild_id = ?
+                   ORDER BY ticket_id DESC LIMIT ?""",
+                (guild_id, limit),
+            )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "ticket_id": r[0],
+                "guild_id": r[1],
+                "applicant_id": r[2],
+                "referrer_id": r[3],
+                "channel_id": r[4],
+                "referral_code": r[5],
+                "reason": r[6],
+                "vouch_note": r[7],
+                "vouched_by_id": r[8],
+                "vouched_at": r[9],
+                "status": r[10],
+                "created_at": r[11],
+                "closed_at": r[12],
+                "closed_by_admin_id": r[13],
+                "close_reason": r[14],
+                "ticket_seq": r[15] if len(r) > 15 and r[15] is not None else r[0],
+            }
+            for r in rows
+        ]
+
     async def cleanup_expired_referrals(self) -> int:
         """Bulk updates all expired active referral codes to EXPIRED status."""
         if not self._conn:

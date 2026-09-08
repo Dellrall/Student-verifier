@@ -704,6 +704,84 @@ class AdminCog(commands.Cog, name="Admin"):
             )
         schedule_ttl_delete(interaction, delay=60.0)
 
+    @app_commands.command(
+        name="guest_tickets",
+        description="List and inspect recent guest review tickets with links to threads.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        status="Filter by status (OPEN, APPROVED, REJECTED, EXPIRED, LEFT_SERVER)",
+        limit="Number of records to show (1-20, default 10)",
+    )
+    async def guest_tickets(
+        self,
+        interaction: discord.Interaction,
+        status: str | None = None,
+        limit: app_commands.Range[int, 1, 20] = 10,
+    ) -> None:
+        """Displays recent guest review tickets with clickable thread links and resolution details."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ This command can only be used inside a server.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        tickets = await self.db.list_guest_tickets(
+            interaction.guild.id, status=status, limit=limit
+        )
+
+        if not tickets:
+            filter_text = f" with status `{status}`" if status else ""
+            await interaction.followup.send(
+                f"ℹ️ No guest tickets found in this server{filter_text}.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        embed = discord.Embed(
+            title=f"📋 Guest Review Tickets — {interaction.guild.name}",
+            description=f"Showing **{len(tickets)}** recent ticket(s)" + (f" filtered by `{status.upper()}`" if status else "") + ":",
+            color=discord.Color.blue(),
+        )
+
+        for t in tickets:
+            seq = t.get("ticket_seq") or t.get("ticket_id")
+            t_status = t.get("status", "OPEN")
+            status_emoji = {
+                "OPEN": "⏳",
+                "APPROVED": "✅",
+                "REJECTED": "🛑",
+                "EXPIRED": "⏰",
+                "LEFT_SERVER": "🚪",
+                "BANNED": "🔨",
+            }.get(t_status, "📄")
+
+            thread_mention = f"<#{t['channel_id']}>"
+            applicant_mention = f"<@{t['applicant_id']}>"
+            admin_info = f" • Closed by <@{t['closed_by_admin_id']}>" if t.get("closed_by_admin_id") else ""
+            reason_info = f"\n> Reason: *\"{t['close_reason']}\"*" if t.get("close_reason") else ""
+
+            field_name = f"{status_emoji} Ticket #{seq:04d} — {t_status}"
+            field_value = (
+                f"**Applicant:** {applicant_mention} | **Thread:** {thread_mention}{admin_info}\n"
+                f"**Created:** `{t.get('created_at', 'N/A')}`{reason_info}"
+            )
+            embed.add_field(name=field_name, value=field_value, inline=False)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=90.0)
+
+
 
 
 

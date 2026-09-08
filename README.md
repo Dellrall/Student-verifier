@@ -87,6 +87,7 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 * `/setreviewchannel [channel]` — Configure the parent channel for private guest review threads.
 * `/setwelcomec [channel]` — Configure or reset the server's welcome channel for new member verification tags.
 * `/sethelpc [channel]` — Configure or reset the server's specific help channel for automated role tips.
+* `/guest_tickets [status] [limit]` — List recent guest review tickets with clickable links to archived/active threads and verdict notes.
 * `/stats` — View verification numbers, faculty breakdown, and configured channels/roles.
 * `/unverify @user` — Unlink a student ID and remove their roles.
 * `/audit` — View recent audit log entries.

@@ -378,6 +378,21 @@ async def test_admin_stats_and_audit(tmp_path):
     interaction.followup.send.assert_called_once()
     assert "No audit log records found" in interaction.followup.send.call_args[0][0]
 
+    # 5. Query guest tickets
+    await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=3001,
+        channel_id=4001,
+        reason="Attending workshop",
+    )
+    interaction.followup.send.reset_mock()
+    await cog.guest_tickets.callback(cog, interaction, status=None, limit=5)
+    interaction.followup.send.assert_called_once()
+    gt_embed = interaction.followup.send.call_args[1]["embed"]
+    assert "Guest Review Tickets" in gt_embed.title
+    assert len(gt_embed.fields) == 1
+    assert "Ticket #0001" in gt_embed.fields[0].name
+
     await db.close()
 
 
