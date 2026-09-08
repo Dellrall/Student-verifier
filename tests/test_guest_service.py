@@ -116,13 +116,17 @@ async def test_guest_ticket_approval_and_rejection_lifecycle(tmp_path):
     perms.create_private_threads = True
     perms.send_messages_in_threads = True
     parent_channel.permissions_for.return_value = perms
+    parent_channel.set_permissions = AsyncMock()
+    parent_channel.overwrites_for = MagicMock(return_value=MagicMock())
 
     thread = MagicMock(spec=discord.Thread)
     thread.id = 444111
     thread.mention = "<#444111>"
+    thread.parent = parent_channel
     thread.add_user = AsyncMock()
     parent_channel.create_thread = AsyncMock(return_value=thread)
     guild.text_channels = [parent_channel]
+    guild.get_thread = MagicMock(return_value=thread)
 
     # Open review ticket with referral code
     success, msg, created_thread = await service.open_guest_review_ticket(
@@ -133,6 +137,7 @@ async def test_guest_ticket_approval_and_rejection_lifecycle(tmp_path):
     assert success is True
     assert created_thread == thread
     thread.add_user.assert_called()
+    parent_channel.set_permissions.assert_called()
 
     # Code should now be PENDING_APPROVAL
     ref_record = await db.get_referral_code(code, guild.id)
@@ -151,11 +156,13 @@ async def test_guest_ticket_approval_and_rejection_lifecycle(tmp_path):
     assert ticket_vouched["vouch_note"] == "Verified friend from college"
 
     # Approve application
+    parent_channel.set_permissions.reset_mock()
     app_success, app_msg = await service.approve_guest_application(ticket, guild, admin_user)
     assert app_success is True
     applicant.add_roles.assert_called_once_with(guest_role, reason=f"TARVeri: Guest approved by {admin_user}")
     applicant.send.assert_called_once()
     assert "approved" in applicant.send.call_args[0][0].lower()
+    parent_channel.set_permissions.assert_called_with(applicant, overwrite=None, reason="TARVeri: Review ticket closed")
 
     # Code and ticket should now be marked USED / APPROVED
     ref_record_after = await db.get_referral_code(code, guild.id)

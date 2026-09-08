@@ -159,8 +159,14 @@ class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral
             if ticket.get("referrer_id"):
                 vouch_prompt += f" <@{ticket['referrer_id']}>, please confirm your vouch for this guest below."
 
+            pending_notice = (
+                "\n⚠️ *Note: If you have not completed server rules screening yet, please click 'Complete' on your Discord app to enable chatting.*"
+                if getattr(interaction.user, "pending", False)
+                else ""
+            )
+
             await thread.send(
-                content=f"{admin_mention} {vouch_prompt}",
+                content=f"{admin_mention} {vouch_prompt}{pending_notice}",
                 embed=embed,
                 view=view,
                 allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=True),
@@ -220,8 +226,14 @@ class GuestApplicationModal(discord.ui.Modal, title="🌐 Guest Access Applicati
             admin_role = await self.guest_service.get_admin_role_or_fallback(interaction.guild)
             admin_mention = admin_role.mention if admin_role else get_admin_role_mention(interaction.guild, self.guest_service.admin_role_name)
 
+            pending_notice = (
+                "\n⚠️ *Note: If you have not completed server rules screening yet, please click 'Complete' on your Discord app to enable chatting.*"
+                if getattr(interaction.user, "pending", False)
+                else ""
+            )
+
             await thread.send(
-                content=f"{admin_mention} New guest application from {interaction.user.mention}:",
+                content=f"{admin_mention} New guest application from {interaction.user.mention}:{pending_notice}",
                 embed=embed,
                 view=view,
                 allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=True),

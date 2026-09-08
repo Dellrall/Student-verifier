@@ -5,6 +5,7 @@ Guest verification, referral code management, and private thread ticket orchestr
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import secrets
 import string
@@ -378,7 +379,26 @@ class GuestService:
                 logger.error(f"Failed to create private thread in #{parent_ch.name} ({guild.name}): {e}")
                 return False, f"❌ Failed to create private thread: {e}", None
 
-            # 8. Invite applicant, referrer, and all admin team members
+            # 8. Grant thread chat & participation permissions to applicant on parent channel
+            if hasattr(parent_ch, "set_permissions"):
+                try:
+                    app_overwrite = parent_ch.overwrites_for(applicant)
+                    app_overwrite.send_messages_in_threads = True
+                    app_overwrite.read_message_history = True
+                    app_overwrite.attach_files = True
+                    app_overwrite.embed_links = True
+                    app_overwrite.add_reactions = True
+                    res = parent_ch.set_permissions(
+                        applicant,
+                        overwrite=app_overwrite,
+                        reason=f"TARVeri: Allow guest applicant {applicant} to chat in review thread",
+                    )
+                    if inspect.isawaitable(res):
+                        await res
+                except (discord.HTTPException, discord.Forbidden):
+                    pass
+
+            # 9. Invite applicant, referrer, and all admin team members
             try:
                 await thread.add_user(applicant)
             except (discord.HTTPException, discord.Forbidden):
@@ -388,6 +408,24 @@ class GuestService:
             if referrer_id:
                 referrer_member = guild.get_member(referrer_id)
                 if referrer_member:
+                    if hasattr(parent_ch, "set_permissions"):
+                        try:
+                            ref_overwrite = parent_ch.overwrites_for(referrer_member)
+                            ref_overwrite.send_messages_in_threads = True
+                            ref_overwrite.read_message_history = True
+                            ref_overwrite.attach_files = True
+                            ref_overwrite.embed_links = True
+                            ref_overwrite.add_reactions = True
+                            res = parent_ch.set_permissions(
+                                referrer_member,
+                                overwrite=ref_overwrite,
+                                reason=f"TARVeri: Allow referring student {referrer_member} to chat in review thread",
+                            )
+                            if inspect.isawaitable(res):
+                                await res
+                        except (discord.HTTPException, discord.Forbidden):
+                            pass
+
                     try:
                         await thread.add_user(referrer_member)
                     except (discord.HTTPException, discord.Forbidden):
@@ -531,6 +569,8 @@ class GuestService:
             user_id=applicant_id,
         )
 
+        await self._cleanup_channel_overwrites(guild, ticket)
+
         return True, f"✅ Guest application approved by {admin_user.mention}! Assigned **{guest_role.name}** role."
 
     async def reject_guest_application(
@@ -589,7 +629,49 @@ class GuestService:
             user_id=applicant_id,
         )
 
+        await self._cleanup_channel_overwrites(guild, ticket)
+
         return True, f"🛑 Guest application rejected and applicant removed from the server by {admin_user.mention}."
+
+    async def _cleanup_channel_overwrites(self, guild: discord.Guild, ticket: dict[str, Any]) -> None:
+        """Cleans up temporary channel permission overwrites granted to applicant/referrer."""
+        channel_id = ticket.get("channel_id")
+        if not channel_id or not hasattr(guild, "get_thread"):
+            return
+
+        parent_ch = None
+        thread = guild.get_thread(channel_id)
+        if thread and hasattr(thread, "parent"):
+            parent_ch = thread.parent
+        elif hasattr(guild, "get_channel"):
+            ch = guild.get_channel(channel_id)
+            if ch and hasattr(ch, "parent"):
+                parent_ch = ch.parent
+
+        if not parent_ch or not hasattr(parent_ch, "set_permissions"):
+            return
+
+        applicant_id = ticket.get("applicant_id")
+        if applicant_id:
+            applicant_m = guild.get_member(applicant_id)
+            if applicant_m:
+                try:
+                    res = parent_ch.set_permissions(applicant_m, overwrite=None, reason="TARVeri: Review ticket closed")
+                    if inspect.isawaitable(res):
+                        await res
+                except (discord.HTTPException, discord.Forbidden):
+                    pass
+
+        referrer_id = ticket.get("referrer_id")
+        if referrer_id:
+            referrer_m = guild.get_member(referrer_id)
+            if referrer_m:
+                try:
+                    res = parent_ch.set_permissions(referrer_m, overwrite=None, reason="TARVeri: Review ticket closed")
+                    if inspect.isawaitable(res):
+                        await res
+                except (discord.HTTPException, discord.Forbidden):
+                    pass
 
     async def handle_member_leave_or_ban(
         self,
