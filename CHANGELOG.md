@@ -2,9 +2,46 @@
 
 All notable changes to the **TARVeri** Discord Student & Guest Verification Bot are documented in this file.
 
+## [v2.3.0] — 2026-09-08 (Current)
+### 🤝 Double Verification Workflow & Audit Tracking
+* **Two-Step Guest Verification Process**:
+  - Requires explicit confirmation from both the referring student (Step 1: vouch statement / context) and server administration (Step 2: final approval or veto).
+  - Automatically tags the server admin role (`@Admin` / `@Staff`) inside the review thread once the voucher submits their statement.
+* **Reason Giver & Comments Auditing**:
+  - Tracks and stores explicit author IDs, comments, notes, and timestamps in `guest_tickets`:
+    - `applicant_id` & submission reason.
+    - `vouched_by_id`, `vouch_note`, `vouched_at`.
+    - `closed_by_admin_id`, `close_reason`, `closed_at`.
+* **Automatic Role & Ticket Revocation on Leave / Kick / Ban**:
+  - Implemented `handle_member_leave_or_ban()` to automatically revoke guest status, close open/approved tickets (`LEFT_SERVER` / `BANNED`), and invalidate active referral codes whenever a member leaves or is removed.
+
+### ⏱️ Timezone & Backup Lifecycle Management
+* **Local Machine / NTP Timezone Synchronization**:
+  - Added `TimezoneFormatter` and `get_configured_tz()` (defaulting to `Asia/Kuala_Lumpur` / UTC+8 or `TARVERI_TIMEZONE` / local system time).
+  - Synchronized terminal logs, file logs, database audit timestamps, backup filenames, and embed footers with the host machine's NTP clock.
+* **Automatic 10-Backup Rotation Policy**:
+  - Added `rotate_backups()` in `tarveri/database.py` and `scripts/update.sh` to automatically prune older database snapshots, retaining only the 10 most recent backups (`TARVERI_MAX_BACKUPS`).
+
+### 🚀 UX & Performance Polish
+* **Permanent Public Messages (No TTL)**:
+  - Removed auto-delete timers (`delete_after`) from public channel messages (`#welcome`, `#help`, `!verify`, `!sync`), keeping guidance permanently visible for future students.
+  - Ephemeral user responses retain a clean 60-second self-deleting TTL.
+* **Instant Non-Blocking Startup**:
+  - Made slash command sync asynchronous in `setup_hook()` to eliminate bot boot latency.
+* **Multilingual Semantic Help Engine**:
+  - Broadened regex matching in `#help` channels to support Malaysian colloquial phrases (`nak verify`, `camne nak masuk`, `bantuan`, `matrik`, `id number`, etc.) and removed redundant verification blocks.
+
+### 🔄 Zero-Downtime Backwards Compatibility
+* **Dynamic Table Migrations**:
+  - Dynamic `PRAGMA table_info` checks automatically add missing columns to existing SQLite databases without data loss.
+* **Legacy Environment Variable Fallbacks**:
+  - Supports older `.env` keys (`DISCORD_BOT_TOKEN`, `HASH_SECRET`, `DB_PATH`, `ADMIN_ROLE`, `TIMEZONE`, etc.).
+* **Module Execution & Top-Level Exports**:
+  - Added `tarveri/__main__.py` for `python -m tarveri` execution and exposed core symbols in `tarveri/__init__.py`.
+
 ---
 
-## [v2.2.0] — 2026-09-03 (Current)
+## [v2.2.0] — 2026-09-03
 ### 🎟️ Guest Access, Referral Codes & Private Thread Reviews
 * **Verified Student Referral Codes (`/referral generate`, `/referral list`)**:
   - Allowed verified TARUMT students to generate single-use, expiring referral codes (e.g. `TAR-8X2K9P`) for friends and collaborators.
