@@ -2,7 +2,40 @@
 
 All notable changes to the **TARVeri** Discord Student & Guest Verification Bot are documented in this file.
 
-## [v2.3.0] — 2026-09-08 (Current)
+## [v2.4.0] — 2026-09-09 (Current)
+### 🛡️ Self-Healing & Auto-Recovery Engine
+* **Database Integrity & WAL Truncation**:
+  - Automatically runs `PRAGMA integrity_check` on connection startup to detect and report corruptions immediately.
+  - Automatically checkpoints and truncates SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) on startup and shutdown to keep disk footprints minimal.
+* **Channel Drift & Stale Setting Recovery**:
+  - Automatically detects deleted/missing Discord channels (review channels, welcome channels, help channels) in `find_parent_review_channel()`, `get_welcome_or_verify_channel()`, and `is_help_channel()`.
+  - Clears stale database IDs from `guild_settings` via `clear_stale_channel_setting()` and falls back smoothly to keyword-matched channels (`review`, `approval`, `ticket`, `help`, `welcome`).
+* **Dynamic Role Re-creation with Faculty Colors**:
+  - Auto-recreates deleted faculty roles on the fly (`FACULTY_COLORS` mapping: FOCS Cyan, FAFB Gold, FCCI Purple, FOAS Green, FSSH Orange, FOBE Blue-Grey, CPUS Pink, FOET Blue) and guest roles without failing user verifications.
+* **Downtime Manual Grant Detection**:
+  - Detects if an administrator manually granted the `Guest(Approved)` role to an applicant during maintenance or while a review ticket was open.
+  - Auto-resolves the ticket to `APPROVED` (*"Applicant was manually granted guest role by admin"*), marks the referral code as `USED`, and archives the thread.
+* **Batch Role Auto-Restoration for Returning Students**:
+  - Added `reconcile_verified_members()` on bot startup to cross-reference guild members against verified records in SQLite and restore missing faculty roles to students who rejoined during maintenance.
+* **Role Hierarchy & Permission Diagnostics (`/diagnose`)**:
+  - Added `diagnose_guild_permissions()` to audit bot permissions (`Manage Roles`, `Manage Channels`, etc.) and detect role hierarchy conflicts (when managed roles are above bot's top role).
+  - Added `/diagnose` slash command for administrators to run instant server health checks, permission audits, and self-healing reconciliation on demand.
+
+### 🔢 Alphanumeric Ticket Sequencing & Smart Escalation
+* **Alphanumeric Ticket Tracking**:
+  - Upgraded review ticket sequences from 4-digit numbers to scalable alphanumeric identifiers (`#A0001` – `#Z9999` $\to$ `#AA0001`) via `format_ticket_seq()`.
+  - Displayed across private thread names (`guest-a0001-username`), review embeds, logs, and `/guest_tickets`.
+* **Batch-of-2 Staff Mentions & 1-Hour Escalation**:
+  - `get_target_admin_mentions_batch()` selects 2 admins per notification, prioritizing active/online moderators first, then highest-authority staff (Owner $\to$ Senior Admins).
+  - Added `check_and_escalate_tickets()` and background task `_escalation_loop` that automatically tags the next 2 admins in hierarchy if a ticket is pending for $\ge$ 1 hour without staff reply.
+
+### 🧪 Test Suite & Warning Hardening
+* Hardened mock and role iterables across all test fixtures against unawaited `_aget` coroutines.
+* Reached 95 passing unit tests with 0 warnings under `-W error`.
+
+---
+
+## [v2.3.0] — 2026-09-08
 ### 🤝 Double Verification Workflow & Audit Tracking
 * **Two-Step Guest Verification Process**:
   - Requires explicit confirmation from both the referring student (Step 1: vouch statement / context) and server administration (Step 2: final approval or veto).

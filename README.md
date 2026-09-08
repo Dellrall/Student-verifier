@@ -72,8 +72,18 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 * **Double Verification Process**:
   1. **Step 1 (Voucher)**: The referring student submits their vouch statement/context.
   2. **Step 2 (Admin Team)**: Server admins review the context and click **`[Approve Guest]`** or **`[Reject / Veto]`**.
+* **Alphanumeric Ticket Tracking**: Private review threads and audit records use alphanumeric sequence numbers (`#A0001`, `#A0002` ... `#Z9999` $\to$ `#AA0001`).
+* **Intelligent Staff Tagging & 1-Hour Escalation**: The bot tags a batch of 2 admins (active/online moderators first, then highest authority). If 1 hour passes without admin response, it automatically escalates by tagging the next 2 admins.
 * **Audit Trail**: All reason notes, comments, voucher IDs, and admin verdicts are stored with timestamps in the database.
 * **Automatic Revocation**: Guest access and active tickets are automatically revoked if a member leaves, is kicked, or is banned from the server.
+
+### 🛡️ Self-Healing & Auto-Recovery Engine
+* **Database Auto-Healing**: Executes `PRAGMA integrity_check` on connection startup and truncates SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) on startup/shutdown.
+* **Channel Drift & Deleted Channel Recovery**: If configured review, help, or welcome channels are deleted, TARVeri clears stale database IDs and falls back smoothly to keyword-matched channels (`review`, `approval`, `ticket`, `help`, `welcome`).
+* **Dynamic Role Auto-Creation**: If faculty or guest roles are deleted from Discord, the bot automatically recreates them with official faculty colors (FOCS Cyan, FAFB Gold, FCCI Purple, FOAS Green, FSSH Orange, FOBE Blue-Grey, CPUS Pink, FOET Blue) and assigns them without failing verifications.
+* **Downtime Manual Grant Detection**: If an admin manually grants the `Guest(Approved)` role during maintenance, open tickets are automatically transitioned to `APPROVED` and review threads archived.
+* **Returning Student Role Restoration**: Automatically restores missing faculty roles for verified students who rejoined during maintenance or had roles stripped.
+* **Role Hierarchy Diagnostics**: Scans and warns if the bot's role is below managed faculty/guest roles.
 
 ### Automated Server Assistance
 * **Interactive Gateway Panel**: Admins can post a persistent 3-button verification panel (`/send_gateway_panel`) in the welcome channel.
@@ -82,6 +92,7 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 
 ### Admins
 * `/send_gateway_panel [channel]` — Post the persistent 3-button verification gateway panel (Student Verify / Referral Code / Guest Apply).
+* `/diagnose` — Run self-healing diagnostics, check permissions/role hierarchy, and trigger student role reconciliation.
 * `/setadminrole [role]` — Configure or reset the server's reviewer/admin role for private guest review threads (auto-invites all role members).
 * `/setguestrole [role_name]` — Configure the server's guest role name (default: `Guest`).
 * `/setreviewchannel [channel]` — Configure the parent channel for private guest review threads.
@@ -94,6 +105,7 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 * `/backup` — Create an immediate database snapshot in `backups/` (auto-rotated to 10 recent files).
 * `/resync` — Re-check and update roles across mutual servers.
 * `/check_updates [stream]` — Check for new git updates on a specific or default stream directly from Discord.
+
 
 
 
