@@ -757,6 +757,9 @@ async def test_reconcile_downtime_state(tmp_path):
     guild.id = 5566
     guild.name = "Downtime Guild"
     guild.chunked = True
+    guild.roles = []
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
     bot.get_guild.return_value = guild
 
     # 1. Open Ticket 1: Applicant 8001 left during maintenance
@@ -803,8 +806,10 @@ async def test_reconcile_downtime_state(tmp_path):
     # Present members in guild: Only applicant 8003 and 8004
     applicant8003 = MagicMock(spec=discord.Member)
     applicant8003.id = 8003
+    applicant8003.roles = []
     applicant8004 = MagicMock(spec=discord.Member)
     applicant8004.id = 8004
+    applicant8004.roles = []
 
     guild.get_member.side_effect = lambda user_id: {
         8003: applicant8003,

@@ -97,7 +97,11 @@ class VerificationService:
             result.already_had_role_in.append((guild.name, existing_roles[0].name))
             return
 
-        role = discord.utils.get(guild.roles, name=role_name)
+        guild_roles = getattr(guild, "roles", [])
+        if not isinstance(guild_roles, (list, tuple)):
+            guild_roles = []
+
+        role = discord.utils.get(guild_roles, name=role_name)
         if not role:
             if not getattr(guild.me.guild_permissions, "manage_roles", False):
                 result.missing_role_in.append(guild.name)

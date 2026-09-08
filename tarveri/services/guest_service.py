@@ -177,14 +177,17 @@ class GuestService:
         """
         settings = await self.db.get_guild_settings(guild.id)
         configured_name = settings[2].strip() if settings and settings[2] else None
+        guild_roles = getattr(guild, "roles", [])
+        if not isinstance(guild_roles, (list, tuple)):
+            guild_roles = []
 
         # 1. If explicitly configured, search by configured name first
         if configured_name:
-            role = discord.utils.get(guild.roles, name=configured_name)
+            role = discord.utils.get(guild_roles, name=configured_name)
             if role:
                 return role
-            for r in guild.roles:
-                if r.name.lower() == configured_name.lower():
+            for r in guild_roles:
+                if getattr(r, "name", "").lower() == configured_name.lower():
                     return r
 
         # 2. Search for existing roles in priority order (Guest(Approved), Guest (Approved), Guest, etc.)
@@ -197,18 +200,18 @@ class GuestService:
             "Guest (approved)",
         ]
         for alias in known_aliases:
-            role = discord.utils.get(guild.roles, name=alias)
+            role = discord.utils.get(guild_roles, name=alias)
             if role:
                 return role
 
         # Fuzzy check across existing server roles
-        for r in guild.roles:
-            normalized_name = r.name.lower().replace(" ", "").replace("_", "")
+        for r in guild_roles:
+            normalized_name = getattr(r, "name", "").lower().replace(" ", "").replace("_", "")
             if normalized_name in ("guest(approved)", "guestapproved", "guest"):
                 return r
 
         # 3. If no existing guest role was found, auto-create "Guest(Approved)"
-        if not guild.me.guild_permissions.manage_roles:
+        if not getattr(guild.me.guild_permissions, "manage_roles", False):
             return None
 
         role_name_to_create = configured_name or "Guest(Approved)"
