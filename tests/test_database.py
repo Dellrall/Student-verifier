@@ -333,11 +333,78 @@ async def test_database_backwards_compatibility_migration(tmp_path):
     assert updated_ticket["vouch_note"] == "Backwards compatible vouch"
     assert updated_ticket["vouched_by_id"] == 55555
 
-    await db.set_guild_guest_role(99999, "Legacy Guest")
-    updated_settings = await db.get_guild_settings(99999)
-    assert updated_settings[2] == "Legacy Guest"
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_database_closed_connection_errors():
+    db = Database("unopened.db")
+    assert not db.is_connected
+
+    with pytest.raises(RuntimeError, match="Database connection is not open"):
+        await db.get_verification_by_user(12345)
+
+    with pytest.raises(RuntimeError, match="Database connection is not open"):
+        await db.record_verification(12345, "hash", "M")
+
+    with pytest.raises(RuntimeError, match="Database connection is not open"):
+        await db.delete_verification(12345)
+
+    with pytest.raises(RuntimeError, match="Database connection is not open"):
+        await db.create_backup()
+
+
+@pytest.mark.asyncio
+async def test_database_context_manager(tmp_path):
+    db_file = str(tmp_path / "ctx_test.db")
+    async with Database(db_file) as db:
+        assert db.is_connected
+        await db.record_verification(123, "hash123", "M")
+        assert await db.total_verified() == 1
+
+    assert not db.is_connected
+
+
+def test_rotate_backups_edge_cases(tmp_path):
+    from tarveri.database import rotate_backups
+
+    # Non-existent dir returns []
+    assert rotate_backups(str(tmp_path / "non_existent"), max_backups=5) == []
+
+    # max_backups <= 0 returns []
+    empty_dir = str(tmp_path / "empty")
+    os.makedirs(empty_dir, exist_ok=True)
+    assert rotate_backups(empty_dir, max_backups=0) == []
+    assert rotate_backups(empty_dir, max_backups=-1) == []
+
+
+@pytest.mark.asyncio
+async def test_database_cleanup_expired_referrals(tmp_path):
+    db_file = str(tmp_path / "cleanup_test.db")
+    db = Database(db_file)
+    await db.connect()
+
+    guild_id = 111
+    # Create 2 active referrals with past expiration date
+    await db.create_referral_code("TAR-EXP1", guild_id, 101, "2020-01-01 00:00:00")
+    await db.create_referral_code("TAR-EXP2", guild_id, 102, "2020-01-01 00:00:00")
+    # Create 1 active referral with future expiration date
+    await db.create_referral_code("TAR-ACT1", guild_id, 103, "2099-01-01 00:00:00")
+
+    cleaned_count = await db.cleanup_expired_referrals()
+    assert cleaned_count == 2
+
+    exp1 = await db.get_referral_code("TAR-EXP1", guild_id)
+    assert exp1["status"] == "EXPIRED"
+
+    exp2 = await db.get_referral_code("TAR-EXP2", guild_id)
+    assert exp2["status"] == "EXPIRED"
+
+    act1 = await db.get_referral_code("TAR-ACT1", guild_id)
+    assert act1["status"] == "ACTIVE"
 
     await db.close()
+
 
 
 

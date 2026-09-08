@@ -155,3 +155,41 @@ def test_timezone_configuration_and_formatter():
     assert log_time == "2023-11-15 06:13:20"
 
 
+def test_settings_validation_missing_tokens(monkeypatch):
+    import pytest
+    from tarveri.config import Settings
+
+    monkeypatch.delenv("TARVERI_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("BOT_TOKEN", raising=False)
+    monkeypatch.delenv("DISCORD_TOKEN", raising=False)
+
+    monkeypatch.setenv("TARVERI_ID_HASH_SECRET", "some_secret")
+
+    with pytest.raises(RuntimeError, match="TARVERI_BOT_TOKEN is not set"):
+        Settings.from_env(validate=True)
+
+    monkeypatch.setenv("TARVERI_BOT_TOKEN", "some_token")
+    monkeypatch.delenv("TARVERI_ID_HASH_SECRET", raising=False)
+    monkeypatch.delenv("ID_HASH_SECRET", raising=False)
+    monkeypatch.delenv("HASH_SECRET", raising=False)
+
+    with pytest.raises(RuntimeError, match="TARVERI_ID_HASH_SECRET is not set"):
+        Settings.from_env(validate=True)
+
+
+def test_get_configured_tz_fallback():
+    from tarveri.config import get_configured_tz
+
+    # Invalid timezone string falls back safely
+    tz_invalid = get_configured_tz("NonExistent/Timezone_123")
+    assert tz_invalid is not None
+
+    # Auto / local / system strings resolve cleanly
+    tz_auto = get_configured_tz("auto")
+    assert tz_auto is not None
+    tz_system = get_configured_tz("system")
+    assert tz_system is not None
+
+
+

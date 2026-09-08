@@ -191,4 +191,169 @@ async def test_setguestrole_and_setreviewchannel(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_admin_commands_permission_denied(tmp_path):
+    from unittest.mock import AsyncMock
+    from tarveri.cogs.admin_cog import AdminCog
+    from tarveri.database import Database
+
+    db = Database(str(tmp_path / "perm_test.db"))
+    await db.connect()
+    cog = AdminCog(MagicMock(), db, MagicMock(), MagicMock(), admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    regular_user = MagicMock(spec=discord.Member)
+    regular_user.guild_permissions.administrator = False
+    regular_user.roles = []
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = regular_user
+    interaction.response.send_message = AsyncMock()
+
+    # stats
+    await cog.stats.callback(cog, interaction)
+    interaction.response.send_message.assert_called_once()
+    assert "do not have permission" in interaction.response.send_message.call_args[0][0]
+
+    # unverify
+    interaction.response.send_message.reset_mock()
+    await cog.unverify.callback(cog, interaction, user=MagicMock())
+    interaction.response.send_message.assert_called_once()
+    assert "do not have permission" in interaction.response.send_message.call_args[0][0]
+
+    # audit
+    interaction.response.send_message.reset_mock()
+    await cog.audit.callback(cog, interaction)
+    interaction.response.send_message.assert_called_once()
+    assert "do not have permission" in interaction.response.send_message.call_args[0][0]
+
+    # backup
+    interaction.response.send_message.reset_mock()
+    await cog.backup.callback(cog, interaction)
+    interaction.response.send_message.assert_called_once()
+    assert "do not have permission" in interaction.response.send_message.call_args[0][0]
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_unverify_lifecycle(tmp_path):
+    from unittest.mock import AsyncMock
+    from tarveri.cogs.admin_cog import AdminCog
+    from tarveri.database import Database
+
+    db = Database(str(tmp_path / "unverify_test.db"))
+    await db.connect()
+
+    bot = MagicMock()
+    service = MagicMock()
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.name = "Campus Guild"
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+    admin_user.__str__.return_value = "Admin#0001"
+
+    target_user = MagicMock(spec=discord.User)
+    target_user.id = 777111
+    target_user.mention = "<@777111>"
+    target_user.__str__.return_value = "Student#7771"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # 1. Unverify on non-verified user
+    await cog.unverify.callback(cog, interaction, user=target_user)
+    interaction.followup.send.assert_called_once()
+    assert "is not verified" in interaction.followup.send.call_args[0][0]
+
+    # 2. Record verification then unverify
+    await db.record_verification(target_user.id, "hash777", "M")
+    member = MagicMock(spec=discord.Member)
+    faculty_role = MagicMock(spec=discord.Role)
+    faculty_role.name = "FOCS"
+    member.roles = [faculty_role]
+    member.remove_roles = AsyncMock()
+
+    service.get_mutual_guilds_for_user = AsyncMock(return_value=[guild])
+    service.get_or_fetch_member = AsyncMock(return_value=member)
+
+    interaction.followup.send.reset_mock()
+    await cog.unverify.callback(cog, interaction, user=target_user, reason="Graduated")
+    interaction.followup.send.assert_called_once()
+    assert "Successfully unverified" in interaction.followup.send.call_args[0][0]
+    assert "Campus Guild (FOCS)" in interaction.followup.send.call_args[0][0]
+
+    # Verification should be deleted from DB
+    assert await db.get_verification_by_user(target_user.id) is None
+    # Rate limiter was reset
+    rate_limiter.reset.assert_called_with(target_user.id)
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_stats_and_audit(tmp_path):
+    from unittest.mock import AsyncMock
+    from tarveri.cogs.admin_cog import AdminCog
+    from tarveri.database import Database
+
+    db = Database(str(tmp_path / "stats_audit_test.db"))
+    await db.connect()
+
+    bot = MagicMock()
+    bot.guilds = [MagicMock()]
+    service = MagicMock()
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 1122
+    guild.name = "Audit Test Guild"
+    guild.get_channel.return_value = None
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # 1. Stats with 0 records
+    await cog.stats.callback(cog, interaction)
+    interaction.followup.send.assert_called_once()
+    stats_embed = interaction.followup.send.call_args[1]["embed"]
+    assert stats_embed.title == "📊 TARVeri — Verification Statistics"
+
+    # 2. Add verifications & audit logs
+    await db.record_verification(101, "hash101", "M")
+    await db.record_verification(102, "hash102", "B")
+    await db.log("INFO", "TEST_EVENT", "Audit test 1", guild=guild, user_id=101)
+
+    # 3. Query audit
+    interaction.followup.send.reset_mock()
+    await cog.audit.callback(cog, interaction, limit=5, event_type="TEST_EVENT")
+    interaction.followup.send.assert_called_once()
+    audit_embed = interaction.followup.send.call_args[1]["embed"]
+    assert "Audit Log Entries" in audit_embed.title
+    assert len(audit_embed.fields) == 1
+
+    # 4. Query audit with non-matching filter
+    interaction.followup.send.reset_mock()
+    await cog.audit.callback(cog, interaction, limit=5, event_type="NON_EXISTENT")
+    interaction.followup.send.assert_called_once()
+    assert "No audit log records found" in interaction.followup.send.call_args[0][0]
+
+    await db.close()
+
+
+
 

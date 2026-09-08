@@ -179,3 +179,58 @@ async def test_guest_review_thread_double_verification(tmp_path):
 
     await db.close()
 
+
+@pytest.mark.asyncio
+async def test_guest_review_thread_permissions(tmp_path):
+    db_path = str(tmp_path / "review_perm_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    guest_service = GuestService(bot, db, admin_role_name="TARVeri Admin")
+    view = GuestReviewThreadView(guest_service)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 666
+    guild.name = "Perm Guild"
+
+    regular_member = MagicMock(spec=discord.Member)
+    regular_member.id = 1111
+    regular_member.guild_permissions.administrator = False
+    regular_member.roles = []
+
+    channel = MagicMock(spec=discord.Thread)
+    channel.id = 5555
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.channel = channel
+    interaction.user = regular_member
+    interaction.response.send_message = AsyncMock()
+
+    # 1. Non-admin tries to approve
+    await view.approve_btn.callback(interaction)
+    interaction.response.send_message.assert_called_once()
+    assert "Only server administrators" in interaction.response.send_message.call_args[0][0]
+
+    # 2. Non-admin tries to reject
+    interaction.response.send_message.reset_mock()
+    await view.reject_btn.callback(interaction)
+    interaction.response.send_message.assert_called_once()
+    assert "Only server administrators" in interaction.response.send_message.call_args[0][0]
+
+    # 3. Non-referrer / Non-admin tries to vouch
+    await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=2222,
+        referrer_id=3333,  # Referrer is 3333, caller is 1111
+        channel_id=channel.id,
+    )
+    interaction.response.send_message.reset_mock()
+    await view.vouch_btn.callback(interaction)
+    interaction.response.send_message.assert_called_once()
+    assert "Only the referring student" in interaction.response.send_message.call_args[0][0]
+
+    await db.close()
+
+

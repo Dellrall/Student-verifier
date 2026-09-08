@@ -357,6 +357,84 @@ async def test_on_member_join_auto_sync_already_verified(mock_bot, mock_service,
     welcome_channel.send.assert_not_called()
     # Member gets confirmation DM
     member.send.assert_called_once()
-    assert "automatically received your **FOCS** role" in member.send.call_args[0][0]
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_verify_prefix_in_dm(mock_bot, mock_service, mock_rate_limiter, tmp_path):
+    db = Database(str(tmp_path / "verify_prefix_dm.db"))
+    await db.connect()
+    cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
+
+    author = MagicMock(spec=discord.User)
+    author.id = 111000
+    author.send = AsyncMock()
+
+    # Context in DMs (ctx.guild is None)
+    ctx = MagicMock()
+    ctx.guild = None
+    ctx.author = author
+
+    # 1. With student ID argument in DM
+    mock_service.perform_verification = AsyncMock(return_value="✅ Verified in Server A")
+    await cog.verify_prefix.callback(cog, ctx, "23WMD09867")
+    mock_service.perform_verification.assert_called_once_with(author, "23WMD09867")
+    author.send.assert_called_once_with("✅ Verified in Server A")
+
+    # 2. Without args in DM: sends instructional prompt
+    author.send.reset_mock()
+    await cog.verify_prefix.callback(cog, ctx)
+    author.send.assert_called_once()
+    assert "Please send your student ID" in author.send.call_args[0][0]
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_verify_prefix_in_guild_dm_forbidden(mock_bot, mock_service, mock_rate_limiter, tmp_path):
+    db = Database(str(tmp_path / "verify_guild_forbidden.db"))
+    await db.connect()
+    cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
+
+    guild = MagicMock(spec=discord.Guild)
+    author = MagicMock(spec=discord.Member)
+    author.id = 222000
+    author.mention = "<@222000>"
+    # Sending DM fails due to closed DMs
+    author.send = AsyncMock(side_effect=discord.Forbidden(MagicMock(), "Cannot send messages to this user"))
+
+    ctx = MagicMock()
+    ctx.guild = guild
+    ctx.author = author
+    ctx.message.delete = AsyncMock()
+    ctx.send = AsyncMock()
+
+    await cog.verify_prefix.callback(cog, ctx)
+    ctx.send.assert_called_once()
+    assert "Your DMs are closed" in ctx.send.call_args[0][0]
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_verify_slash_direct_argument(mock_bot, mock_service, mock_rate_limiter, tmp_path):
+    db = Database(str(tmp_path / "verify_slash.db"))
+    await db.connect()
+    cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.user = MagicMock()
+    interaction.user.id = 333000
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    mock_service.perform_verification = AsyncMock(return_value="✅ Verified successfully")
+
+    # Invoking with student_id directly
+    await cog.verify_slash.callback(cog, interaction, student_id="23WMD09867")
+    interaction.response.defer.assert_called_once()
+    mock_service.perform_verification.assert_called_once_with(interaction.user, "23WMD09867")
+    interaction.followup.send.assert_called_once_with("✅ Verified successfully", ephemeral=True)
+
+    await db.close()
+

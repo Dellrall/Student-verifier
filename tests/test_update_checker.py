@@ -89,3 +89,106 @@ async def test_update_checker_custom_stream_override():
         assert count == 1
         assert target_stream == "origin/beta"
 
+
+@pytest.mark.asyncio
+async def test_update_checker_subprocess_exception():
+    bot = MagicMock()
+    db = MagicMock(spec=Database)
+    db.is_connected = False
+
+    checker = UpdateCheckerService(bot, db, update_stream="main")
+
+    with patch("subprocess.run", side_effect=Exception("git binary not found / timeout")):
+        is_avail, count, local_h, remote_h, target_stream = await checker.check_for_updates()
+        assert is_avail is False
+        assert count == 0
+        assert local_h == ""
+        assert remote_h == ""
+
+
+@pytest.mark.asyncio
+async def test_update_checker_remote_unresolvable():
+    bot = MagicMock()
+    db = MagicMock(spec=Database)
+    db.is_connected = False
+
+    checker = UpdateCheckerService(bot, db, update_stream="non-existent-branch")
+
+    with patch("subprocess.run") as mock_run:
+        # Remote rev-parse returns non-zero returncode
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # fetch
+            MagicMock(stdout="commit123\n", returncode=0),  # local HEAD
+            MagicMock(stdout="", returncode=128),  # remote rev-parse fails
+        ]
+
+        is_avail, count, local_h, remote_h, target_stream = await checker.check_for_updates()
+        assert is_avail is False
+        assert count == 0
+        assert local_h == "commit123"
+        assert remote_h == ""
+
+
+@pytest.mark.asyncio
+async def test_update_checker_dm_forbidden_exception():
+    import discord
+
+    bot = MagicMock()
+    db = MagicMock(spec=Database)
+    db.is_connected = True
+    db.log = AsyncMock()
+
+    hoster_user = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.status = 403
+    mock_resp.reason = "Forbidden"
+    hoster_user.send.side_effect = discord.Forbidden(mock_resp, "Cannot send messages to this user")
+    bot.get_user.return_value = hoster_user
+
+    checker = UpdateCheckerService(
+        bot,
+        db,
+        hoster_discord_id=999888777,
+        update_stream="main",
+    )
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # fetch origin main
+            MagicMock(stdout="commitOLD\n", returncode=0),  # local HEAD
+            MagicMock(stdout="commitNEW\n", returncode=0),  # remote HEAD
+            MagicMock(stdout="3\n", returncode=0),  # count
+        ]
+
+        # Should complete successfully and catch the Forbidden exception without failing
+        is_avail, count, local_h, remote_h, target_stream = await checker.check_for_updates()
+        assert is_avail is True
+        assert count == 3
+
+
+@pytest.mark.asyncio
+async def test_update_checker_service_lifecycle():
+    import asyncio
+    bot = MagicMock()
+    db = MagicMock(spec=Database)
+
+    checker = UpdateCheckerService(bot, db, interval_hours=12)
+    assert checker.interval_seconds == 12 * 3600
+
+    # Start service
+    checker.start()
+    assert checker._task is not None
+    assert not checker._stop_event.is_set()
+
+    # Stop service
+    checker.stop()
+    assert checker._stop_event.is_set()
+    try:
+        await checker._task
+    except asyncio.CancelledError:
+        pass
+    assert checker._task.cancelled() or checker._task.done()
+
+
+
+
