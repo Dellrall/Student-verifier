@@ -32,17 +32,18 @@ FACULTY_ROLES: Final[dict[str, str]] = {
 }
 FACULTY_ROLE_NAMES: Final[set[str]] = set(FACULTY_ROLES.values())
 
-# Faculty UI color palettes for auto-created roles
+# Default role colors matching server design palette
 FACULTY_COLORS: Final[dict[str, int]] = {
-    "FOCS": 0x00BCD4,  # Cyan
-    "FAFB": 0xFFC107,  # Amber / Gold
-    "FCCI": 0x9C27B0,  # Purple
-    "FOAS": 0x4CAF50,  # Green
-    "FSSH": 0xFF9800,  # Orange
-    "FOBE": 0x607D8B,  # Blue Grey
-    "CPUS": 0xE91E63,  # Pink
-    "FOET": 0x2196F3,  # Blue
+    "FAFB": 0x992D22,  # Dark Red (#992D22)
+    "CPUS": 0x1F8673,  # Dark Teal (#1F8673)
+    "FOCS": 0xF1C40F,  # Yellow / Gold (#F1C40F)
+    "FCCI": 0x71368A,  # Dark Purple (#71368A)
+    "FOAS": 0xE74C3C,  # Red / Coral Red (#E74C3C)
+    "FOBE": 0x2ECC71,  # Green / Emerald (#2ECC71)
+    "FSSH": 0x3498DB,  # Blue (#3498DB)
+    "FOET": 0xBAE973,  # Lime Green (#BAE973)
 }
+GUEST_ROLE_COLOR: Final[int] = 0x2ECC71  # Green / Emerald (#2ECC71)
 
 # Pattern: 2 digits + 3 uppercase letters + 2 digits + 3 digits (e.g. 23WMD09867)
 STUDENT_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{2}[A-Z]{3}\d{2}\d{3}$")

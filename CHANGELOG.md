@@ -10,8 +10,8 @@ All notable changes to the **TARVeri** Discord Student & Guest Verification Bot 
 * **Channel Drift & Stale Setting Recovery**:
   - Automatically detects deleted/missing Discord channels (review channels, welcome channels, help channels) in `find_parent_review_channel()`, `get_welcome_or_verify_channel()`, and `is_help_channel()`.
   - Clears stale database IDs from `guild_settings` via `clear_stale_channel_setting()` and falls back smoothly to keyword-matched channels (`review`, `approval`, `ticket`, `help`, `welcome`).
-* **Dynamic Role Re-creation with Faculty Colors**:
-  - Auto-recreates deleted faculty roles on the fly (`FACULTY_COLORS` mapping: FOCS Cyan, FAFB Gold, FCCI Purple, FOAS Green, FSSH Orange, FOBE Blue-Grey, CPUS Pink, FOET Blue) and guest roles without failing user verifications.
+* **Dynamic Role Re-creation with Server Design Colors**:
+  - Auto-recreates deleted faculty roles on the fly (`FACULTY_COLORS` mapping: FAFB Dark Red `#992D22`, CPUS Dark Teal `#1F8673`, FOCS Yellow `#F1C40F`, FCCI Dark Purple `#71368A`, FOAS Coral Red `#E74C3C`, FOBE Green `#2ECC71`, FSSH Blue `#3498DB`, FOET Lime Green `#BAE973`, Guest Green `#2ECC71`) without failing user verifications.
 * **Downtime Manual Grant Detection**:
   - Detects if an administrator manually granted the `Guest(Approved)` role to an applicant during maintenance or while a review ticket was open.
   - Auto-resolves the ticket to `APPROVED` (*"Applicant was manually granted guest role by admin"*), marks the referral code as `USED`, and archives the thread.

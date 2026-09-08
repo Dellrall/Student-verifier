@@ -14,7 +14,7 @@ from typing import Any
 
 import discord
 
-from tarveri.config import get_configured_tz, now_formatted
+from tarveri.config import GUEST_ROLE_COLOR, get_configured_tz, now_formatted
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.utils import format_ticket_seq, parse_db_timestamp
@@ -231,6 +231,7 @@ class GuestService:
             role = await guild.create_role(
                 name=role_name_to_create,
                 permissions=permissions,
+                colour=discord.Colour(GUEST_ROLE_COLOR),
                 reason="TARVeri: Auto-created Guest(Approved) role for verified guests",
             )
             await self.db.log(

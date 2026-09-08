@@ -70,15 +70,16 @@ flowchart TD
   3. Verifies bot permissions (`view_channel`, `create_private_threads`, `send_messages`).
 
 ### 3. Dynamic Faculty Role Re-Creation
-- If an admin deletes a faculty role, `VerificationService` detects `role is None` and automatically recreates it with standard faculty colors:
-  - **FOCS**: `#00BCD4` (Cyan)
-  - **FAFB**: `#FFC107` (Gold)
-  - **FCCI**: `#9C27B0` (Purple)
-  - **FOAS**: `#4CAF50` (Green)
-  - **FSSH**: `#FF9800` (Orange)
-  - **FOBE**: `#607D8B` (Blue-Grey)
-  - **CPUS**: `#E91E63` (Pink)
-  - **FOET**: `#2196F3` (Blue)
+- If an admin deletes a faculty or guest role, the service detects `role is None` and automatically recreates it with standard server design colors:
+  - **FAFB**: `#992D22` (Dark Red)
+  - **CPUS**: `#1F8673` (Dark Teal)
+  - **FOCS**: `#F1C40F` (Yellow / Gold)
+  - **FCCI**: `#71368A` (Dark Purple)
+  - **FOAS**: `#E74C3C` (Red / Coral Red)
+  - **FOBE**: `#2ECC71` (Green / Emerald)
+  - **FSSH**: `#3498DB` (Blue)
+  - **FOET**: `#BAE973` (Lime Green)
+  - **Guest (Approved)**: `#2ECC71` (Green / Emerald)
 
 ### 4. Downtime Manual Grant Detection
 - If an admin manually grants the `Guest(Approved)` role to an applicant during maintenance or while a ticket is open, `reconcile_downtime_state()` detects `guest_role in applicant.roles`:

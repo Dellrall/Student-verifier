@@ -80,7 +80,7 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 ### 🛡️ Self-Healing & Auto-Recovery Engine
 * **Database Auto-Healing**: Executes `PRAGMA integrity_check` on connection startup and truncates SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) on startup/shutdown.
 * **Channel Drift & Deleted Channel Recovery**: If configured review, help, or welcome channels are deleted, TARVeri clears stale database IDs and falls back smoothly to keyword-matched channels (`review`, `approval`, `ticket`, `help`, `welcome`).
-* **Dynamic Role Auto-Creation**: If faculty or guest roles are deleted from Discord, the bot automatically recreates them with official faculty colors (FOCS Cyan, FAFB Gold, FCCI Purple, FOAS Green, FSSH Orange, FOBE Blue-Grey, CPUS Pink, FOET Blue) and assigns them without failing verifications.
+* **Dynamic Role Auto-Creation**: If faculty or guest roles are deleted from Discord, the bot automatically recreates them with standard server colors (FAFB Dark Red, CPUS Dark Teal, FOCS Yellow, FCCI Dark Purple, FOAS Coral Red, FOBE Green, FSSH Blue, FOET Lime Green, Guest Green) and assigns them without failing verifications.
 * **Downtime Manual Grant Detection**: If an admin manually grants the `Guest(Approved)` role during maintenance, open tickets are automatically transitioned to `APPROVED` and review threads archived.
 * **Returning Student Role Restoration**: Automatically restores missing faculty roles for verified students who rejoined during maintenance or had roles stripped.
 * **Role Hierarchy Diagnostics**: Scans and warns if the bot's role is below managed faculty/guest roles.
