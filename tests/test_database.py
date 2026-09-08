@@ -135,3 +135,78 @@ async def test_database_guild_settings(tmp_path):
 
     await db.close()
 
+
+@pytest.mark.asyncio
+async def test_guest_tickets_reason_giver_and_comments(tmp_path):
+    db_file = str(tmp_path / "test_guest_comments.db")
+    db = Database(db_file)
+    await db.connect()
+
+    guild_id = 112233
+    applicant_id = 5555
+    referrer_id = 6666
+    channel_id = 7777
+
+    # 1. Create ticket with applicant reason
+    ticket_id = await db.create_guest_ticket(
+        guild_id=guild_id,
+        applicant_id=applicant_id,
+        referrer_id=referrer_id,
+        channel_id=channel_id,
+        referral_code="TAR-COMM1",
+        reason="Attending TARUMT Hackathon 2026 as mentor",
+    )
+    assert ticket_id > 0
+
+    ticket = await db.get_guest_ticket_by_id(ticket_id)
+    assert ticket["applicant_id"] == applicant_id
+    assert ticket["reason"] == "Attending TARUMT Hackathon 2026 as mentor"
+    assert ticket["vouch_note"] is None
+    assert ticket["vouched_by_id"] is None
+    assert ticket["closed_by_admin_id"] is None
+    assert ticket["close_reason"] is None
+
+    # 2. Voucher submits comments/statement (Reason Giver: referrer_id)
+    vouch_note = "Confirmed industry speaker and mentor for our team."
+    await db.update_guest_ticket_vouch(ticket_id, vouch_note, vouched_by_id=referrer_id)
+
+    ticket_vouched = await db.get_guest_ticket_by_id(ticket_id)
+    assert ticket_vouched["vouch_note"] == vouch_note
+    assert ticket_vouched["vouched_by_id"] == referrer_id
+    assert ticket_vouched["vouched_at"] is not None
+
+    # 3. Admin closes/approves ticket with comment (Reason Giver: admin_id)
+    admin_id = 9999
+    admin_comment = "Verified external mentor credentials."
+    await db.close_guest_ticket(ticket_id, "APPROVED", closed_by_admin_id=admin_id, close_reason=admin_comment)
+
+    ticket_approved = await db.get_guest_ticket_by_id(ticket_id)
+    assert ticket_approved["status"] == "APPROVED"
+    assert ticket_approved["closed_by_admin_id"] == admin_id
+    assert ticket_approved["close_reason"] == admin_comment
+    assert ticket_approved["closed_at"] is not None
+
+    # 4. Another ticket: Admin rejection with reason/comment
+    ticket_id_rej = await db.create_guest_ticket(
+        guild_id=guild_id,
+        applicant_id=8888,
+        channel_id=9999,
+        reason="Random guest",
+    )
+    rej_reason = "Unverified affiliation and unresponsive."
+    await db.close_guest_ticket(ticket_id_rej, "REJECTED", closed_by_admin_id=admin_id, close_reason=rej_reason)
+
+    ticket_rej = await db.get_guest_ticket_by_id(ticket_id_rej)
+    assert ticket_rej["status"] == "REJECTED"
+    assert ticket_rej["closed_by_admin_id"] == admin_id
+    assert ticket_rej["close_reason"] == rej_reason
+
+    # 5. Revocation reason when leaving server
+    await db.revoke_guest_tickets_for_user(guild_id, applicant_id, status="LEFT_SERVER", close_reason="User left server")
+    ticket_revoked = await db.get_guest_ticket_by_id(ticket_id)
+    assert ticket_revoked["status"] == "LEFT_SERVER"
+    assert ticket_revoked["close_reason"] == "User left server"
+
+    await db.close()
+
+

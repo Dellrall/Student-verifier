@@ -96,10 +96,13 @@ class Database:
                 referral_code TEXT,
                 reason TEXT,
                 vouch_note TEXT,
+                vouched_by_id INTEGER,
+                vouched_at TEXT,
                 status TEXT NOT NULL DEFAULT 'OPEN',
                 created_at TEXT NOT NULL,
                 closed_at TEXT,
-                closed_by_admin_id INTEGER
+                closed_by_admin_id INTEGER,
+                close_reason TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log(event_type);
@@ -120,6 +123,17 @@ class Database:
         for col, col_def in [("guest_role_name", "TEXT DEFAULT 'Guest'"), ("review_channel_id", "INTEGER")]:
             if col not in existing_cols:
                 await self._conn.execute(f"ALTER TABLE guild_settings ADD COLUMN {col} {col_def};")
+
+        # Migration helper for existing databases: ensure new columns in guest_tickets exist
+        cursor = await self._conn.execute("PRAGMA table_info(guest_tickets);")
+        existing_ticket_cols = {row[1] for row in await cursor.fetchall()}
+        for col, col_def in [
+            ("vouched_by_id", "INTEGER"),
+            ("vouched_at", "TEXT"),
+            ("close_reason", "TEXT"),
+        ]:
+            if col not in existing_ticket_cols:
+                await self._conn.execute(f"ALTER TABLE guest_tickets ADD COLUMN {col} {col_def};")
 
         cursor = await self._conn.execute("PRAGMA user_version;")
         row = await cursor.fetchone()
@@ -188,6 +202,25 @@ class Database:
             return
 
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        g_id = None
+        g_name = None
+        if guild is not None:
+            try:
+                g_id = int(guild.id)
+            except (ValueError, TypeError, AttributeError):
+                g_id = None
+            try:
+                g_name = str(guild.name)
+            except (ValueError, TypeError, AttributeError):
+                g_name = None
+
+        u_id = None
+        if user_id is not None:
+            try:
+                u_id = int(user_id)
+            except (ValueError, TypeError, AttributeError):
+                u_id = None
+
         try:
             await self._conn.execute(
                 """INSERT INTO audit_log
@@ -197,9 +230,9 @@ class Database:
                     ts,
                     level,
                     event_type,
-                    guild.id if guild else None,
-                    guild.name if guild else None,
-                    user_id,
+                    g_id,
+                    g_name,
+                    u_id,
                     message,
                 ),
             )
@@ -501,7 +534,8 @@ class Database:
             raise RuntimeError("Database connection is not open.")
         cursor = await self._conn.execute(
             """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
-                      reason, vouch_note, status, created_at, closed_at, closed_by_admin_id
+                      reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
+                      closed_by_admin_id, close_reason
                FROM guest_tickets WHERE channel_id = ?""",
             (channel_id,),
         )
@@ -517,10 +551,13 @@ class Database:
             "referral_code": row[5],
             "reason": row[6],
             "vouch_note": row[7],
-            "status": row[8],
-            "created_at": row[9],
-            "closed_at": row[10],
-            "closed_by_admin_id": row[11],
+            "vouched_by_id": row[8],
+            "vouched_at": row[9],
+            "status": row[10],
+            "created_at": row[11],
+            "closed_at": row[12],
+            "closed_by_admin_id": row[13],
+            "close_reason": row[14],
         }
 
     async def get_guest_ticket_by_id(self, ticket_id: int) -> dict[str, Any] | None:
@@ -529,7 +566,8 @@ class Database:
             raise RuntimeError("Database connection is not open.")
         cursor = await self._conn.execute(
             """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
-                      reason, vouch_note, status, created_at, closed_at, closed_by_admin_id
+                      reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
+                      closed_by_admin_id, close_reason
                FROM guest_tickets WHERE ticket_id = ?""",
             (ticket_id,),
         )
@@ -545,10 +583,13 @@ class Database:
             "referral_code": row[5],
             "reason": row[6],
             "vouch_note": row[7],
-            "status": row[8],
-            "created_at": row[9],
-            "closed_at": row[10],
-            "closed_by_admin_id": row[11],
+            "vouched_by_id": row[8],
+            "vouched_at": row[9],
+            "status": row[10],
+            "created_at": row[11],
+            "closed_at": row[12],
+            "closed_by_admin_id": row[13],
+            "close_reason": row[14],
         }
 
     async def get_open_guest_ticket_for_applicant(
@@ -559,7 +600,8 @@ class Database:
             raise RuntimeError("Database connection is not open.")
         cursor = await self._conn.execute(
             """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
-                      reason, vouch_note, status, created_at
+                      reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
+                      closed_by_admin_id, close_reason
                FROM guest_tickets
                WHERE guild_id = ? AND applicant_id = ? AND status = 'OPEN'""",
             (guild_id, applicant_id),
@@ -576,33 +618,47 @@ class Database:
             "referral_code": row[5],
             "reason": row[6],
             "vouch_note": row[7],
-            "status": row[8],
-            "created_at": row[9],
+            "vouched_by_id": row[8],
+            "vouched_at": row[9],
+            "status": row[10],
+            "created_at": row[11],
+            "closed_at": row[12],
+            "closed_by_admin_id": row[13],
+            "close_reason": row[14],
         }
 
-    async def update_guest_ticket_vouch(self, ticket_id: int, vouch_note: str) -> bool:
-        """Saves a student vouch statement on a guest ticket."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
-        cursor = await self._conn.execute(
-            "UPDATE guest_tickets SET vouch_note = ? WHERE ticket_id = ?",
-            (vouch_note, ticket_id),
-        )
-        await self._conn.commit()
-        return cursor.rowcount > 0
-
-    async def close_guest_ticket(
-        self, ticket_id: int, status: str, closed_by_admin_id: int | None = None
+    async def update_guest_ticket_vouch(
+        self, ticket_id: int, vouch_note: str, vouched_by_id: int | None = None
     ) -> bool:
-        """Closes a guest ticket with status ('APPROVED', 'REJECTED', 'EXPIRED')."""
+        """Saves a student vouch statement along with the voucher ID and timestamp on a guest ticket."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         cursor = await self._conn.execute(
             """UPDATE guest_tickets
-               SET status = ?, closed_at = ?, closed_by_admin_id = ?
+               SET vouch_note = ?, vouched_by_id = ?, vouched_at = ?
                WHERE ticket_id = ?""",
-            (status, ts, closed_by_admin_id, ticket_id),
+            (vouch_note, vouched_by_id, ts, ticket_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def close_guest_ticket(
+        self,
+        ticket_id: int,
+        status: str,
+        closed_by_admin_id: int | None = None,
+        close_reason: str | None = None,
+    ) -> bool:
+        """Closes a guest ticket with status ('APPROVED', 'REJECTED', 'EXPIRED'), admin ID, and reason/comment."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self._conn.execute(
+            """UPDATE guest_tickets
+               SET status = ?, closed_at = ?, closed_by_admin_id = ?, close_reason = ?
+               WHERE ticket_id = ?""",
+            (status, ts, closed_by_admin_id, close_reason, ticket_id),
         )
         await self._conn.commit()
         return cursor.rowcount > 0
@@ -621,7 +677,7 @@ class Database:
         return cursor.rowcount
 
     async def revoke_guest_tickets_for_user(
-        self, guild_id: int, user_id: int, status: str = "REVOKED"
+        self, guild_id: int, user_id: int, status: str = "REVOKED", close_reason: str | None = None
     ) -> int:
         """Revokes all active or approved guest tickets for a user in a guild."""
         if not self._conn:
@@ -629,9 +685,9 @@ class Database:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         cursor = await self._conn.execute(
             """UPDATE guest_tickets
-               SET status = ?, closed_at = ?
+               SET status = ?, closed_at = ?, close_reason = ?
                WHERE guild_id = ? AND applicant_id = ? AND status IN ('OPEN', 'APPROVED')""",
-            (status, ts, guild_id, user_id),
+            (status, ts, close_reason, guild_id, user_id),
         )
         await self._conn.commit()
         return cursor.rowcount

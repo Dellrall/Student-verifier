@@ -174,6 +174,8 @@ async def test_guest_review_thread_double_verification(tmp_path):
 
     ticket_after = await db.get_guest_ticket_by_id(ticket_id)
     assert ticket_after["status"] == "APPROVED"
+    assert ticket_after["closed_by_admin_id"] == admin_user.id
+    assert ticket_after["close_reason"] == "Approved by admin"
 
     await db.close()
 

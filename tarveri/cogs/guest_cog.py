@@ -237,7 +237,9 @@ class VouchModal(discord.ui.Modal, title="🤝 Confirm Referral Vouch"):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
         note = self.vouch_note.value.strip()
-        await self.guest_service.db.update_guest_ticket_vouch(self.ticket["ticket_id"], note)
+        await self.guest_service.db.update_guest_ticket_vouch(
+            self.ticket["ticket_id"], note, vouched_by_id=interaction.user.id
+        )
 
         updated_ticket = await self.guest_service.db.get_guest_ticket_by_id(self.ticket["ticket_id"])
         applicant_member = interaction.guild.get_member(self.ticket["applicant_id"]) if interaction.guild else None
@@ -295,20 +297,42 @@ def build_review_embed(
         embed.add_field(name="Referral Code", value=f"`{ticket['referral_code']}`", inline=True)
 
     if is_referral:
-        vouch_status = (
-            f"✅ Confirmed: *\"{ticket['vouch_note']}\"*"
-            if ticket.get("vouch_note")
-            else f"⏳ Pending voucher confirmation from <@{ticket['referrer_id']}>"
-        )
+        if ticket.get("vouch_note"):
+            voucher_id = ticket.get("vouched_by_id") or ticket.get("referrer_id")
+            voucher_str = f"<@{voucher_id}>" if voucher_id else "Voucher"
+            vouch_status = f"✅ Confirmed by {voucher_str}: *\"{ticket['vouch_note']}\"*"
+            if ticket.get("vouched_at"):
+                vouch_status += f" `({ticket['vouched_at']} UTC)`"
+        else:
+            vouch_status = f"⏳ Pending voucher confirmation from <@{ticket.get('referrer_id')}>"
         embed.add_field(name="1️⃣ Voucher Status", value=vouch_status, inline=False)
-        admin_status = (
-            "✅ Approved by Admin"
-            if status == "APPROVED"
-            else ("🛑 Vetoed / Rejected by Admin" if status in ("REJECTED", "BANNED") else "⏳ Pending Admin final approval")
-        )
+
+        if status == "APPROVED":
+            admin_id = ticket.get("closed_by_admin_id")
+            admin_str = f" by <@{admin_id}>" if admin_id else " by Admin"
+            reason_str = f": *\"{ticket['close_reason']}\"*" if ticket.get("close_reason") else ""
+            admin_status = f"✅ Approved{admin_str}{reason_str}"
+        elif status in ("REJECTED", "BANNED", "LEFT_SERVER"):
+            admin_id = ticket.get("closed_by_admin_id")
+            admin_str = f" by <@{admin_id}>" if admin_id else ""
+            reason_str = f": *\"{ticket.get('close_reason')}\"*" if ticket.get("close_reason") else ""
+            admin_status = f"🛑 {status.capitalize()}{admin_str}{reason_str}"
+        else:
+            admin_status = "⏳ Pending Admin final approval"
         embed.add_field(name="2️⃣ Admin Decision", value=admin_status, inline=False)
-    elif ticket.get("reason"):
-        embed.add_field(name="Application Details", value=ticket["reason"], inline=False)
+    else:
+        if ticket.get("reason"):
+            embed.add_field(name="Application Details", value=ticket["reason"], inline=False)
+        if status == "APPROVED":
+            admin_id = ticket.get("closed_by_admin_id")
+            admin_str = f" by <@{admin_id}>" if admin_id else ""
+            reason_str = f": *\"{ticket['close_reason']}\"*" if ticket.get("close_reason") else ""
+            embed.add_field(name="Staff Verdict", value=f"✅ Approved{admin_str}{reason_str}", inline=False)
+        elif status != "OPEN":
+            admin_id = ticket.get("closed_by_admin_id")
+            admin_str = f" by <@{admin_id}>" if admin_id else ""
+            reason_str = f": *\"{ticket.get('close_reason')}\"*" if ticket.get("close_reason") else ""
+            embed.add_field(name="Staff Verdict", value=f"🛑 {status.capitalize()}{admin_str}{reason_str}", inline=False)
 
     embed.set_footer(text=f"Server: {guild.name} • Created at {ticket.get('created_at', 'N/A')} UTC")
     return embed

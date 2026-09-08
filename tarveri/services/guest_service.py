@@ -325,11 +325,13 @@ class GuestService:
         ticket: dict[str, Any],
         guild: discord.Guild,
         admin_user: discord.User | discord.Member,
+        reason: str | None = None,
     ) -> tuple[bool, str]:
         """Approves guest application, assigns guest role, updates DB, and archives thread."""
         ticket_id = ticket["ticket_id"]
         applicant_id = ticket["applicant_id"]
         referral_code = ticket.get("referral_code")
+        approval_reason = reason.strip() if reason else "Approved by admin"
 
         # 1. Assign Guest Role
         guest_role = await self.get_or_create_guest_role(guild)
@@ -360,7 +362,9 @@ class GuestService:
                 pass
 
         # 2. Update DB ticket and referral code
-        await self.db.close_guest_ticket(ticket_id, "APPROVED", closed_by_admin_id=admin_user.id)
+        await self.db.close_guest_ticket(
+            ticket_id, "APPROVED", closed_by_admin_id=admin_user.id, close_reason=approval_reason
+        )
         if referral_code:
             await self.db.update_referral_code_status(
                 referral_code, guild.id, "USED", used_by_discord_id=applicant_id
@@ -369,7 +373,7 @@ class GuestService:
         await self.db.log(
             "INFO",
             "GUEST_APPROVED",
-            f"Admin {admin_user} approved guest ticket #{ticket_id} for user ID {applicant_id} in '{guild.name}'",
+            f"Admin {admin_user} (ID: {admin_user.id}) approved guest ticket #{ticket_id} for user ID {applicant_id} in '{guild.name}'. Reason: {approval_reason}",
             guild=guild,
             user_id=applicant_id,
         )
@@ -416,7 +420,9 @@ class GuestService:
                     logger.warning(f"Could not kick rejected guest {applicant_member}: {e}")
 
         # 3. Update DB ticket and referral code
-        await self.db.close_guest_ticket(ticket_id, "REJECTED", closed_by_admin_id=admin_user.id)
+        await self.db.close_guest_ticket(
+            ticket_id, "REJECTED", closed_by_admin_id=admin_user.id, close_reason=reject_reason
+        )
         if referral_code:
             await self.db.update_referral_code_status(
                 referral_code, guild.id, "REJECTED", used_by_discord_id=applicant_id
@@ -425,7 +431,7 @@ class GuestService:
         await self.db.log(
             "INFO",
             "GUEST_REJECTED",
-            f"Admin {admin_user} rejected guest ticket #{ticket_id} for user ID {applicant_id} in '{guild.name}'. Reason: {reject_reason}",
+            f"Admin {admin_user} (ID: {admin_user.id}) rejected guest ticket #{ticket_id} for user ID {applicant_id} in '{guild.name}'. Reason: {reject_reason}",
             guild=guild,
             user_id=applicant_id,
         )
@@ -443,8 +449,9 @@ class GuestService:
         when a user leaves, is kicked, or is banned from the server.
         """
         revocation_status = "BANNED" if is_ban else "LEFT_SERVER"
+        close_reason = "Member banned from server" if is_ban else "Member left the server"
         revoked_tickets = await self.db.revoke_guest_tickets_for_user(
-            guild.id, user.id, status=revocation_status
+            guild.id, user.id, status=revocation_status, close_reason=close_reason
         )
         revoked_referrals = await self.db.revoke_active_referrals_for_user(
             guild.id, user.id, status=revocation_status
