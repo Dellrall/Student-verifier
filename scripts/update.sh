@@ -120,6 +120,10 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git fetch origin --quiet || true
 fi
 
+# Fetch and prune remote tracking references
+log_info "Syncing remote metadata (pruning deleted branches)..."
+git fetch --prune origin --quiet || true
+
 # Determine update stream (Priority: CLI argument > .env variable > current upstream/HEAD)
 CONFIGURED_STREAM="${CLI_STREAM:-${TARVERI_UPDATE_STREAM:-${TARVERI_UPDATE_BRANCH:-auto}}}"
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
@@ -131,15 +135,34 @@ if [ -n "${CONFIGURED_STREAM}" ] && [ "${CONFIGURED_STREAM}" != "auto" ]; then
     TARGET_BRANCH="${CONFIGURED_STREAM#origin/}"
     TARGET_REMOTE="origin/${TARGET_BRANCH}"
 else
-    TARGET_REMOTE="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || echo "origin/${CURRENT_BRANCH}")"
-    TARGET_BRANCH="${TARGET_REMOTE#origin/}"
+    # Check if upstream tracking branch exists and is valid on origin
+    UPSTREAM_TRACKING="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || true)"
+    if [ -n "${UPSTREAM_TRACKING}" ] && git rev-parse --verify --quiet "${UPSTREAM_TRACKING}" >/dev/null 2>&1; then
+        TARGET_REMOTE="${UPSTREAM_TRACKING}"
+        TARGET_BRANCH="${TARGET_REMOTE#origin/}"
+    else
+        # If current branch has no valid remote upstream or remote was pruned, fallback to origin/main
+        if [ "${CURRENT_BRANCH}" != "main" ]; then
+            log_warn "Current branch '${CURRENT_BRANCH}' does not exist on remote 'origin' (merged or deleted)."
+            log_info "Automatically redirecting update stream to 'origin/main'..."
+        fi
+        TARGET_REMOTE="origin/main"
+        TARGET_BRANCH="main"
+    fi
+fi
+
+# Verify target remote ref exists on origin
+if ! git rev-parse --verify --quiet "${TARGET_REMOTE}" >/dev/null 2>&1; then
+    if [ "${TARGET_BRANCH}" != "main" ]; then
+        log_warn "Target remote branch '${TARGET_REMOTE}' was not found on origin."
+        log_info "Falling back to default stream 'origin/main'..."
+        TARGET_REMOTE="origin/main"
+        TARGET_BRANCH="main"
+        git fetch origin main --quiet || true
+    fi
 fi
 
 log_info "Target update stream: ${TARGET_REMOTE} (Local branch: ${CURRENT_BRANCH})"
-
-# Fetch remote status for target stream
-log_info "Fetching latest remote status for '${TARGET_BRANCH}'..."
-git fetch origin "${TARGET_BRANCH}" --quiet 2>/dev/null || git fetch origin --quiet 2>/dev/null || true
 
 LOCAL_HASH="$(git rev-parse HEAD 2>/dev/null || echo "uninitialized")"
 REMOTE_HASH="$(git rev-parse "${TARGET_REMOTE}" 2>/dev/null || true)"

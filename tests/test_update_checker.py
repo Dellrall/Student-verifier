@@ -115,11 +115,12 @@ async def test_update_checker_remote_unresolvable():
     checker = UpdateCheckerService(bot, db, update_stream="non-existent-branch")
 
     with patch("subprocess.run") as mock_run:
-        # Remote rev-parse returns non-zero returncode
+        # Remote rev-parse returns non-zero returncode for non-existent-branch and fallback
         mock_run.side_effect = [
-            MagicMock(returncode=0),  # fetch
+            MagicMock(returncode=0),  # fetch --prune
             MagicMock(stdout="commit123\n", returncode=0),  # local HEAD
-            MagicMock(stdout="", returncode=128),  # remote rev-parse fails
+            MagicMock(stdout="", returncode=128),  # remote rev-parse target_branch fails
+            MagicMock(stdout="", returncode=128),  # fallback origin/main rev-parse fails
         ]
 
         is_avail, count, local_h, remote_h, target_stream = await checker.check_for_updates()

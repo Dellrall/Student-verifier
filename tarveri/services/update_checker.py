@@ -71,29 +71,22 @@ class UpdateCheckerService:
         stream_to_check = (custom_stream or self.update_stream or "auto").strip()
 
         def _git_check() -> tuple[bool, int, str, str, str]:
+            target_branch = stream_to_check
             try:
+                # 1. Fetch and prune remote tracking references
+                subprocess.run(
+                    ["git", "fetch", "--prune", "origin", "--quiet"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=15,
+                )
+
                 target_branch = ""
                 if stream_to_check.lower() != "auto":
                     clean_branch = stream_to_check.replace("origin/", "").strip()
                     target_branch = f"origin/{clean_branch}"
-                    # Fetch target branch specifically from origin
-                    subprocess.run(
-                        ["git", "fetch", "origin", clean_branch, "--quiet"],
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=15,
-                    )
                 else:
-                    # 1. Fetch quietly from upstream
-                    subprocess.run(
-                        ["git", "fetch", "--quiet"],
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=15,
-                    )
-
                     # Get upstream branch from @{u}
                     upstream_res = subprocess.run(
                         ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
@@ -129,7 +122,18 @@ class UpdateCheckerService:
                     timeout=5,
                 )
                 if remote_res.returncode != 0:
-                    return False, 0, local_hash, "", target_branch
+                    # Fallback to origin/main if target branch was deleted on remote
+                    if target_branch != "origin/main":
+                        target_branch = "origin/main"
+                        remote_res = subprocess.run(
+                            ["git", "rev-parse", target_branch],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+
+                    if remote_res.returncode != 0:
+                        return False, 0, local_hash, "", target_branch
 
                 remote_hash = remote_res.stdout.strip() or local_hash
                 if not local_hash or not remote_hash or local_hash == remote_hash:
@@ -143,8 +147,11 @@ class UpdateCheckerService:
                     timeout=5,
                 )
                 behind_count = int(count_res.stdout.strip() or "0")
-                return behind_count > 0, behind_count, local_hash, remote_hash, target_branch
-            except Exception:
+                is_update = behind_count > 0
+
+                return is_update, behind_count, local_hash, remote_hash, target_branch
+            except Exception as e:
+                logger.debug(f"Git update check error: {e}")
                 return False, 0, "", "", target_branch or stream_to_check
 
         is_avail, count, local_h, remote_h, target_str = await loop.run_in_executor(None, _git_check)
