@@ -288,11 +288,22 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.followup.send(f"❌ Backup failed: {e}", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @app_commands.command(name="sync_commands", description="Force sync application slash commands.")
+    @app_commands.command(
+        name="sync_commands",
+        description="Sync slash commands or clean up duplicate guild command overrides.",
+    )
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(guild_only="Sync only to this guild (faster) or globally")
-    async def sync_commands(self, interaction: discord.Interaction, guild_only: bool = False) -> None:
-        """Manually forces a sync of the Discord application command tree."""
+    @app_commands.describe(
+        clean_duplicates="Clean and remove duplicate guild commands, leaving only global commands (Recommended)",
+        guild_only="Sync commands only to this guild (useful for immediate developer testing)",
+    )
+    async def sync_commands(
+        self,
+        interaction: discord.Interaction,
+        clean_duplicates: bool = True,
+        guild_only: bool = False,
+    ) -> None:
+        """Manually forces a sync or cleanup of the Discord application command tree."""
         if not self._check_admin(interaction):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
@@ -306,9 +317,14 @@ class AdminCog(commands.Cog, name="Admin"):
                 self.bot.tree.copy_global_to(guild=interaction.guild)
                 synced = await self.bot.tree.sync(guild=interaction.guild)
                 scope = f"server '{interaction.guild.name}'"
+                msg_suffix = "*(Note: If commands appear duplicated, run `/sync_commands clean_duplicates:True`)*"
             else:
+                if clean_duplicates and interaction.guild:
+                    self.bot.tree.clear_commands(guild=interaction.guild)
+                    await self.bot.tree.sync(guild=interaction.guild)
                 synced = await self.bot.tree.sync()
-                scope = "globally"
+                scope = "globally (deduplicated)"
+                msg_suffix = "*(Duplicate guild commands cleared. Press `Ctrl + R` on Discord Desktop or restart your app to refresh your cache)*"
 
             await self.db.log(
                 "INFO",
@@ -318,22 +334,23 @@ class AdminCog(commands.Cog, name="Admin"):
                 user_id=interaction.user.id,
             )
             await interaction.followup.send(
-                f"✅ Successfully synced {len(synced)} command(s) {scope}.", ephemeral=True
+                f"✅ Successfully synced {len(synced)} command(s) {scope}.\n{msg_suffix}",
+                ephemeral=True,
             )
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
     @commands.command(name="sync", aliases=["sync_commands"])
-    async def sync_prefix(self, ctx: commands.Context, scope: str = "guild") -> None:
-        """Text fallback command to immediately sync slash commands to this server."""
+    async def sync_prefix(self, ctx: commands.Context, scope: str = "clean") -> None:
+        """Text fallback command to immediately sync slash commands or clean duplicates."""
         if not ctx.guild or not isinstance(ctx.author, discord.Member):
             return
         if not (ctx.author.guild_permissions.administrator or any(r.name == self.admin_role_name for r in ctx.author.roles)):
             await ctx.send("❌ You do not have permission to sync commands.")
             return
 
-        msg = await ctx.send("🔄 Syncing slash commands to this server...")
+        msg = await ctx.send("🔄 Syncing slash commands...")
         try:
             if scope.lower() in ("guild", "here"):
                 self.bot.tree.copy_global_to(guild=ctx.guild)
@@ -341,13 +358,23 @@ class AdminCog(commands.Cog, name="Admin"):
                 await msg.edit(
                     content=(
                         f"✅ Instantly synced **{len(synced)}** slash command(s) to **{ctx.guild.name}**!\n"
-                        f"*(Tip: If they don't show up in your autocomplete immediately, press `Ctrl + R` on Discord Desktop or restart your app to refresh your cache)*"
+                        f"*(Tip: If commands appear duplicated in your menu, run `!sync clean` to remove duplicate guild overrides)*"
+                    )
+                )
+            elif scope.lower() in ("clean", "clear", "fix", "dedupe"):
+                self.bot.tree.clear_commands(guild=ctx.guild)
+                await self.bot.tree.sync(guild=ctx.guild)
+                synced = await self.bot.tree.sync()
+                await msg.edit(
+                    content=(
+                        f"✅ **Deduplicated & Synced!** Cleared duplicate guild commands in **{ctx.guild.name}** and synced **{len(synced)}** global command(s)!\n"
+                        f"*(Tip: Press `Ctrl + R` on Discord Desktop or restart your Discord app to refresh your command cache)*"
                     )
                 )
             else:
                 synced = await self.bot.tree.sync()
                 await msg.edit(
-                    content=f"✅ Synced **{len(synced)}** global command(s)! (Note: Global commands take up to 1 hour to propagate across Discord)."
+                    content=f"✅ Synced **{len(synced)}** global command(s)!"
                 )
         except Exception as e:
             await msg.edit(content=f"❌ Failed to sync commands: {e}")

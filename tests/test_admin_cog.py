@@ -137,6 +137,13 @@ async def test_sync_prefix(tmp_path):
     msg.edit.assert_called_once()
     assert "Instantly synced **2** slash command(s)" in msg.edit.call_args[1]["content"]
 
+    # Test !sync clean / deduplication
+    bot.tree.clear_commands = MagicMock()
+    msg.edit.reset_mock()
+    await cog.sync_prefix.callback(cog, ctx, scope="clean")
+    bot.tree.clear_commands.assert_called_once_with(guild=guild)
+    assert "Deduplicated & Synced" in msg.edit.call_args[1]["content"]
+
     await db.close()
 
 
