@@ -862,3 +862,28 @@ class Database:
         await self._conn.commit()
         return cursor.rowcount
 
+    async def get_all_active_referrals(self) -> list[dict[str, Any]]:
+        """Fetches all referral codes with status 'ACTIVE' or 'PENDING_APPROVAL' for maintenance reconciliation."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT code, guild_id, referrer_discord_id, created_at, expires_at,
+                      used_by_discord_id, used_at, status
+               FROM referral_codes WHERE status IN ('ACTIVE', 'PENDING_APPROVAL')"""
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "code": r[0],
+                "guild_id": r[1],
+                "referrer_discord_id": r[2],
+                "created_at": r[3],
+                "expires_at": r[4],
+                "used_by_discord_id": r[5],
+                "used_at": r[6],
+                "status": r[7],
+            }
+            for r in rows
+        ]
+
+

@@ -744,6 +744,108 @@ async def test_ticket_escalation_lifecycle(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_reconcile_downtime_state(tmp_path):
+    db_path = str(tmp_path / "downtime_sync_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = GuestService(bot, db, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 5566
+    guild.name = "Downtime Guild"
+    guild.chunked = True
+    bot.get_guild.return_value = guild
+
+    # 1. Open Ticket 1: Applicant 8001 left during maintenance
+    ticket1_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=8001,
+        channel_id=9001,
+        reason="Left during downtime",
+    )
+    thread1 = MagicMock(spec=discord.Thread)
+    thread1.id = 9001
+    thread1.archived = False
+    thread1.send = AsyncMock()
+    thread1.edit = AsyncMock()
+
+    # 2. Open Ticket 2: Referrer 8002 left during maintenance
+    ticket2_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=8003,
+        referrer_id=8002,
+        channel_id=9002,
+        referral_code="TAR-DOWNTIME",
+    )
+    thread2 = MagicMock(spec=discord.Thread)
+    thread2.id = 9002
+    thread2.archived = False
+    thread2.send = AsyncMock()
+    thread2.edit = AsyncMock()
+
+    # 3. Open Ticket 3: Thread deleted during maintenance
+    ticket3_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=8004,
+        channel_id=9003,
+        reason="Thread was deleted",
+    )
+
+    # 4. Active referral code from student 8005 who left during maintenance
+    await db.create_referral_code("TAR-ORPHANED", guild.id, 8005, "2099-01-01 00:00:00")
+
+    # 5. Expired referral code
+    await db.create_referral_code("TAR-EXPIRED", guild.id, 8006, "2020-01-01 00:00:00")
+
+    # Present members in guild: Only applicant 8003 and 8004
+    applicant8003 = MagicMock(spec=discord.Member)
+    applicant8003.id = 8003
+    applicant8004 = MagicMock(spec=discord.Member)
+    applicant8004.id = 8004
+
+    guild.get_member.side_effect = lambda user_id: {
+        8003: applicant8003,
+        8004: applicant8004,
+    }.get(user_id, None)
+
+    guild.get_thread.side_effect = lambda thread_id: {
+        9001: thread1,
+        9002: thread2,
+    }.get(thread_id, None)
+    guild.fetch_channel = AsyncMock(side_effect=discord.NotFound(MagicMock(), "Unknown Channel"))
+    guild.fetch_member = AsyncMock(side_effect=discord.NotFound(MagicMock(), "Unknown Member"))
+    guild.fetch_ban = AsyncMock(side_effect=discord.NotFound(MagicMock(), "Unknown Ban"))
+
+    # Execute downtime reconciliation
+    summary = await service.reconcile_downtime_state()
+
+    assert summary["expired_referrals"] == 1
+    assert summary["reconciled_tickets"] == 3  # ticket1 (applicant left), ticket2 (referrer left), ticket3 (thread deleted)
+    assert summary["reconciled_referrals"] == 1  # TAR-ORPHANED
+
+    # Verify DB statuses
+    t1 = await db.get_guest_ticket_by_id(ticket1_id)
+    assert t1["status"] == "LEFT_SERVER"
+
+    t2 = await db.get_guest_ticket_by_id(ticket2_id)
+    assert t2["status"] == "REVOKED"
+
+    t3 = await db.get_guest_ticket_by_id(ticket3_id)
+    assert t3["status"] == "EXPIRED"
+
+    ref_orphan = await db.get_referral_code("TAR-ORPHANED", guild.id)
+    assert ref_orphan["status"] == "LEFT_SERVER"
+
+    ref_exp = await db.get_referral_code("TAR-EXPIRED", guild.id)
+    assert ref_exp["status"] == "EXPIRED"
+
+    await db.close()
+
+
+
 
 
 

@@ -139,6 +139,13 @@ class TARVeriBot(commands.Bot):
                 f"TARVeri ready: Logged in as {self.user} (ID: {self.user.id}) | Servers: {len(self.guilds)}"
             )
 
+            # Reconcile any events (member leaves, bans, expired codes) missed during maintenance
+            if self.guest_service:
+                asyncio.create_task(
+                    self.guest_service.reconcile_downtime_state(),
+                    name="tarveri_downtime_reconciliation",
+                )
+
     async def close(self) -> None:
         """Gracefully tears down the bot, logs shutdown, and flushes SQLite WAL."""
         logger.info("Initiating graceful shutdown...")

@@ -828,6 +828,149 @@ class GuestService:
                 user_id=user.id,
             )
 
+    async def reconcile_downtime_state(self) -> dict[str, int]:
+        """
+        Reconciles missed events (member leaves, bans, thread deletions, code expirations)
+        that occurred while the bot was offline or in maintenance.
+        """
+        summary = {
+            "reconciled_tickets": 0,
+            "reconciled_referrals": 0,
+            "expired_referrals": 0,
+        }
+
+        # 1. Cleanup expired referral codes
+        summary["expired_referrals"] = await self.db.cleanup_expired_referrals()
+
+        # 2. Check all open tickets
+        open_tickets = await self.db.get_open_guest_tickets()
+        for t in open_tickets:
+            guild = self.bot.get_guild(t["guild_id"]) if self.bot else None
+            if not guild:
+                continue
+
+            # Ensure guild member cache is populated
+            if hasattr(guild, "chunk") and not getattr(guild, "chunked", True):
+                try:
+                    await guild.chunk()
+                except Exception:
+                    pass
+
+            applicant_id = t["applicant_id"]
+            applicant_member = guild.get_member(applicant_id)
+            if not applicant_member and hasattr(guild, "fetch_member"):
+                try:
+                    applicant_member = await guild.fetch_member(applicant_id)
+                except (discord.NotFound, discord.HTTPException):
+                    applicant_member = None
+
+            # If applicant left or was banned during maintenance
+            if not applicant_member:
+                is_ban = False
+                if hasattr(guild, "fetch_ban"):
+                    try:
+                        await guild.fetch_ban(discord.Object(id=applicant_id))
+                        is_ban = True
+                    except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                        is_ban = False
+
+                obj_user = discord.Object(id=applicant_id)
+                await self.handle_member_leave_or_ban(guild, obj_user, is_ban=is_ban)
+                summary["reconciled_tickets"] += 1
+
+                # Clean up thread if it exists
+                thread = guild.get_thread(t["channel_id"])
+                if thread and not getattr(thread, "archived", False):
+                    try:
+                        await thread.send("🛑 **Guest applicant left or was removed from server during maintenance.** Thread archived.")
+                        await thread.edit(archived=True, locked=True)
+                    except (discord.HTTPException, discord.Forbidden):
+                        pass
+                continue
+
+            # If referrer left or was banned during maintenance
+            referrer_id = t.get("referrer_id")
+            if referrer_id:
+                referrer_member = guild.get_member(referrer_id)
+                if not referrer_member and hasattr(guild, "fetch_member"):
+                    try:
+                        referrer_member = await guild.fetch_member(referrer_id)
+                    except (discord.NotFound, discord.HTTPException):
+                        referrer_member = None
+
+                if not referrer_member:
+                    is_ban = False
+                    if hasattr(guild, "fetch_ban"):
+                        try:
+                            await guild.fetch_ban(discord.Object(id=referrer_id))
+                            is_ban = True
+                        except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                            is_ban = False
+
+                    await self.handle_member_leave_or_ban(guild, discord.Object(id=referrer_id), is_ban=is_ban)
+                    summary["reconciled_tickets"] += 1
+
+                    thread = guild.get_thread(t["channel_id"])
+                    if thread and not getattr(thread, "archived", False):
+                        try:
+                            await thread.send("🛑 **Referring student left or was removed from server during maintenance.** Application cancelled.")
+                            await thread.edit(archived=True, locked=True)
+                        except (discord.HTTPException, discord.Forbidden):
+                            pass
+                    continue
+
+            # Check if thread was deleted during maintenance
+            thread = guild.get_thread(t["channel_id"])
+            if not thread and hasattr(guild, "fetch_channel"):
+                try:
+                    fetched = await guild.fetch_channel(t["channel_id"])
+                    if isinstance(fetched, discord.Thread):
+                        thread = fetched
+                except (discord.NotFound, discord.HTTPException):
+                    thread = None
+
+            if not thread:
+                await self.db.close_guest_ticket(
+                    t["ticket_id"],
+                    status="EXPIRED",
+                    close_reason="Review thread was deleted during maintenance",
+                )
+                summary["reconciled_tickets"] += 1
+
+        # 3. Check active referral codes whose creators left during maintenance
+        active_referrals = await self.db.get_all_active_referrals()
+        for ref in active_referrals:
+            guild = self.bot.get_guild(ref["guild_id"]) if self.bot else None
+            if not guild:
+                continue
+            creator_id = ref["referrer_discord_id"]
+            creator = guild.get_member(creator_id)
+            if not creator and hasattr(guild, "fetch_member"):
+                try:
+                    creator = await guild.fetch_member(creator_id)
+                except (discord.NotFound, discord.HTTPException):
+                    creator = None
+
+            if not creator:
+                await self.db.revoke_active_referrals_for_user(
+                    guild.id, creator_id, status="LEFT_SERVER"
+                )
+                summary["reconciled_referrals"] += 1
+
+        total_reconciled = summary["reconciled_tickets"] + summary["reconciled_referrals"] + summary["expired_referrals"]
+        if total_reconciled > 0:
+            await self.db.log(
+                "INFO",
+                "MAINTENANCE_RECONCILIATION_COMPLETE",
+                f"Maintenance catch-up: Reconciled {summary['reconciled_tickets']} ticket(s), {summary['reconciled_referrals']} orphaned referral(s), {summary['expired_referrals']} expired referral(s)",
+            )
+            logger.info(
+                f"Maintenance catch-up complete: {summary['reconciled_tickets']} tickets, "
+                f"{summary['reconciled_referrals']} referrals, {summary['expired_referrals']} expired codes."
+            )
+
+        return summary
+
     async def check_and_escalate_tickets(
         self,
         interval_seconds: float = 3600.0,
