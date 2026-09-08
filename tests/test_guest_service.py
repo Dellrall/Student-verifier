@@ -520,5 +520,85 @@ async def test_get_admin_role_or_fallback_and_auto_invite(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_admin_online_detection_and_authority_tagging(tmp_path):
+    db_path = str(tmp_path / "online_tag_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = GuestService(bot, db, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 7788
+    guild.name = "Online Test Guild"
+    guild.owner_id = 9991
+
+    # 1. Setup owner (Offline)
+    owner = MagicMock(spec=discord.Member)
+    owner.id = 9991
+    owner.bot = False
+    owner.mention = "<@9991>"
+    owner.status = discord.Status.offline
+    guild.owner = owner
+
+    # 2. Setup Senior Admin (Offline)
+    senior_admin = MagicMock(spec=discord.Member)
+    senior_admin.id = 9992
+    senior_admin.bot = False
+    senior_admin.mention = "<@9992>"
+    senior_admin.status = discord.Status.offline
+    senior_perms = MagicMock()
+    senior_perms.administrator = True
+    senior_perms.manage_guild = True
+    senior_admin.guild_permissions = senior_perms
+    senior_role = MagicMock(spec=discord.Role)
+    senior_role.position = 50
+    senior_admin.top_role = senior_role
+    senior_admin.roles = []
+
+    # 3. Setup Moderator / Junior Admin (Online / DND)
+    online_mod = MagicMock(spec=discord.Member)
+    online_mod.id = 9993
+    online_mod.bot = False
+    online_mod.mention = "<@9993>"
+    online_mod.status = discord.Status.online
+    mod_perms = MagicMock()
+    mod_perms.administrator = False
+    mod_perms.manage_guild = True
+    mod_perms.manage_threads = True
+    online_mod.guild_permissions = mod_perms
+    mod_role = MagicMock(spec=discord.Role)
+    mod_role.position = 20
+    online_mod.top_role = mod_role
+    online_mod.roles = []
+
+    guild.members = [owner, senior_admin, online_mod]
+    guild.roles = [senior_role, mod_role]
+
+    # Test 1: When online_mod is online, tag online_mod!
+    tag = await service.get_target_admin_mention(guild)
+    assert tag == "<@9993>"
+
+    # Test 2: When NO admin is online (online_mod goes offline), tag highest authority (Owner: 9991)
+    online_mod.status = discord.Status.offline
+    tag_all_offline = await service.get_target_admin_mention(guild)
+    assert tag_all_offline == "<@9991>"
+
+    # Test 3: If owner is excluded, tag highest authority among remaining (Senior Admin: 9992)
+    tag_excluded_owner = await service.get_target_admin_mention(guild, exclude_ids={9991})
+    assert tag_excluded_owner == "<@9992>"
+
+    # Test 4: Multiple online admins (both senior_admin and online_mod online)
+    senior_admin.status = discord.Status.idle
+    online_mod.status = discord.Status.dnd
+    tag_multiple_online = await service.get_target_admin_mention(guild, exclude_ids={9991})
+    # Ordered by authority: senior_admin first, then online_mod
+    assert tag_multiple_online == "<@9992>, <@9993>"
+
+    await db.close()
+
+
+
 
 

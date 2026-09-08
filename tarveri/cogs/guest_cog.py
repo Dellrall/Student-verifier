@@ -77,7 +77,7 @@ def get_admin_role_mention(guild: discord.Guild, admin_role_name: str = "TARVeri
         return role.mention
     if getattr(guild, "owner", None):
         return f"<@{guild.owner_id}>"
-    return "@here"
+    return "@Staff"
 
 
 def is_admin_or_has_role(interaction: discord.Interaction, admin_role_name: str) -> bool:
@@ -153,8 +153,9 @@ class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral
         if ticket:
             embed = build_review_embed(ticket, interaction.guild, interaction.user)
             view = GuestReviewThreadView(self.guest_service)
-            admin_role = await self.guest_service.get_admin_role_or_fallback(interaction.guild)
-            admin_mention = admin_role.mention if admin_role else get_admin_role_mention(interaction.guild, self.guest_service.admin_role_name)
+            admin_mention = await self.guest_service.get_target_admin_mention(
+                interaction.guild, exclude_ids={interaction.user.id}
+            )
             vouch_prompt = f"\n👋 {interaction.user.mention} has submitted referral code `{raw_code}`."
             if ticket.get("referrer_id"):
                 vouch_prompt += f" <@{ticket['referrer_id']}>, please confirm your vouch for this guest below."
@@ -169,7 +170,7 @@ class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral
                 content=f"{admin_mention} {vouch_prompt}{pending_notice}",
                 embed=embed,
                 view=view,
-                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=True),
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
             )
 
         await interaction.followup.send(
@@ -223,8 +224,9 @@ class GuestApplicationModal(discord.ui.Modal, title="🌐 Guest Access Applicati
         if ticket:
             embed = build_review_embed(ticket, interaction.guild, interaction.user)
             view = GuestReviewThreadView(self.guest_service)
-            admin_role = await self.guest_service.get_admin_role_or_fallback(interaction.guild)
-            admin_mention = admin_role.mention if admin_role else get_admin_role_mention(interaction.guild, self.guest_service.admin_role_name)
+            admin_mention = await self.guest_service.get_target_admin_mention(
+                interaction.guild, exclude_ids={interaction.user.id}
+            )
 
             pending_notice = (
                 "\n⚠️ *Note: If you have not completed server rules screening yet, please click 'Complete' on your Discord app to enable chatting.*"
@@ -236,7 +238,7 @@ class GuestApplicationModal(discord.ui.Modal, title="🌐 Guest Access Applicati
                 content=f"{admin_mention} New guest application from {interaction.user.mention}:{pending_notice}",
                 embed=embed,
                 view=view,
-                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=True),
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
             )
 
         await interaction.followup.send(
@@ -332,12 +334,18 @@ class VouchModal(discord.ui.Modal, title="🤝 Confirm Referral Vouch"):
         await interaction.followup.send("✅ Your vouch statement has been recorded! Waiting for Admin team approval.", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
         if isinstance(interaction.channel, discord.Thread):
-            admin_mention = get_admin_role_mention(interaction.guild, self.guest_service.admin_role_name) if interaction.guild else "@Staff"
+            admin_mention = (
+                await self.guest_service.get_target_admin_mention(
+                    interaction.guild, exclude_ids={interaction.user.id, self.ticket.get("applicant_id")}
+                )
+                if interaction.guild
+                else "@Staff"
+            )
             await interaction.channel.send(
                 f"🤝 **Voucher {interaction.user.mention} confirmed vouch for <@{self.ticket['applicant_id']}>:**\n"
                 f"> {note}\n\n"
                 f"{admin_mention} **Step 1/2 of Double Verification complete!** Please review and click **`Approve Guest`** to admit or **`Reject / Veto`** to decline.",
-                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=True),
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
             )
 
 

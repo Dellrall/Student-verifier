@@ -276,6 +276,121 @@ class GuestService:
 
         return None
 
+    async def get_admin_candidates(
+        self,
+        guild: discord.Guild,
+        exclude_ids: set[int] | None = None,
+    ) -> list[discord.Member]:
+        """
+        Discovers and ranks all administrator/moderator members in the server sorted by authority hierarchy:
+        1. Server Owner
+        2. Members with Administrator permission
+        3. Members with Manage Guild / Manage Threads permission
+        4. Members with configured or discovered Admin role
+        Sorted by authority (highest ranking first, based on role hierarchy and admin permissions).
+        """
+        if not guild:
+            return []
+
+        if hasattr(guild, "chunk") and not getattr(guild, "chunked", True):
+            try:
+                await guild.chunk()
+            except Exception as e:
+                logger.debug(f"Guild chunking skipped/failed: {e}")
+
+        admin_role = await self.get_admin_role_or_fallback(guild)
+        admin_members: set[discord.Member] = set()
+
+        # A. Role members
+        if admin_role:
+            if hasattr(admin_role, "members") and admin_role.members:
+                admin_members.update(admin_role.members)
+            elif hasattr(guild, "members") and guild.members:
+                for m in guild.members:
+                    if admin_role in getattr(m, "roles", []):
+                        admin_members.add(m)
+
+        # B. Permission-based admins
+        if hasattr(guild, "members") and guild.members:
+            for m in guild.members:
+                if getattr(m, "bot", False):
+                    continue
+                perms = getattr(m, "guild_permissions", None)
+                if perms and (
+                    getattr(perms, "administrator", False)
+                    or getattr(perms, "manage_guild", False)
+                    or getattr(perms, "manage_threads", False)
+                ):
+                    admin_members.add(m)
+
+        # C. Server owner
+        if getattr(guild, "owner", None):
+            admin_members.add(guild.owner)
+        elif getattr(guild, "owner_id", None):
+            owner_m = guild.get_member(guild.owner_id)
+            if owner_m:
+                admin_members.add(owner_m)
+
+        # Filter out bots and excluded IDs
+        effective_exclude = set(exclude_ids or set())
+        me_id = getattr(getattr(guild, "me", None), "id", None)
+        if me_id:
+            effective_exclude.add(me_id)
+
+        valid_admins = [
+            m for m in admin_members
+            if m and getattr(m, "bot", None) is not True and m.id not in effective_exclude
+        ]
+
+        def authority_key(m: discord.Member) -> tuple[int, int, int, int]:
+            is_owner = 1 if (m == getattr(guild, "owner", None) or getattr(m, "id", None) == getattr(guild, "owner_id", None)) else 0
+            perms = getattr(m, "guild_permissions", None)
+            has_admin = 1 if (perms and getattr(perms, "administrator", None) is True) else 0
+            has_manage_guild = 1 if (perms and getattr(perms, "manage_guild", None) is True) else 0
+            top_role = getattr(m, "top_role", None)
+            top_role_pos = getattr(top_role, "position", 0) if isinstance(getattr(top_role, "position", None), int) else 0
+            return (is_owner, has_admin, has_manage_guild, top_role_pos)
+
+        valid_admins.sort(key=authority_key, reverse=True)
+        return valid_admins
+
+    async def get_target_admin_mention(
+        self,
+        guild: discord.Guild,
+        exclude_ids: set[int] | None = None,
+    ) -> str:
+        """
+        Intelligently selects the best admin target to tag:
+        1. Checks if any admin/staff members are currently ONLINE, IDLE, or in DND (active).
+           If found, tags the online admin(s).
+        2. If no admin is online (all offline / invisible), tags the member with the HIGHEST AUTHORITY (Server Owner or Top Admin).
+        3. If no admin members can be resolved, falls back to the configured Admin Role mention.
+        """
+        candidates = await self.get_admin_candidates(guild, exclude_ids=exclude_ids)
+        if candidates:
+            # Check for active (online / idle / dnd) admins
+            active_admins: list[discord.Member] = []
+            for m in candidates:
+                status = getattr(m, "status", None)
+                if status in (discord.Status.online, discord.Status.idle, discord.Status.dnd) or str(status).lower() in ("online", "idle", "dnd"):
+                    active_admins.append(m)
+
+            if active_admins:
+                # Mention up to 3 highest-ranking online admins
+                return ", ".join(m.mention for m in active_admins[:3])
+
+            # If no one is online, mention the one with the highest authority (first candidate in sorted list)
+            return candidates[0].mention
+
+        # Fallback to role mention or owner ID
+        admin_role = await self.get_admin_role_or_fallback(guild)
+        if admin_role:
+            return admin_role.mention
+        if getattr(guild, "owner_id", None):
+            return f"<@{guild.owner_id}>"
+        return "@Staff"
+
+
 
     async def open_guest_review_ticket(
         self,
@@ -436,62 +551,22 @@ class GuestService:
                         pass
 
             # Auto-invite all admin team members & reviewers to private review thread
-            if hasattr(guild, "chunk") and not getattr(guild, "chunked", True):
-                try:
-                    await guild.chunk()
-                except Exception as e:
-                    logger.debug(f"Guild chunking skipped/failed: {e}")
-
-            admin_role = await self.get_admin_role_or_fallback(guild)
-
-            admin_members: set[discord.Member] = set()
-
-            # A. Members having the discovered admin/reviewer role
-            if admin_role:
-                if hasattr(admin_role, "members") and admin_role.members:
-                    admin_members.update(admin_role.members)
-                elif hasattr(guild, "members") and guild.members:
-                    for m in guild.members:
-                        if admin_role in getattr(m, "roles", []):
-                            admin_members.add(m)
-
-            # B. Members with Administrator, Manage Guild, or Manage Threads permissions
-            if hasattr(guild, "members") and guild.members:
-                for m in guild.members:
-                    if getattr(m, "bot", False):
-                        continue
-                    perms = getattr(m, "guild_permissions", None)
-                    if perms and (
-                        getattr(perms, "administrator", False)
-                        or getattr(perms, "manage_guild", False)
-                        or getattr(perms, "manage_threads", False)
-                    ):
-                        admin_members.add(m)
-
-            # C. Guild Owner
-            if getattr(guild, "owner", None):
-                admin_members.add(guild.owner)
-            elif getattr(guild, "owner_id", None):
-                owner_m = guild.get_member(guild.owner_id)
-                if owner_m:
-                    admin_members.add(owner_m)
-
-            # Exclude applicant, referrer, and bot itself
             exclude_ids = {applicant.id, getattr(getattr(guild, "me", None), "id", None)}
             if referrer_id:
                 exclude_ids.add(referrer_id)
 
-            # Invite all discovered admin members (capped at 25 to respect Discord rate limits)
+            admin_candidates = await self.get_admin_candidates(guild, exclude_ids=exclude_ids)
+
+            # Invite discovered admin members (capped at 25 to respect Discord rate limits)
             invited_count = 0
-            for adm_m in admin_members:
-                if adm_m and adm_m.id not in exclude_ids:
-                    try:
-                        await thread.add_user(adm_m)
-                        invited_count += 1
-                        if invited_count >= 25:
-                            break
-                    except (discord.HTTPException, discord.Forbidden):
-                        pass
+            for adm_m in admin_candidates:
+                try:
+                    await thread.add_user(adm_m)
+                    invited_count += 1
+                    if invited_count >= 25:
+                        break
+                except (discord.HTTPException, discord.Forbidden):
+                    pass
 
 
             # 9. Save ticket to database
