@@ -64,6 +64,16 @@ class TARVeriBot(commands.Bot):
             if settings.enable_update_checker
             else None
         )
+        self._is_ready_logged = False
+        self._cmd_sync_task: asyncio.Task[None] | None = None
+
+    async def _sync_commands_background(self) -> None:
+        """Asynchronously syncs application commands without blocking gateway connection."""
+        try:
+            synced = await self.tree.sync()
+            logger.info(f"Command tree synced successfully ({len(synced)} commands).")
+        except Exception as e:
+            logger.warning(f"Background application command sync encountered a non-fatal error: {e}")
 
     async def setup_hook(self) -> None:
         """Initializes database and registers cogs and persistent views during bot startup."""
@@ -103,15 +113,18 @@ class TARVeriBot(commands.Bot):
         self.add_view(VerificationGatewayView(self.service, self.guest_service))
         self.add_view(GuestReviewThreadView(self.guest_service))
 
-        # Sync application commands
-        await self.tree.sync()
-        logger.info("Database connected, cogs loaded, persistent views registered, and command tree synced.")
+        # Launch non-blocking background command sync so bot connects to gateway immediately
+        self._cmd_sync_task = asyncio.create_task(
+            self._sync_commands_background(), name="tarveri_cmd_sync"
+        )
+        logger.info("Database connected, cogs loaded, and persistent views registered.")
 
         if self.update_checker:
             self.update_checker.start()
 
     async def on_ready(self) -> None:
-        if self.user:
+        if self.user and not self._is_ready_logged:
+            self._is_ready_logged = True
             total_verified = await self.db.total_verified()
             guild_names = [g.name for g in self.guilds]
             await self.db.log(
@@ -119,10 +132,16 @@ class TARVeriBot(commands.Bot):
                 "STARTUP",
                 f"Logged in as {self.user} (ID: {self.user.id}) | Connected to {len(self.guilds)} server(s): {guild_names} | Total verified students: {total_verified}",
             )
+            logger.info(
+                f"TARVeri ready: Logged in as {self.user} (ID: {self.user.id}) | Servers: {len(self.guilds)}"
+            )
 
     async def close(self) -> None:
         """Gracefully tears down the bot, logs shutdown, and flushes SQLite WAL."""
         logger.info("Initiating graceful shutdown...")
+
+        if self._cmd_sync_task and not self._cmd_sync_task.done():
+            self._cmd_sync_task.cancel()
 
         if self.update_checker:
             self.update_checker.stop()
