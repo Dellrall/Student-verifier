@@ -204,8 +204,8 @@ class VerificationCog(commands.Cog, name="Verification"):
             if channel.id == self.settings.help_channel_id:
                 return True
 
-        # 3. Autodetect: keywords: help, support, bantuan, faq, verify, verification
-        keywords = ("help", "support", "bantuan", "faq", "verify", "verification")
+        # 3. Autodetect: keywords: help, support, bantuan, faq, verify, verification, ask, question
+        keywords = ("help", "support", "bantuan", "faq", "verify", "verification", "ask", "question")
         name_lower = channel.name.lower()
         matches_keyword = any(k in name_lower for k in keywords)
 
@@ -215,7 +215,9 @@ class VerificationCog(commands.Cog, name="Verification"):
         # Verify default role (@everyone) can view and send messages (unverified users can chat)
         if hasattr(channel, "permissions_for") and hasattr(channel.guild, "default_role"):
             everyone_perms = channel.permissions_for(channel.guild.default_role)
-            return bool(everyone_perms.view_channel and everyone_perms.send_messages)
+            if hasattr(everyone_perms, "view_channel") and hasattr(everyone_perms, "send_messages"):
+                if not (everyone_perms.view_channel and everyone_perms.send_messages):
+                    return False
 
         return True
 
@@ -276,27 +278,19 @@ class VerificationCog(commands.Cog, name="Verification"):
         return True
 
     async def handle_help_channel_message(self, message: discord.Message) -> None:
-        """Alerts unverified members asking about roles with helpful verification tips."""
-        if not isinstance(message.author, discord.Member) or message.author.bot:
+        """Alerts unverified members asking about roles or verification with helpful interactive gateway buttons."""
+        if not message.content or not isinstance(message.author, discord.Member) or message.author.bot:
             return
 
         # Do not respond to commands or prefixes
-        prefix = self.bot.command_prefix
-        if isinstance(prefix, str) and message.content.startswith(prefix):
-            return
-        if message.content.startswith("/"):
+        if message.content.startswith("/") or message.content.startswith("!"):
             return
 
-        # Only trigger for members who do not have any faculty role
+        # Only trigger for members who do not hold a faculty role or guest role in this server
         if not self.is_unverified_member(message.author):
             return
 
-        # Check if already verified in database
-        existing = await self.db.get_verification_by_user(message.author.id)
-        if existing:
-            return
-
-        # Check if message contains role inquiry keywords
+        # Check if message contains role or verification inquiry keywords
         if not ROLE_HELP_KEYWORDS_PATTERN.search(message.content):
             return
 
@@ -342,7 +336,7 @@ class VerificationCog(commands.Cog, name="Verification"):
             await self.db.log(
                 "INFO",
                 "ROLE_HELP_TIP",
-                f"Alerted unverified user {message.author} (ID: {message.author.id}) with role tips in #{message.channel.name} of '{message.guild.name}' (Guild ID: {message.guild.id})",
+                f"Alerted user {message.author} (ID: {message.author.id}) with role tips in #{message.channel.name} of '{message.guild.name}' (Guild ID: {message.guild.id})",
                 guild=message.guild,
                 user_id=message.author.id,
             )

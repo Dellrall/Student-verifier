@@ -36,17 +36,14 @@ STUDENT_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{2}[A-Z]{3}\d{2}\d{
 # Pattern matching role inquiries or help queries from members
 ROLE_HELP_KEYWORDS_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\b("
-    r"how\s+(?:to|do\s+i)\s+get\s+(?:a\s+)?role|"
-    r"how\s+(?:to|do\s+i)\s+verify|"
-    r"where\s+(?:to|do\s+i)\s+verify|"
-    r"get\s+role|"
-    r"need\s+role|"
-    r"give\s+role|"
-    r"claim\s+role|"
-    r"no\s+role|"
-    r"faculty\s+role|"
-    r"roles?"
-    r")\b",
+    r"help|bantuan|tolong|support|faq|"
+    r"verif(?:y|ied|ication|ikasi)?|"
+    r"roles?|faculty|faculty\s+role|"
+    r"student(?:\s*id)?|matrik?|id\s+number|"
+    r"guests?|referrals?|invite(?:\s*code)?|"
+    r"tarveri"
+    r")\b|"
+    r"(?:how|where|macam\s+mana|camne|nak)\s+(?:to|do\s+i|can\s+i|nak)?\s*(?:get|join|verify|enter|claim|access)",
     re.IGNORECASE,
 )
 
