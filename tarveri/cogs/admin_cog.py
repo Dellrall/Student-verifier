@@ -13,6 +13,7 @@ from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
+from tarveri.utils import schedule_ttl_delete
 
 
 def is_admin_or_has_role(interaction: discord.Interaction, admin_role_name: str) -> bool:
@@ -52,6 +53,7 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -105,6 +107,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
         embed.set_footer(text=f"TARVeri Bot • Active in {len(self.bot.guilds)} servers")
         await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(name="unverify", description="Unlink a member's student ID and revoke faculty roles.")
     @app_commands.default_permissions(administrator=True)
@@ -117,6 +120,7 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -124,6 +128,7 @@ class AdminCog(commands.Cog, name="Admin"):
         existing = await self.db.get_verification_by_user(user.id)
         if not existing:
             await interaction.followup.send(f"⚠️ User {user.mention} is not verified in TARVeri.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         deleted = await self.db.delete_verification(user.id)
@@ -156,6 +161,7 @@ class AdminCog(commands.Cog, name="Admin"):
             f"✅ Successfully unverified {user.mention}.\nRoles removed: {removed_summary}",
             ephemeral=True,
         )
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(name="audit", description="Query recent audit log entries.")
     @app_commands.default_permissions(administrator=True)
@@ -174,6 +180,7 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -184,6 +191,7 @@ class AdminCog(commands.Cog, name="Admin"):
         if not entries:
             msg = f"No audit log records found{' for event `' + filter_type + '`' if filter_type else ''}."
             await interaction.followup.send(msg, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         embed = discord.Embed(
@@ -198,6 +206,7 @@ class AdminCog(commands.Cog, name="Admin"):
             embed.add_field(name=name[:256], value=msg[:1024], inline=False)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(name="resync", description="Force resynchronization of verification roles.")
     @app_commands.default_permissions(administrator=True)
@@ -211,6 +220,7 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You can only resync your own roles unless you are an administrator.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -221,12 +231,14 @@ class AdminCog(commands.Cog, name="Admin"):
                 f"⚠️ {'You are' if target.id == interaction.user.id else f'{target.mention} is'} not verified.",
                 ephemeral=True,
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         _, stored_faculty, _ = existing
         faculty_role = FACULTY_ROLES.get(stored_faculty)
         if not faculty_role:
             await interaction.followup.send("❌ Stored faculty role is invalid.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         mutual_guilds = await self.service.get_mutual_guilds_for_user(target.id)
@@ -246,6 +258,7 @@ class AdminCog(commands.Cog, name="Admin"):
             summary or "ℹ️ All roles are already up to date.",
             ephemeral=True,
         )
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(name="backup", description="Create an immediate point-in-time database backup.")
     @app_commands.default_permissions(administrator=True)
@@ -255,6 +268,7 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -272,6 +286,7 @@ class AdminCog(commands.Cog, name="Admin"):
             )
         except Exception as e:
             await interaction.followup.send(f"❌ Backup failed: {e}", ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(name="sync_commands", description="Force sync application slash commands.")
     @app_commands.default_permissions(administrator=True)
@@ -282,6 +297,7 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -306,6 +322,7 @@ class AdminCog(commands.Cog, name="Admin"):
             )
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @commands.command(name="sync", aliases=["sync_commands"])
     async def sync_prefix(self, ctx: commands.Context, scope: str = "guild") -> None:
@@ -334,6 +351,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 )
         except Exception as e:
             await msg.edit(content=f"❌ Failed to sync commands: {e}")
+        schedule_ttl_delete(msg, delay=60.0)
 
     @app_commands.command(
         name="check_updates",
@@ -351,6 +369,7 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -389,6 +408,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 embed.description = "✅ TARVeri is up to date on this stream!"
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(
         name="setwelcomec",
@@ -406,12 +426,14 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         if not interaction.guild:
             await interaction.response.send_message(
                 "❌ This command can only be used inside a server.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -443,6 +465,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 "🔄 Welcome channel reset to **auto-detect** mode (searches for #welcome, #verify, or system channel).",
                 ephemeral=True,
             )
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(
         name="sethelpc",
@@ -460,12 +483,14 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         if not interaction.guild:
             await interaction.response.send_message(
                 "❌ This command can only be used inside a server.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -497,6 +522,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 "🔄 Help channel reset to **auto-detect** mode (searches for channels with 'help', 'support', 'faq', etc.).",
                 ephemeral=True,
             )
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(
         name="setguestrole",
@@ -512,12 +538,14 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         if not interaction.guild:
             await interaction.response.send_message(
                 "❌ This command can only be used inside a server.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -536,6 +564,7 @@ class AdminCog(commands.Cog, name="Admin"):
             f"✅ Guest role name for this server set to **{role_to_set}**.",
             ephemeral=True,
         )
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(
         name="setreviewchannel",
@@ -551,12 +580,14 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         if not interaction.guild:
             await interaction.response.send_message(
                 "❌ This command can only be used inside a server.", ephemeral=True
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -582,6 +613,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 "🔄 Guest review channel reset to **auto-detect** mode.",
                 ephemeral=True,
             )
+        schedule_ttl_delete(interaction, delay=60.0)
 
 
 

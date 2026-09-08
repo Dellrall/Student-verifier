@@ -22,6 +22,7 @@ from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
+from tarveri.utils import schedule_ttl_delete
 
 logger = logging.getLogger("tarveri")
 
@@ -43,6 +44,7 @@ class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
         await interaction.response.defer(ephemeral=True, thinking=True)
         response_text = await self.service.perform_verification(interaction.user, self.student_id.value)
         await interaction.followup.send(response_text, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
 
 class VerificationCog(commands.Cog, name="Verification"):
@@ -77,6 +79,7 @@ class VerificationCog(commands.Cog, name="Verification"):
             await interaction.response.defer(ephemeral=True, thinking=True)
             response_text = await self.service.perform_verification(interaction.user, student_id)
             await interaction.followup.send(response_text, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         # Check if already verified — if so, resync silently without modal
@@ -93,6 +96,7 @@ class VerificationCog(commands.Cog, name="Verification"):
                 summary or "ℹ️ You're already verified and up to date in every server I share with you.",
                 ephemeral=True,
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         # Open the interactive modal dialog

@@ -17,6 +17,7 @@ from tarveri.config import FACULTY_ROLE_NAMES
 from tarveri.database import Database
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
+from tarveri.utils import schedule_ttl_delete
 
 logger = logging.getLogger("tarveri")
 
@@ -49,6 +50,7 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
             interaction.user, self.student_id.value.strip()
         )
         await interaction.followup.send(resp, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
 
 class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral Code"):
@@ -67,6 +69,7 @@ class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("❌ This can only be done in a server.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -80,6 +83,7 @@ class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral
 
         if not success or not thread:
             await interaction.followup.send(msg, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         # Fetch ticket details to render initial review panel
@@ -103,6 +107,7 @@ class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral
             "Please check that thread for staff approval.",
             ephemeral=True,
         )
+        schedule_ttl_delete(interaction, delay=60.0)
 
 
 class GuestApplicationModal(discord.ui.Modal, title="🌐 Guest Access Application"):
@@ -127,6 +132,7 @@ class GuestApplicationModal(discord.ui.Modal, title="🌐 Guest Access Applicati
     async def on_submit(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("❌ This can only be done in a server.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -140,6 +146,7 @@ class GuestApplicationModal(discord.ui.Modal, title="🌐 Guest Access Applicati
 
         if not success or not thread:
             await interaction.followup.send(msg, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         ticket = await self.guest_service.db.get_guest_ticket_by_channel(thread.id)
@@ -159,6 +166,7 @@ class GuestApplicationModal(discord.ui.Modal, title="🌐 Guest Access Applicati
             "Server staff will review your request shortly.",
             ephemeral=True,
         )
+        schedule_ttl_delete(interaction, delay=60.0)
 
 
 class RejectReasonModal(discord.ui.Modal, title="🛑 Rejection Reason"):
@@ -464,6 +472,7 @@ class GuestCog(commands.Cog, name="Guest"):
                 "❌ Only verified TARUMT students can generate referral codes. Please verify your student status first with `/verify`.",
                 ephemeral=True,
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         hours = max(1, min(ttl_hours, 168))
@@ -490,12 +499,14 @@ class GuestCog(commands.Cog, name="Guest"):
             await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             await interaction.followup.send(code_or_err, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @referral.command(name="list", description="View your active and past referral codes.")
     async def referral_list(self, interaction: discord.Interaction) -> None:
         """Lists referral codes created by the caller in this server."""
         if not interaction.guild:
             await interaction.response.send_message("❌ This command can only be used inside a server.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -506,6 +517,7 @@ class GuestCog(commands.Cog, name="Guest"):
                 "ℹ️ You have not generated any referral codes in this server yet. Use `/referral generate` to create one.",
                 ephemeral=True,
             )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         embed = discord.Embed(
@@ -522,6 +534,7 @@ class GuestCog(commands.Cog, name="Guest"):
             )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(
         name="send_gateway_panel",
@@ -535,11 +548,13 @@ class GuestCog(commands.Cog, name="Guest"):
         """Posts the persistent verification gateway panel."""
         if not is_admin_or_has_role(interaction, self.guest_service.admin_role_name):
             await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         target_ch = channel or interaction.channel
         if not isinstance(target_ch, discord.TextChannel):
             await interaction.response.send_message("❌ Target must be a text channel.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -564,3 +579,4 @@ class GuestCog(commands.Cog, name="Guest"):
             )
         except (discord.HTTPException, discord.Forbidden) as e:
             await interaction.followup.send(f"❌ Failed to send gateway panel: {e}", ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
