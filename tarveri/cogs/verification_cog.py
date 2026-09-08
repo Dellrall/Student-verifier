@@ -17,8 +17,10 @@ from tarveri.config import (
     ROLE_HELP_KEYWORDS_PATTERN,
     Settings,
 )
+from tarveri.cogs.guest_cog import VerificationGatewayView
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
 
 logger = logging.getLogger("tarveri")
@@ -51,12 +53,14 @@ class VerificationCog(commands.Cog, name="Verification"):
         service: VerificationService,
         rate_limiter: RateLimiter,
         settings: Settings | None = None,
+        guest_service: GuestService | None = None,
     ):
         self.bot = bot
         self.db = db
         self.service = service
         self.rate_limiter = rate_limiter
         self.settings = settings or getattr(bot, "settings", None)
+        self.guest_service = guest_service or getattr(bot, "guest_service", None)
         self._tip_cooldowns: dict[int, float] = {}
         self._guild_channels_cache: dict[int, tuple[int | None, int | None]] = {}
 
@@ -305,19 +309,30 @@ class VerificationCog(commands.Cog, name="Verification"):
         if len(self._tip_cooldowns) > 1000:
             self._tip_cooldowns = {uid: t for uid, t in self._tip_cooldowns.items() if now - t < 60.0}
 
-        tip_text = (
-            f"👋 Hello {message.author.mention}! Looking to get your student/faculty role?\n\n"
-            f"Here is how to get verified:\n"
-            f"1️⃣ Type `/verify` in any channel to open the verification form and enter your TARUMT Student ID (e.g. `23WMD09867`).\n"
-            f"2️⃣ Or send your Student ID directly to me in a private DM!\n\n"
-            f"*(Once verified, your faculty role will be assigned automatically.)* 🎓"
+        tip_embed = discord.Embed(
+            title="🎓 TARUMT Student & Guest Verification",
+            description=(
+                f"👋 Hello {message.author.mention}! Looking to get your student or guest role?\n\n"
+                f"Choose an option below to get verified:\n"
+                f"• 🎓 **TARUMT Students:** Click **Verify TARUMT Student** or type `/verify` to enter your Student ID.\n"
+                f"• 🎟️ **Referral Code:** Click **Enter Referral Code** if you received an invite code.\n"
+                f"• 🌐 **Outside Guests:** Click **Apply as Guest** to request staff approval."
+            ),
+            color=discord.Color.blue(),
+        )
+        tip_embed.set_footer(text="TARVeri • Click a button below to get verified")
+
+        view = (
+            VerificationGatewayView(self.service, self.guest_service)
+            if self.guest_service
+            else None
         )
 
         try:
-            await message.reply(tip_text, mention_author=True)
+            await message.reply(embed=tip_embed, view=view, mention_author=True)
         except (discord.HTTPException, discord.Forbidden):
             try:
-                await message.channel.send(tip_text)
+                await message.channel.send(embed=tip_embed, view=view)
             except (discord.HTTPException, discord.Forbidden) as e:
                 logger.warning(f"Could not send role help tip in #{message.channel.name}: {e}")
                 return
@@ -357,17 +372,34 @@ class VerificationCog(commands.Cog, name="Verification"):
                         pass
                     return
 
-        # New unverified member: Tag them in the server welcome/verification channel
+        # New unverified member: Tag them in the server welcome/verification channel with embed and buttons
         welcome_channel = await self.get_welcome_or_verify_channel(member.guild)
         if welcome_channel:
-            welcome_tag_msg = (
-                f"👋 Welcome {member.mention} to **{member.guild.name}**! 🎓\n"
-                f"Please verify your TARUMT student status to receive your faculty role and unlock server access.\n"
-                f"• Type `/verify` in the server to submit your Student ID, or\n"
-                f"• Send your Student ID (e.g., `23WMD09867`) directly to me in a private DM!"
+            welcome_embed = discord.Embed(
+                title="🎓 Welcome to the Server!",
+                description=(
+                    f"Welcome {member.mention} to **{member.guild.name}**!\n\n"
+                    "Please choose an option below to gain access to the server:\n\n"
+                    "• 🎓 **TARUMT Students:** Click **Verify TARUMT Student** to enter your Student ID and receive your Faculty Role.\n"
+                    "• 🎟️ **Referral Code:** Click **Enter Referral Code** if a current student gave you an invite code.\n"
+                    "• 🌐 **Outside Guests / Speakers:** Click **Apply as Guest** to request access from server staff."
+                ),
+                color=discord.Color.blue(),
             )
+            welcome_embed.set_footer(text="TARVeri Student & Guest Verification • Instant & Secure")
+
+            view = (
+                VerificationGatewayView(self.service, self.guest_service)
+                if self.guest_service
+                else None
+            )
+
             try:
-                await welcome_channel.send(welcome_tag_msg)
+                await welcome_channel.send(
+                    content=f"👋 Welcome {member.mention}!",
+                    embed=welcome_embed,
+                    view=view,
+                )
                 await self.db.log(
                     "INFO",
                     "MEMBER_JOIN_TAGGED",
@@ -381,10 +413,20 @@ class VerificationCog(commands.Cog, name="Verification"):
                 )
 
         try:
-            await member.send(
-                f"🎓 Welcome to **{member.guild.name}**! Please verify your student status by typing "
-                f"`/verify` in the server or entering your student ID (e.g., `23WMD09867`) here in DMs:"
+            dm_embed = discord.Embed(
+                title=f"🎓 Welcome to {member.guild.name}!",
+                description=(
+                    "Please choose an option below to verify and unlock your server access, "
+                    "or reply directly with your student ID (e.g. `23WMD09867`):"
+                ),
+                color=discord.Color.blue(),
             )
+            dm_view = (
+                VerificationGatewayView(self.service, self.guest_service)
+                if self.guest_service
+                else None
+            )
+            await member.send(embed=dm_embed, view=dm_view)
         except discord.Forbidden:
             await self.db.log(
                 "INFO",

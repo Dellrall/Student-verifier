@@ -226,9 +226,10 @@ async def test_on_message_help_channel_keyword_alert(mock_bot, mock_service, moc
     # 1. Trigger role tip alert
     await cog.on_message(message)
     message.reply.assert_called_once()
-    reply_arg = message.reply.call_args[0][0]
-    assert "/verify" in reply_arg
-    assert "<@789>" in reply_arg
+    reply_embed = message.reply.call_args.kwargs.get("embed") or message.reply.call_args[1].get("embed")
+    assert reply_embed is not None
+    assert "/verify" in reply_embed.description
+    assert "<@789>" in reply_embed.description
 
     # 2. Test cooldown: sending another inquiry within 60s should NOT trigger another reply
     message.reply.reset_mock()
@@ -308,9 +309,10 @@ async def test_on_member_join_tags_unverified_member(mock_bot, mock_service, moc
 
     # Welcome channel should be sent a tag message
     welcome_channel.send.assert_called_once()
-    tag_msg = welcome_channel.send.call_args[0][0]
-    assert "<@99999>" in tag_msg
-    assert "/verify" in tag_msg
+    tag_content = welcome_channel.send.call_args.kwargs.get("content") or welcome_channel.send.call_args[1].get("content", "")
+    tag_embed = welcome_channel.send.call_args.kwargs.get("embed") or welcome_channel.send.call_args[1].get("embed")
+    assert "<@99999>" in tag_content or (tag_embed and "<@99999>" in tag_embed.description)
+    assert tag_embed is not None
 
     # DM should also be attempted
     new_member.send.assert_called_once()

@@ -77,6 +77,7 @@ class TARVeriBot(commands.Bot):
                 service=self.service,
                 rate_limiter=self.rate_limiter,
                 settings=self.settings,
+                guest_service=self.guest_service,
             )
         )
         await self.add_cog(
