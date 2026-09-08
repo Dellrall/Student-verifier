@@ -594,7 +594,7 @@ class GuestCog(commands.Cog, name="Guest"):
             used_str = f" • Used by <@{item['used_by_discord_id']}>" if item.get("used_by_discord_id") else ""
             embed.add_field(
                 name=f"`{item['code']}` {status_emoji} {item['status']}",
-                value=f"Expires: `{item['expires_at']} UTC`{used_str}",
+                value=f"Expires: `{item['expires_at']}`{used_str}",
                 inline=False,
             )
 

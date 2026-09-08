@@ -292,3 +292,139 @@ async def test_handle_member_leave_or_ban_revokes_guest_access(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_referral_edge_scenarios(tmp_path):
+    """Tests all edge scenarios for referral codes and guest review tickets."""
+    db_path = str(tmp_path / "edge_scenarios.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock(spec=discord.Client)
+    service = GuestService(bot, db, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 111999
+    guild.name = "Edge Guild"
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    guild.me.guild_permissions.kick_members = True
+
+    guest_role = MagicMock(spec=discord.Role)
+    guest_role.name = "Guest"
+    guild.roles = [guest_role]
+
+    parent_channel = MagicMock(spec=discord.TextChannel)
+    parent_channel.name = "guest-review"
+    perms = MagicMock()
+    perms.view_channel = True
+    perms.create_private_threads = True
+    parent_channel.permissions_for.return_value = perms
+    guild.text_channels = [parent_channel]
+
+    student_referrer = MagicMock(spec=discord.Member)
+    student_referrer.id = 10001
+    student_referrer.roles = []
+    student_referrer.display_name = "StudentReferrer"
+    student_referrer.__str__.return_value = "StudentReferrer#0001"
+
+    # Edge Scenario 1: Code normalization (spaces, lowercase, missing TAR- prefix)
+    _, ref_code = await service.create_referral_code(guild.id, student_referrer, ttl_hours=24)
+    # Extract raw 6-char part
+    raw_part = ref_code.replace("TAR-", "")
+
+    # Test lowercase with whitespace
+    is_valid1, _, rec1 = await service.validate_referral_code(guild.id, f"  {ref_code.lower()}  ")
+    assert is_valid1 is True
+    assert rec1["code"] == ref_code
+
+    # Test without TAR- prefix
+    is_valid2, _, rec2 = await service.validate_referral_code(guild.id, raw_part.lower())
+    assert is_valid2 is True
+    assert rec2["code"] == ref_code
+
+    # Edge Scenario 2: Self-referral prevention
+    success_self, msg_self, _ = await service.open_guest_review_ticket(
+        guild=guild,
+        applicant=student_referrer,
+        referral_code=ref_code,
+    )
+    assert success_self is False
+    assert "cannot use your own referral code" in msg_self.lower()
+
+    # Edge Scenario 3: Already-verified student applying for guest
+    # Record verification for student in DB
+    await db.record_verification(10001, "hash10001", "M")
+    success_verif, msg_verif, _ = await service.open_guest_review_ticket(
+        guild=guild,
+        applicant=student_referrer,
+        reason="I want guest role",
+    )
+    assert success_verif is False
+    assert "already verified as a tarumt student" in msg_verif.lower()
+
+    # Edge Scenario 4: User already has Guest role
+    existing_guest = MagicMock(spec=discord.Member)
+    existing_guest.id = 20002
+    existing_guest.roles = [guest_role]
+    existing_guest.display_name = "AlreadyGuest"
+
+    success_guest, msg_guest, _ = await service.open_guest_review_ticket(
+        guild=guild,
+        applicant=existing_guest,
+        referral_code=ref_code,
+    )
+    assert success_guest is False
+    assert "already have the" in msg_guest.lower()
+
+    # Edge Scenario 5: Referrer leaves or gets banned -> cancels open tickets referred by them
+    applicant_friend = MagicMock(spec=discord.Member)
+    applicant_friend.id = 30003
+    applicant_friend.roles = []
+    applicant_friend.display_name = "FriendGuest"
+
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 888111
+    thread.mention = "<#888111>"
+    thread.add_user = AsyncMock()
+    parent_channel.create_thread = AsyncMock(return_value=thread)
+
+    # Valid friend opens review ticket
+    success_friend, _, friend_thread = await service.open_guest_review_ticket(
+        guild=guild,
+        applicant=applicant_friend,
+        referral_code=ref_code,
+    )
+    assert success_friend is True
+
+    ticket_friend = await db.get_guest_ticket_by_channel(thread.id)
+    assert ticket_friend["status"] == "OPEN"
+    assert ticket_friend["referrer_id"] == student_referrer.id
+
+    # Referrer gets banned
+    await service.handle_member_leave_or_ban(guild, student_referrer, is_ban=True)
+
+    # Friend's ticket should now be cancelled/revoked
+    ticket_friend_after = await db.get_guest_ticket_by_channel(thread.id)
+    assert ticket_friend_after["status"] == "REVOKED"
+    assert "banned" in ticket_friend_after["close_reason"].lower()
+
+    # Referral code should also be revoked
+    code_record = await db.get_referral_code(ref_code, guild.id)
+    assert code_record["status"] in ("BANNED", "REVOKED", "PENDING_APPROVAL")
+
+    # Edge Scenario 6: Expired referral code
+    _, exp_code = await service.create_referral_code(guild.id, student_referrer, ttl_hours=24)
+    # Manually set expired timestamp
+    await db._conn.execute("UPDATE referral_codes SET expires_at = '2020-01-01 00:00:00' WHERE code = ?", (exp_code,))
+    await db._conn.commit()
+
+    is_exp_valid, exp_err, exp_rec = await service.validate_referral_code(guild.id, exp_code)
+    assert is_exp_valid is False
+    assert exp_rec["status"] == "ACTIVE"  # was active prior to validation
+    updated_exp = await db.get_referral_code(exp_code, guild.id)
+    assert updated_exp["status"] == "EXPIRED"  # updated to EXPIRED
+
+    await db.close()
+
+
+

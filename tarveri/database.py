@@ -772,3 +772,19 @@ class Database:
         await self._conn.commit()
         return cursor.rowcount
 
+    async def cancel_open_tickets_referred_by_user(
+        self, guild_id: int, referrer_id: int, close_reason: str = "Referring student left or was removed from server"
+    ) -> int:
+        """Cancels open review tickets where the referring student left or was banned."""
+        if not self._conn:
+            return 0
+        ts = now_formatted()
+        cursor = await self._conn.execute(
+            """UPDATE guest_tickets
+               SET status = 'REVOKED', closed_at = ?, close_reason = ?
+               WHERE guild_id = ? AND referrer_id = ? AND status = 'OPEN'""",
+            (ts, close_reason, guild_id, referrer_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount
+

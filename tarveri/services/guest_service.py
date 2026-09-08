@@ -90,7 +90,10 @@ class GuestService:
         Uses a uniform generic error message to prevent oracle/enumeration attacks.
         """
         generic_error = "❌ Invalid, expired, or already used referral code. Please check with your friend and try again."
-        normalized = code.strip().upper()
+        normalized = code.strip().upper().replace(" ", "")
+        if not normalized.startswith("TAR-") and len(normalized) == 6:
+            normalized = f"TAR-{normalized}"
+
         record = await self.db.get_referral_code(normalized, guild_id)
         if not record:
             return False, generic_error, None
@@ -222,104 +225,132 @@ class GuestService:
         Creates a private review thread, invites the applicant & referring student,
         and posts the review embed with action buttons.
         """
-        # 1. Rate limiting on guest/referral attempts
-        if self.rate_limiter:
-            if self.rate_limiter.is_rate_limited(applicant.id):
-                await self.db.log(
-                    "WARNING",
-                    "RATE_LIMITED",
-                    f"{applicant} exceeded guest application attempt limit",
-                    user_id=applicant.id,
-                    guild=guild,
-                )
+        async with self._lock:
+            # 1. Rate limiting on guest/referral attempts
+            if self.rate_limiter:
+                if self.rate_limiter.is_rate_limited(applicant.id):
+                    await self.db.log(
+                        "WARNING",
+                        "RATE_LIMITED",
+                        f"{applicant} exceeded guest application attempt limit",
+                        user_id=applicant.id,
+                        guild=guild,
+                    )
+                    return (
+                        False,
+                        "⏳ You've made too many attempts recently. Please wait a few minutes before trying again.",
+                        None,
+                    )
+                self.rate_limiter.record_attempt(applicant.id)
+
+            # 2. Check if applicant is already a verified student
+            is_student = bool(await self.db.get_verification_by_user(applicant.id))
+            if is_student:
                 return (
                     False,
-                    "⏳ You've made too many attempts recently. Please wait a few minutes before trying again.",
+                    "ℹ️ You are already verified as a TARUMT student! You do not need guest access.",
                     None,
                 )
-            self.rate_limiter.record_attempt(applicant.id)
 
-        # 2. Prevent duplicate open tickets
-        existing_open = await self.db.get_open_guest_ticket_for_applicant(guild.id, applicant.id)
-        if existing_open:
-            return (
-                False,
-                "⏳ You already have an active guest review ticket in progress! Please check your private threads.",
-                None,
-            )
+            # 3. Check if applicant already has the Guest role
+            guest_role = await self.get_or_create_guest_role(guild)
+            if guest_role and guest_role in applicant.roles:
+                return (
+                    False,
+                    f"ℹ️ You already have the **{guest_role.name}** role in this server.",
+                    None,
+                )
 
-        # 3. If referral code is used, validate and lock code status
-        if referral_code:
-            is_valid, err_msg, record = await self.validate_referral_code(guild.id, referral_code)
-            if not is_valid or not record:
-                return False, err_msg, None
-            referrer_id = record["referrer_discord_id"]
-            await self.db.update_referral_code_status(
-                referral_code, guild.id, "PENDING_APPROVAL", used_by_discord_id=applicant.id
-            )
+            # 4. Prevent duplicate open tickets
+            existing_open = await self.db.get_open_guest_ticket_for_applicant(guild.id, applicant.id)
+            if existing_open:
+                return (
+                    False,
+                    "⏳ You already have an active guest review ticket in progress! Please check your private threads.",
+                    None,
+                )
 
-        # 3. Locate parent channel for thread creation
-        parent_ch = await self.find_parent_review_channel(guild)
-        if not parent_ch:
-            # Revert referral code status if channel creation fails
+            # 5. If referral code is used, validate and lock code status
             if referral_code:
-                await self.db.update_referral_code_status(referral_code, guild.id, "ACTIVE")
-            return (
-                False,
-                "❌ Could not find a suitable channel to create the private review thread. Please contact an admin.",
-                None,
+                is_valid, err_msg, record = await self.validate_referral_code(guild.id, referral_code)
+                if not is_valid or not record:
+                    return False, err_msg, None
+
+                # Edge case: self-referral prevention
+                if record["referrer_discord_id"] == applicant.id:
+                    return (
+                        False,
+                        "❌ You cannot use your own referral code.",
+                        None,
+                    )
+
+                referrer_id = record["referrer_discord_id"]
+                await self.db.update_referral_code_status(
+                    referral_code, guild.id, "PENDING_APPROVAL", used_by_discord_id=applicant.id
+                )
+
+            # 6. Locate parent channel for thread creation
+            parent_ch = await self.find_parent_review_channel(guild)
+            if not parent_ch:
+                # Revert referral code status if channel creation fails
+                if referral_code:
+                    await self.db.update_referral_code_status(referral_code, guild.id, "ACTIVE")
+                return (
+                    False,
+                    "❌ Could not find a suitable channel to create the private review thread. Please contact an admin.",
+                    None,
+                )
+
+            # 7. Create Private Thread
+            clean_name = "".join(c for c in applicant.display_name if c.isalnum() or c in "-_")[:20] or "guest"
+            try:
+                thread = await parent_ch.create_thread(
+                    name=f"guest-{clean_name}",
+                    type=discord.ChannelType.private_thread,
+                    auto_archive_duration=1440,
+                    reason=f"TARVeri Guest Verification Review for {applicant}",
+                )
+            except (discord.HTTPException, discord.Forbidden) as e:
+                if referral_code:
+                    await self.db.update_referral_code_status(referral_code, guild.id, "ACTIVE")
+                logger.error(f"Failed to create private thread in #{parent_ch.name} ({guild.name}): {e}")
+                return False, f"❌ Failed to create private thread: {e}", None
+
+            # 8. Invite applicant and referrer
+            try:
+                await thread.add_user(applicant)
+            except discord.HTTPException:
+                pass
+
+            referrer_member: discord.Member | None = None
+            if referrer_id:
+                referrer_member = guild.get_member(referrer_id)
+                if referrer_member:
+                    try:
+                        await thread.add_user(referrer_member)
+                    except discord.HTTPException:
+                        pass
+
+            # 9. Save ticket to database
+            ticket_id = await self.db.create_guest_ticket(
+                guild_id=guild.id,
+                applicant_id=applicant.id,
+                channel_id=thread.id,
+                referrer_id=referrer_id,
+                referral_code=referral_code,
+                reason=reason,
             )
 
-        # 4. Create Private Thread
-        clean_name = "".join(c for c in applicant.display_name if c.isalnum() or c in "-_")[:20] or "guest"
-        try:
-            thread = await parent_ch.create_thread(
-                name=f"guest-{clean_name}",
-                type=discord.ChannelType.private_thread,
-                auto_archive_duration=1440,
-                reason=f"TARVeri Guest Verification Review for {applicant}",
+            await self.db.log(
+                "INFO",
+                "GUEST_TICKET_OPENED",
+                f"Opened guest review ticket #{ticket_id} for applicant {applicant} (ID: {applicant.id})"
+                + (f" with referral code '{referral_code}' (Vouched by ID: {referrer_id})" if referral_code else ""),
+                guild=guild,
+                user_id=applicant.id,
             )
-        except (discord.HTTPException, discord.Forbidden) as e:
-            if referral_code:
-                await self.db.update_referral_code_status(referral_code, guild.id, "ACTIVE")
-            logger.error(f"Failed to create private thread in #{parent_ch.name} ({guild.name}): {e}")
-            return False, f"❌ Failed to create private thread: {e}", None
 
-        # 5. Invite applicant and referrer
-        try:
-            await thread.add_user(applicant)
-        except discord.HTTPException:
-            pass
-
-        referrer_member: discord.Member | None = None
-        if referrer_id:
-            referrer_member = guild.get_member(referrer_id)
-            if referrer_member:
-                try:
-                    await thread.add_user(referrer_member)
-                except discord.HTTPException:
-                    pass
-
-        # 6. Save ticket to database
-        ticket_id = await self.db.create_guest_ticket(
-            guild_id=guild.id,
-            applicant_id=applicant.id,
-            channel_id=thread.id,
-            referrer_id=referrer_id,
-            referral_code=referral_code,
-            reason=reason,
-        )
-
-        await self.db.log(
-            "INFO",
-            "GUEST_TICKET_OPENED",
-            f"Opened guest review ticket #{ticket_id} for applicant {applicant} (ID: {applicant.id})"
-            + (f" with referral code '{referral_code}' (Vouched by ID: {referrer_id})" if referral_code else ""),
-            guild=guild,
-            user_id=applicant.id,
-        )
-
-        return True, f"✅ Guest ticket #{ticket_id} created in private thread {thread.mention}!", thread
+            return True, f"✅ Guest ticket #{ticket_id} created in private thread {thread.mention}!", thread
 
     async def approve_guest_application(
         self,
@@ -451,8 +482,13 @@ class GuestService:
         """
         revocation_status = "BANNED" if is_ban else "LEFT_SERVER"
         close_reason = "Member banned from server" if is_ban else "Member left the server"
+        referrer_close_reason = "Referring student banned from server" if is_ban else "Referring student left server"
+
         revoked_tickets = await self.db.revoke_guest_tickets_for_user(
             guild.id, user.id, status=revocation_status, close_reason=close_reason
+        )
+        revoked_referred_tickets = await self.db.cancel_open_tickets_referred_by_user(
+            guild.id, user.id, close_reason=referrer_close_reason
         )
         revoked_referrals = await self.db.revoke_active_referrals_for_user(
             guild.id, user.id, status=revocation_status
@@ -461,11 +497,12 @@ class GuestService:
         action_type = "GUEST_REVOKED_ON_BAN" if is_ban else "GUEST_REVOKED_ON_LEAVE"
         action_verb = "banned from" if is_ban else "left / was removed from"
 
-        if revoked_tickets > 0 or revoked_referrals > 0:
+        total_affected = revoked_tickets + revoked_referred_tickets + revoked_referrals
+        if total_affected > 0:
             await self.db.log(
                 "INFO",
                 action_type,
-                f"Revoked guest status ({revoked_tickets} ticket(s), {revoked_referrals} referral(s)) for {user} (ID: {user.id}) who {action_verb} '{guild.name}'",
+                f"Revoked guest status ({revoked_tickets} ticket(s), {revoked_referred_tickets} referred ticket(s), {revoked_referrals} referral(s)) for {user} (ID: {user.id}) who {action_verb} '{guild.name}'",
                 guild=guild,
                 user_id=user.id,
             )
