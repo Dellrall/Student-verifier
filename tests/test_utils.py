@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import discord
 
-from tarveri.utils import delete_after_delay, format_ticket_seq, schedule_ttl_delete
+from tarveri.utils import delete_after_delay, format_ticket_seq, parse_db_timestamp, schedule_ttl_delete
 
 
 @pytest.mark.asyncio
@@ -92,5 +92,27 @@ def test_format_ticket_seq():
     assert format_ticket_seq("A0042") == "A0042"
     assert format_ticket_seq("b0010") == "B0010"
     assert format_ticket_seq("custom_code") == "CUSTOM_CODE"
+
+
+def test_parse_db_timestamp():
+    # Standard formats
+    dt1 = parse_db_timestamp("2026-09-09 12:30:00")
+    assert dt1 is not None
+    assert dt1.year == 2026
+    assert dt1.month == 9
+    assert dt1.day == 9
+    assert dt1.hour == 12
+    assert dt1.minute == 30
+
+    dt_iso = parse_db_timestamp("2026-09-09T14:45:00")
+    assert dt_iso is not None
+    assert dt_iso.hour == 14
+    assert dt_iso.minute == 45
+
+    # None and invalid inputs
+    assert parse_db_timestamp(None) is None
+    assert parse_db_timestamp("") is None
+    assert parse_db_timestamp("invalid_date") is None
+
 
 

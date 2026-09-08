@@ -5,9 +5,12 @@ General utility functions for TARVeri.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, tzinfo
 import logging
 
 import discord
+
+from tarveri.config import get_configured_tz
 
 logger = logging.getLogger("tarveri")
 
@@ -79,4 +82,26 @@ def format_ticket_seq(seq: int | str | None) -> str:
             break
 
     return f"{prefix}{num:04d}"
+
+
+def parse_db_timestamp(ts_str: str | None, tz: tzinfo | None = None) -> datetime | None:
+    """Parses a database timestamp string into a timezone-aware datetime object."""
+    if not ts_str:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            dt = datetime.strptime(ts_str.strip(), fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz or get_configured_tz())
+            return dt
+        except ValueError:
+            continue
+    try:
+        dt = datetime.fromisoformat(ts_str.strip())
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz or get_configured_tz())
+        return dt
+    except ValueError:
+        return None
+
 

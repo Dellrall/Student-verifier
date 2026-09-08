@@ -17,7 +17,7 @@ import discord
 from tarveri.config import get_configured_tz, now_formatted
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
-from tarveri.utils import format_ticket_seq
+from tarveri.utils import format_ticket_seq, parse_db_timestamp
 
 logger = logging.getLogger("tarveri")
 
@@ -44,6 +44,7 @@ class GuestService:
         self.admin_role_name = admin_role_name
         self.rate_limiter = rate_limiter
         self._lock = asyncio.Lock()
+        self._escalation_task: asyncio.Task[None] | None = None
 
     async def create_referral_code(
         self,
@@ -324,11 +325,12 @@ class GuestService:
                     admin_members.add(m)
 
         # C. Server owner
-        if getattr(guild, "owner", None):
-            admin_members.add(guild.owner)
-        elif getattr(guild, "owner_id", None):
+        owner_obj = getattr(guild, "owner", None)
+        if owner_obj and isinstance(getattr(owner_obj, "id", None), int) and getattr(owner_obj, "bot", None) is not True:
+            admin_members.add(owner_obj)
+        elif getattr(guild, "owner_id", None) and isinstance(guild.owner_id, int):
             owner_m = guild.get_member(guild.owner_id)
-            if owner_m:
+            if owner_m and isinstance(getattr(owner_m, "id", None), int):
                 admin_members.add(owner_m)
 
         # Filter out bots and excluded IDs
@@ -354,41 +356,68 @@ class GuestService:
         valid_admins.sort(key=authority_key, reverse=True)
         return valid_admins
 
-    async def get_target_admin_mention(
+    async def get_target_admin_mentions_batch(
         self,
         guild: discord.Guild,
+        count: int = 2,
         exclude_ids: set[int] | None = None,
-    ) -> str:
+    ) -> tuple[str, list[int]]:
         """
-        Intelligently selects the best admin target to tag:
-        1. Checks if any admin/staff members are currently ONLINE, IDLE, or in DND (active).
-           If found, tags the online admin(s).
-        2. If no admin is online (all offline / invisible), tags the member with the HIGHEST AUTHORITY (Server Owner or Top Admin).
-        3. If no admin members can be resolved, falls back to the configured Admin Role mention.
+        Selects a batch of up to `count` target administrators to tag:
+        1. Discovers and ranks candidate administrators (Authority hierarchy).
+        2. Prioritizes ACTIVE (Online, Idle, DND) admins first, followed by highest-authority offline admins.
+        3. Returns a tuple of (mention_string, list_of_admin_ids).
+        4. If no individual admins are available, falls back to Admin Role mention.
         """
         candidates = await self.get_admin_candidates(guild, exclude_ids=exclude_ids)
         if candidates:
-            # Check for active (online / idle / dnd) admins
             active_admins: list[discord.Member] = []
+            offline_admins: list[discord.Member] = []
             for m in candidates:
                 status = getattr(m, "status", None)
                 if status in (discord.Status.online, discord.Status.idle, discord.Status.dnd) or str(status).lower() in ("online", "idle", "dnd"):
                     active_admins.append(m)
+                else:
+                    offline_admins.append(m)
 
-            if active_admins:
-                # Mention up to 3 highest-ranking online admins
-                return ", ".join(m.mention for m in active_admins[:3])
+            ordered = active_admins + offline_admins
+            batch = ordered[:count]
 
-            # If no one is online, mention the one with the highest authority (first candidate in sorted list)
-            return candidates[0].mention
+            if batch:
+                mentions = ", ".join(
+                    m.mention if isinstance(getattr(m, "mention", None), str) else f"<@{m.id}>"
+                    for m in batch
+                )
+                admin_ids = [
+                    int(m.id) if (isinstance(getattr(m, "id", None), int) or str(getattr(m, "id", "")).isdigit()) else 0
+                    for m in batch
+                ]
+                return mentions, [i for i in admin_ids if i > 0]
 
         # Fallback to role mention or owner ID
         admin_role = await self.get_admin_role_or_fallback(guild)
         if admin_role:
-            return admin_role.mention
-        if getattr(guild, "owner_id", None):
-            return f"<@{guild.owner_id}>"
-        return "@Staff"
+            role_mention = (
+                admin_role.mention
+                if isinstance(getattr(admin_role, "mention", None), str)
+                else f"<@&{getattr(admin_role, 'id', 0)}>"
+            )
+            return role_mention, []
+        if getattr(guild, "owner_id", None) and isinstance(guild.owner_id, int):
+            return f"<@{guild.owner_id}>", [guild.owner_id]
+        return "@Staff", []
+
+    async def get_target_admin_mention(
+        self,
+        guild: discord.Guild,
+        exclude_ids: set[int] | None = None,
+        count: int = 2,
+    ) -> str:
+        """Convenience method that returns the mention string for the target admin batch."""
+        mention_str, _ = await self.get_target_admin_mentions_batch(
+            guild, count=count, exclude_ids=exclude_ids
+        )
+        return mention_str
 
 
 
@@ -569,6 +598,13 @@ class GuestService:
                     pass
 
 
+            # Determine initial 2 admins to tag
+            _, initial_pinged_ids = await self.get_target_admin_mentions_batch(
+                guild, count=2, exclude_ids=exclude_ids
+            )
+            pinged_str = ",".join(str(i) for i in initial_pinged_ids) if initial_pinged_ids else ""
+            now_ts = now_formatted()
+
             # 9. Save ticket to database
             ticket_id = await self.db.create_guest_ticket(
                 guild_id=guild.id,
@@ -578,6 +614,8 @@ class GuestService:
                 referral_code=referral_code,
                 reason=reason,
                 ticket_seq=seq,
+                pinged_admin_ids=pinged_str,
+                last_pinged_at=now_ts,
             )
 
             await self.db.log(
@@ -789,3 +827,164 @@ class GuestService:
                 guild=guild,
                 user_id=user.id,
             )
+
+    async def check_and_escalate_tickets(
+        self,
+        interval_seconds: float = 3600.0,
+    ) -> int:
+        """
+        Scans all open guest tickets. If a ticket has been pending for >= interval_seconds (default 1 hour)
+        without an admin response, escalates by tagging the next batch of 2 admins in the thread.
+        """
+        open_tickets = await self.db.get_open_guest_tickets()
+        if not open_tickets:
+            return 0
+
+        escalated_count = 0
+        now_dt = datetime.now(tz=get_configured_tz())
+
+        for t in open_tickets:
+            last_ping_str = t.get("last_pinged_at") or t.get("created_at")
+            last_ping_dt = parse_db_timestamp(last_ping_str)
+            if not last_ping_dt:
+                continue
+
+            elapsed = (now_dt - last_ping_dt).total_seconds()
+            if elapsed < interval_seconds:
+                continue
+
+            guild_id = t["guild_id"]
+            channel_id = t["channel_id"]
+            ticket_id = t["ticket_id"]
+
+            guild = self.bot.get_guild(guild_id) if self.bot else None
+            if not guild:
+                continue
+
+            thread = guild.get_thread(channel_id)
+            if not thread and hasattr(guild, "fetch_channel"):
+                try:
+                    fetched = await guild.fetch_channel(channel_id)
+                    if isinstance(fetched, discord.Thread):
+                        thread = fetched
+                except (discord.NotFound, discord.HTTPException):
+                    thread = None
+
+            if not thread or getattr(thread, "archived", False) or getattr(thread, "locked", False):
+                continue
+
+            # Check if an admin has replied in the thread since the last ping
+            admin_has_replied = False
+            if hasattr(thread, "history"):
+                try:
+                    async for msg in thread.history(limit=50, oldest_first=False):
+                        if msg.author.bot:
+                            continue
+                        if msg.author.id == t["applicant_id"] or msg.author.id == t.get("referrer_id"):
+                            continue
+                        # Any message from a staff member / other user counts as an admin response
+                        admin_has_replied = True
+                        break
+                except (discord.HTTPException, discord.Forbidden):
+                    pass
+
+            if admin_has_replied:
+                # Admin actively communicating — reset timer without spamming other staff
+                await self.db.update_guest_ticket_escalation(
+                    ticket_id, t.get("pinged_admin_ids") or "", now_formatted()
+                )
+                continue
+
+            # Parse already pinged admin IDs
+            raw_pinged = t.get("pinged_admin_ids") or ""
+            already_pinged_ids = {int(x) for x in raw_pinged.split(",") if x.strip().isdigit()}
+
+            # Exclude already pinged admins, applicant, referrer, and bot
+            exclude_ids = already_pinged_ids | {t["applicant_id"]}
+            if t.get("referrer_id"):
+                exclude_ids.add(t["referrer_id"])
+
+            next_mentions, next_ids = await self.get_target_admin_mentions_batch(
+                guild, count=2, exclude_ids=exclude_ids
+            )
+
+            if next_ids:
+                try:
+                    await thread.send(
+                        content=(
+                            f"⏰ **Ticket Escalation (Pending for 1 hour without admin response):**\n"
+                            f"{next_mentions} — Please review this guest verification request!"
+                        ),
+                        allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
+                    )
+                except (discord.HTTPException, discord.Forbidden) as e:
+                    logger.warning(f"Could not send escalation message in thread #{channel_id}: {e}")
+                    continue
+
+                updated_pinged_ids = {
+                    int(x) for x in already_pinged_ids | set(next_ids)
+                    if isinstance(x, int) or str(x).isdigit()
+                }
+                pinged_str = ",".join(str(i) for i in sorted(updated_pinged_ids))
+                await self.db.update_guest_ticket_escalation(ticket_id, pinged_str, now_formatted())
+                await self.db.log(
+                    "INFO",
+                    "GUEST_TICKET_ESCALATED",
+                    f"Ticket #{t.get('ticket_seq', ticket_id)} escalated to admins: {next_ids} after 1hr inactivity",
+                    guild=guild,
+                    user_id=t["applicant_id"],
+                )
+                escalated_count += 1
+            else:
+                # All candidate admins were already tagged — send a reminder ping to admin role
+                admin_role = await self.get_admin_role_or_fallback(guild)
+                reminder_tag = admin_role.mention if admin_role else "@Staff"
+                try:
+                    await thread.send(
+                        content=(
+                            f"⏰ **Ticket Escalation Reminder (Pending > 1 hour):**\n"
+                            f"{reminder_tag} — All initial staff were notified. Please assist with this guest verification!"
+                        ),
+                        allowed_mentions=discord.AllowedMentions(roles=True, users=True, everyone=False),
+                    )
+                except (discord.HTTPException, discord.Forbidden):
+                    pass
+                await self.db.update_guest_ticket_escalation(ticket_id, raw_pinged, now_formatted())
+
+        return escalated_count
+
+    def start_escalation_task(
+        self, check_interval_seconds: float = 60.0, escalation_delay_seconds: float = 3600.0
+    ) -> None:
+        """Starts the background task that checks and escalates overdue open review tickets."""
+        if self._escalation_task is None or self._escalation_task.done():
+            self._escalation_task = asyncio.create_task(
+                self._escalation_loop(check_interval_seconds, escalation_delay_seconds),
+                name="tarveri_ticket_escalation",
+            )
+            logger.info("Ticket escalation background task started.")
+
+    def stop_escalation_task(self) -> None:
+        """Cancels the ticket escalation background task."""
+        if self._escalation_task and not self._escalation_task.done():
+            self._escalation_task.cancel()
+            self._escalation_task = None
+            logger.info("Ticket escalation background task stopped.")
+
+    async def _escalation_loop(
+        self, check_interval_seconds: float, escalation_delay_seconds: float
+    ) -> None:
+        """Background loop executing check_and_escalate_tickets periodically."""
+        try:
+            while True:
+                await asyncio.sleep(check_interval_seconds)
+                try:
+                    if self.db and self.db.is_connected:
+                        await self.check_and_escalate_tickets(
+                            interval_seconds=escalation_delay_seconds
+                        )
+                except Exception as e:
+                    logger.error(f"Error in ticket escalation loop: {e}", exc_info=True)
+        except asyncio.CancelledError:
+            pass
+

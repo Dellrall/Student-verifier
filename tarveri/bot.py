@@ -122,6 +122,9 @@ class TARVeriBot(commands.Bot):
         if self.update_checker:
             self.update_checker.start()
 
+        if self.guest_service:
+            self.guest_service.start_escalation_task()
+
     async def on_ready(self) -> None:
         if self.user and not self._is_ready_logged:
             self._is_ready_logged = True
@@ -145,6 +148,9 @@ class TARVeriBot(commands.Bot):
 
         if self.update_checker:
             self.update_checker.stop()
+
+        if self.guest_service:
+            self.guest_service.stop_escalation_task()
 
         try:
             if self.db.is_connected:

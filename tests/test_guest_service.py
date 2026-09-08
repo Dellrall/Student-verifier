@@ -576,27 +576,173 @@ async def test_admin_online_detection_and_authority_tagging(tmp_path):
     guild.members = [owner, senior_admin, online_mod]
     guild.roles = [senior_role, mod_role]
 
-    # Test 1: When online_mod is online, tag online_mod!
-    tag = await service.get_target_admin_mention(guild)
-    assert tag == "<@9993>"
+    # Test 1: When online_mod is online, prioritizing active staff in batch of 2
+    tag_1 = await service.get_target_admin_mention(guild, count=1)
+    assert tag_1 == "<@9993>"
+    tag_2 = await service.get_target_admin_mention(guild, count=2)
+    assert tag_2 == "<@9993>, <@9991>"
 
-    # Test 2: When NO admin is online (online_mod goes offline), tag highest authority (Owner: 9991)
+    # Test 2: When NO admin is online (online_mod goes offline), tag top 2 highest authority (Owner: 9991, Senior: 9992)
     online_mod.status = discord.Status.offline
-    tag_all_offline = await service.get_target_admin_mention(guild)
-    assert tag_all_offline == "<@9991>"
+    tag_all_offline_single = await service.get_target_admin_mention(guild, count=1)
+    assert tag_all_offline_single == "<@9991>"
+    tag_all_offline = await service.get_target_admin_mention(guild, count=2)
+    assert tag_all_offline == "<@9991>, <@9992>"
 
-    # Test 3: If owner is excluded, tag highest authority among remaining (Senior Admin: 9992)
-    tag_excluded_owner = await service.get_target_admin_mention(guild, exclude_ids={9991})
-    assert tag_excluded_owner == "<@9992>"
+    # Test 3: If owner is excluded, tag highest authority among remaining (Senior Admin: 9992, Mod: 9993)
+    tag_excluded_owner = await service.get_target_admin_mention(guild, exclude_ids={9991}, count=2)
+    assert tag_excluded_owner == "<@9992>, <@9993>"
 
     # Test 4: Multiple online admins (both senior_admin and online_mod online)
     senior_admin.status = discord.Status.idle
     online_mod.status = discord.Status.dnd
-    tag_multiple_online = await service.get_target_admin_mention(guild, exclude_ids={9991})
+    tag_multiple_online = await service.get_target_admin_mention(guild, exclude_ids={9991}, count=2)
     # Ordered by authority: senior_admin first, then online_mod
     assert tag_multiple_online == "<@9992>, <@9993>"
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_ticket_escalation_lifecycle(tmp_path):
+    db_path = str(tmp_path / "escalation_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = GuestService(bot, db, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 1122
+    guild.name = "Escalation Guild"
+    guild.owner = None
+    guild.owner_id = None
+    bot.get_guild.return_value = guild
+
+    # Setup 4 admins
+    # Admin 1 & Admin 2 (Batch 1)
+    adm1 = MagicMock(spec=discord.Member)
+    adm1.id = 101
+    adm1.bot = False
+    adm1.mention = "<@101>"
+    adm1.status = discord.Status.online
+    adm1_perms = MagicMock()
+    adm1_perms.administrator = True
+    adm1.guild_permissions = adm1_perms
+    adm1.top_role = MagicMock(position=100)
+    adm1.roles = []
+
+    adm2 = MagicMock(spec=discord.Member)
+    adm2.id = 102
+    adm2.bot = False
+    adm2.mention = "<@102>"
+    adm2.status = discord.Status.online
+    adm2_perms = MagicMock()
+    adm2_perms.administrator = True
+    adm2.guild_permissions = adm2_perms
+    adm2.top_role = MagicMock(position=90)
+    adm2.roles = []
+
+    # Admin 3 & Admin 4 (Batch 2)
+    adm3 = MagicMock(spec=discord.Member)
+    adm3.id = 103
+    adm3.bot = False
+    adm3.mention = "<@103>"
+    adm3.status = discord.Status.idle
+    adm3_perms = MagicMock()
+    adm3_perms.administrator = True
+    adm3.guild_permissions = adm3_perms
+    adm3.top_role = MagicMock(position=80)
+    adm3.roles = []
+
+    adm4 = MagicMock(spec=discord.Member)
+    adm4.id = 104
+    adm4.bot = False
+    adm4.mention = "<@104>"
+    adm4.status = discord.Status.offline
+    adm4_perms = MagicMock()
+    adm4_perms.administrator = True
+    adm4.guild_permissions = adm4_perms
+    adm4.top_role = MagicMock(position=70)
+    adm4.roles = []
+
+    applicant = MagicMock(spec=discord.Member)
+    applicant.id = 501
+    applicant.bot = False
+    applicant.display_name = "EscApplicant"
+    applicant.roles = []
+
+    guild.members = [adm1, adm2, adm3, adm4, applicant]
+    guild.roles = []
+
+    # 1. Test get_target_admin_mentions_batch returns batch of 2
+    mentions, ids = await service.get_target_admin_mentions_batch(guild, count=2, exclude_ids={501})
+    assert ids == [101, 102]
+    assert mentions == "<@101>, <@102>"
+
+    # 2. Setup review thread and open ticket
+    parent_channel = MagicMock(spec=discord.TextChannel)
+    parent_channel.name = "guest-tickets"
+    perms = MagicMock()
+    perms.view_channel = True
+    perms.create_private_threads = True
+    parent_channel.permissions_for.return_value = perms
+    guild.text_channels = [parent_channel]
+
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 9901
+    thread.archived = False
+    thread.locked = False
+    thread.send = AsyncMock()
+    thread.add_user = AsyncMock()
+    parent_channel.create_thread = AsyncMock(return_value=thread)
+    guild.get_thread.return_value = thread
+
+    # History generator helper with no admin messages
+    async def empty_history(*args, **kwargs):
+        if False:
+            yield None
+    thread.history = empty_history
+
+    success, msg, _ = await service.open_guest_review_ticket(
+        guild=guild,
+        applicant=applicant,
+        reason="Needs escalation test",
+    )
+    assert success is True
+
+    # Check ticket in DB has initial pinged_admin_ids = "101,102"
+    ticket = await db.get_guest_ticket_by_channel(thread.id)
+    assert ticket is not None
+    assert ticket["pinged_admin_ids"] == "101,102"
+
+    # 3. Running escalation check with interval_seconds=3600 when ticket was JUST created -> 0 escalated
+    escalated = await service.check_and_escalate_tickets(interval_seconds=3600.0)
+    assert escalated == 0
+
+    # 4. Running escalation with interval_seconds=0 (simulate 1 hr passed) -> Escalates to adm3 & adm4
+    escalated = await service.check_and_escalate_tickets(interval_seconds=0.0)
+    assert escalated == 1
+    thread.send.assert_called_once()
+    escalation_msg = thread.send.call_args[1]["content"]
+    assert "<@103>" in escalation_msg
+    assert "<@104>" in escalation_msg
+
+    # Verify DB now contains all 4 admin IDs in pinged_admin_ids
+    ticket_after = await db.get_guest_ticket_by_channel(thread.id)
+    assert "101" in ticket_after["pinged_admin_ids"]
+    assert "102" in ticket_after["pinged_admin_ids"]
+    assert "103" in ticket_after["pinged_admin_ids"]
+    assert "104" in ticket_after["pinged_admin_ids"]
+
+    # 5. Test background task lifecycle
+    service.start_escalation_task(check_interval_seconds=0.1, escalation_delay_seconds=3600.0)
+    assert service._escalation_task is not None
+    service.stop_escalation_task()
+    assert service._escalation_task is None
+
+    await db.close()
+
 
 
 
