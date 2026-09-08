@@ -302,7 +302,7 @@ def build_review_embed(
             voucher_str = f"<@{voucher_id}>" if voucher_id else "Voucher"
             vouch_status = f"✅ Confirmed by {voucher_str}: *\"{ticket['vouch_note']}\"*"
             if ticket.get("vouched_at"):
-                vouch_status += f" `({ticket['vouched_at']} UTC)`"
+                vouch_status += f" `({ticket['vouched_at']})`"
         else:
             vouch_status = f"⏳ Pending voucher confirmation from <@{ticket.get('referrer_id')}>"
         embed.add_field(name="1️⃣ Voucher Status", value=vouch_status, inline=False)
@@ -334,7 +334,7 @@ def build_review_embed(
             reason_str = f": *\"{ticket.get('close_reason')}\"*" if ticket.get("close_reason") else ""
             embed.add_field(name="Staff Verdict", value=f"🛑 {status.capitalize()}{admin_str}{reason_str}", inline=False)
 
-    embed.set_footer(text=f"Server: {guild.name} • Created at {ticket.get('created_at', 'N/A')} UTC")
+    embed.set_footer(text=f"Server: {guild.name} • Created at {ticket.get('created_at', 'N/A')}")
     return embed
 
 

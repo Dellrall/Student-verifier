@@ -7,11 +7,13 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 import aiosqlite
 import discord
+
+from tarveri.config import get_configured_tz, now_formatted
 
 logger = logging.getLogger("tarveri")
 
@@ -173,7 +175,7 @@ class Database:
             raise RuntimeError("Database connection is not open.")
 
         os.makedirs(backup_dir, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = now_formatted(fmt="%Y%m%d_%H%M%S")
         backup_filename = f"tarveri_backup_{timestamp}.db"
         backup_path = os.path.join(backup_dir, backup_filename)
 
@@ -201,7 +203,7 @@ class Database:
         if not self._conn:
             return
 
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         g_id = None
         g_name = None
         if guild is not None:
@@ -263,7 +265,7 @@ class Database:
     ) -> None:
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         await self._conn.execute(
             """INSERT INTO verifications (discord_user_id, student_id_hash, faculty_code, verified_at)
                VALUES (?, ?, ?, ?)""",
@@ -299,9 +301,10 @@ class Database:
     async def verified_in_last(self, hours: int) -> int:
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
+        cutoff = (datetime.now(get_configured_tz()) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
         cursor = await self._conn.execute(
-            "SELECT COUNT(*) FROM verifications WHERE verified_at >= datetime('now', ?)",
-            (f"-{hours} hours",),
+            "SELECT COUNT(*) FROM verifications WHERE verified_at >= ?",
+            (cutoff,),
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
@@ -348,7 +351,7 @@ class Database:
         """Sets or clears the welcome channel ID for a guild."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         await self._conn.execute(
             """INSERT INTO guild_settings (guild_id, welcome_channel_id, updated_at)
                VALUES (?, ?, ?)
@@ -363,7 +366,7 @@ class Database:
         """Sets or clears the help channel ID for a guild."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         await self._conn.execute(
             """INSERT INTO guild_settings (guild_id, help_channel_id, updated_at)
                VALUES (?, ?, ?)
@@ -378,7 +381,7 @@ class Database:
         """Sets or clears the custom guest role name for a guild (defaults to 'Guest' if None)."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         role_to_set = guest_role_name.strip() if guest_role_name else "Guest"
         await self._conn.execute(
             """INSERT INTO guild_settings (guild_id, guest_role_name, updated_at)
@@ -394,7 +397,7 @@ class Database:
         """Sets or clears the designated parent review channel for private guest threads."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         await self._conn.execute(
             """INSERT INTO guild_settings (guild_id, review_channel_id, updated_at)
                VALUES (?, ?, ?)
@@ -411,7 +414,7 @@ class Database:
         """Saves a newly generated referral code."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         await self._conn.execute(
             """INSERT INTO referral_codes (code, guild_id, referrer_discord_id, created_at, expires_at, status)
                VALUES (?, ?, ?, ?, ?, 'ACTIVE')""",
@@ -446,7 +449,7 @@ class Database:
         """Counts how many active (unexpired, unused) referral codes a student currently holds."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         cursor = await self._conn.execute(
             """SELECT COUNT(*) FROM referral_codes
                WHERE guild_id = ? AND referrer_discord_id = ?
@@ -488,7 +491,7 @@ class Database:
         """Updates referral code status (e.g., PENDING_APPROVAL, USED, REJECTED, ACTIVE)."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         if used_by_discord_id is not None:
             cursor = await self._conn.execute(
                 """UPDATE referral_codes
@@ -518,7 +521,7 @@ class Database:
         """Creates a guest ticket record and returns its ticket_id."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         cursor = await self._conn.execute(
             """INSERT INTO guest_tickets
                (guild_id, applicant_id, referrer_id, channel_id, referral_code, reason, status, created_at)
@@ -633,7 +636,7 @@ class Database:
         """Saves a student vouch statement along with the voucher ID and timestamp on a guest ticket."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         cursor = await self._conn.execute(
             """UPDATE guest_tickets
                SET vouch_note = ?, vouched_by_id = ?, vouched_at = ?
@@ -653,7 +656,7 @@ class Database:
         """Closes a guest ticket with status ('APPROVED', 'REJECTED', 'EXPIRED'), admin ID, and reason/comment."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         cursor = await self._conn.execute(
             """UPDATE guest_tickets
                SET status = ?, closed_at = ?, closed_by_admin_id = ?, close_reason = ?
@@ -667,7 +670,7 @@ class Database:
         """Bulk updates all expired active referral codes to EXPIRED status."""
         if not self._conn:
             return 0
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         cursor = await self._conn.execute(
             """UPDATE referral_codes SET status = 'EXPIRED'
                WHERE status = 'ACTIVE' AND expires_at <= ?""",
@@ -682,7 +685,7 @@ class Database:
         """Revokes all active or approved guest tickets for a user in a guild."""
         if not self._conn:
             return 0
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now_formatted()
         cursor = await self._conn.execute(
             """UPDATE guest_tickets
                SET status = ?, closed_at = ?, close_reason = ?

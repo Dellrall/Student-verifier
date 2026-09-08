@@ -166,7 +166,12 @@ async def run_bot(settings: Settings | None = None) -> None:
     if settings is None:
         settings = Settings.from_env()
 
-    setup_logger(settings.log_file, settings.log_max_bytes, settings.log_backup_count)
+    setup_logger(
+        settings.log_file,
+        settings.log_max_bytes,
+        settings.log_backup_count,
+        tz_name=settings.timezone_name,
+    )
     bot = TARVeriBot(settings)
 
     loop = asyncio.get_running_loop()

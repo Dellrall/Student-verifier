@@ -10,6 +10,8 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import zoneinfo
 from logging.handlers import RotatingFileHandler
 from typing import Final
 
@@ -48,6 +50,23 @@ ROLE_HELP_KEYWORDS_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 
 
+def get_configured_tz(tz_name: str | None = None) -> zoneinfo.ZoneInfo | timezone:
+    """Resolves the configured timezone (defaults to Asia/Kuala_Lumpur or local system time)."""
+    raw = (tz_name or os.getenv("TARVERI_TIMEZONE", "Asia/Kuala_Lumpur")).strip()
+    if raw.lower() in ("auto", "local", "system", ""):
+        return datetime.now().astimezone().tzinfo or timezone.utc
+    try:
+        return zoneinfo.ZoneInfo(raw)
+    except Exception:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def now_formatted(tz_name: str | None = None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """Returns current timestamp string formatted in the configured timezone."""
+    tz = get_configured_tz(tz_name)
+    return datetime.now(tz).strftime(fmt)
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     bot_token: str
@@ -65,6 +84,7 @@ class Settings:
     update_stream: str = "auto"
     help_channel_id: int | None = None
     welcome_channel_id: int | None = None
+    timezone_name: str = "Asia/Kuala_Lumpur"
 
     @property
     def database_path(self) -> str:
@@ -104,6 +124,8 @@ class Settings:
         welcome_channel_raw = os.getenv("TARVERI_WELCOME_CHANNEL_ID", "").strip()
         welcome_channel_id = int(welcome_channel_raw) if welcome_channel_raw.isdigit() else None
 
+        timezone_name = os.getenv("TARVERI_TIMEZONE", "Asia/Kuala_Lumpur").strip()
+
         if validate:
             if not bot_token:
                 raise RuntimeError(
@@ -127,18 +149,44 @@ class Settings:
             update_stream=update_stream,
             help_channel_id=help_channel_id,
             welcome_channel_id=welcome_channel_id,
+            timezone_name=timezone_name,
         )
 
 
-def setup_logger(log_file: str = "tarveri.log", max_bytes: int = 2_000_000, backup_count: int = 5) -> logging.Logger:
+class TimezoneFormatter(logging.Formatter):
+    """Custom logging formatter that renders timestamps in the local/configured timezone."""
+
+    def __init__(
+        self,
+        fmt: str = "%(asctime)s | %(levelname)s | %(message)s",
+        datefmt: str = "%Y-%m-%d %H:%M:%S",
+        tz_name: str | None = None,
+    ) -> None:
+        super().__init__(fmt=fmt, datefmt=datefmt)
+        self.tz = get_configured_tz(tz_name)
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=self.tz)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def setup_logger(
+    log_file: str = "tarveri.log",
+    max_bytes: int = 2_000_000,
+    backup_count: int = 5,
+    tz_name: str | None = None,
+) -> logging.Logger:
     logger = logging.getLogger("tarveri")
     if logger.handlers:
         return logger
 
     logger.setLevel(logging.INFO)
-    formatter = logging.Formatter(
+    formatter = TimezoneFormatter(
         fmt="%(asctime)s | %(levelname)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        tz_name=tz_name,
     )
 
     file_handler = RotatingFileHandler(

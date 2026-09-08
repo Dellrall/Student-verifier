@@ -97,3 +97,37 @@ def test_role_help_keywords_pattern():
     assert ROLE_HELP_KEYWORDS_PATTERN.search("hello everyone") is None
     assert ROLE_HELP_KEYWORDS_PATTERN.search("good morning") is None
 
+
+def test_timezone_configuration_and_formatter():
+    import logging
+    import time
+    import zoneinfo
+    from tarveri.config import TimezoneFormatter, get_configured_tz, now_formatted
+
+    # Default timezone is Asia/Kuala_Lumpur
+    tz = get_configured_tz("Asia/Kuala_Lumpur")
+    assert isinstance(tz, zoneinfo.ZoneInfo)
+    assert tz.key == "Asia/Kuala_Lumpur"
+
+    # now_formatted returns a string formatted properly
+    formatted = now_formatted(tz_name="Asia/Kuala_Lumpur")
+    assert len(formatted) == 19
+    assert formatted[4] == "-" and formatted[7] == "-" and formatted[10] == " "
+
+    # TimezoneFormatter converts log record timestamp accurately
+    formatter = TimezoneFormatter(tz_name="Asia/Kuala_Lumpur")
+    record = logging.LogRecord(
+        name="tarveri_test",
+        level=logging.INFO,
+        pathname="test.py",
+        lineno=1,
+        msg="Test message",
+        args=(),
+        exc_info=None,
+    )
+    # Fixed epoch timestamp: 1700000000 -> 2023-11-14 22:13:20 UTC -> 2023-11-15 06:13:20 in UTC+8
+    record.created = 1700000000.0
+    log_time = formatter.formatTime(record)
+    assert log_time == "2023-11-15 06:13:20"
+
+

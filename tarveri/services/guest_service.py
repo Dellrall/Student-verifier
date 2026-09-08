@@ -8,11 +8,12 @@ import asyncio
 import logging
 import secrets
 import string
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 import discord
 
+from tarveri.config import get_configured_tz, now_formatted
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 
@@ -62,7 +63,7 @@ class GuestService:
                     "Please wait for your previous codes to be used or expire before creating more.",
                 )
 
-            expires_at = (datetime.now(timezone.utc) + timedelta(hours=ttl_hours)).strftime("%Y-%m-%d %H:%M:%S")
+            expires_at = (datetime.now(get_configured_tz()) + timedelta(hours=ttl_hours)).strftime("%Y-%m-%d %H:%M:%S")
             for _ in range(5):
                 candidate_code = generate_code_string()
                 existing = await self.db.get_referral_code(candidate_code, guild_id)
@@ -72,7 +73,7 @@ class GuestService:
                     await self.db.log(
                         "INFO",
                         "REFERRAL_CREATED",
-                        f"Student {referrer_user} (ID: {referrer_user.id}) created referral code '{candidate_code}' (Expires: {expires_at} UTC)",
+                        f"Student {referrer_user} (ID: {referrer_user.id}) created referral code '{candidate_code}' (Expires: {expires_at})",
                         guild=guild,
                         user_id=referrer_user.id,
                     )
@@ -97,7 +98,7 @@ class GuestService:
         if record["status"] != "ACTIVE":
             return False, generic_error, record
 
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now_str = now_formatted()
         if record["expires_at"] <= now_str:
             await self.db.update_referral_code_status(normalized, guild_id, "EXPIRED")
             return False, generic_error, record
