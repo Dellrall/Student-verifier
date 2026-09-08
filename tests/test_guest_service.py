@@ -845,8 +845,108 @@ async def test_reconcile_downtime_state(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_find_parent_review_channel_heals_stale_review_channel(tmp_path):
+    db_path = str(tmp_path / "stale_review_ch.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = GuestService(bot, db)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 5566
+    guild.name = "Self Healing Guild"
+
+    # Set stale review channel ID in DB
+    stale_review_id = 999123
+    await db.set_guild_review_channel(guild.id, stale_review_id)
+
+    # Setup fallback text channel with keyword "review"
+    fallback_ch = MagicMock(spec=discord.TextChannel)
+    fallback_ch.id = 888123
+    fallback_ch.name = "guest-review"
+    perms = MagicMock()
+    perms.view_channel = True
+    perms.create_private_threads = True
+    perms.manage_threads = True
+    fallback_ch.permissions_for.return_value = perms
+
+    guild.text_channels = [fallback_ch]
+    # get_channel returns None for stale ID
+    guild.get_channel.side_effect = lambda cid: fallback_ch if cid == fallback_ch.id else None
+    guild.me = MagicMock()
+
+    resolved_ch = await service.find_parent_review_channel(guild)
+    assert resolved_ch == fallback_ch
+
+    # Verify stale setting in DB was cleared
+    settings = await db.get_guild_settings(guild.id)
+    assert settings[3] is None
+
+    await db.close()
 
 
+@pytest.mark.asyncio
+async def test_reconcile_downtime_state_handles_manual_guest_grant(tmp_path):
+    db_path = str(tmp_path / "manual_grant_reconcile.db")
+    db = Database(db_path)
+    await db.connect()
 
+    bot = MagicMock()
+    service = GuestService(bot, db)
 
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 7711
+    guild.name = "Manual Grant Guild"
+    bot.get_guild.return_value = guild
 
+    # Setup guest role
+    guest_role = MagicMock(spec=discord.Role)
+    guest_role.name = "Guest(Approved)"
+    guest_role.id = 4411
+    guild.roles = [guest_role]
+
+    # Setup applicant member who holds the guest role (manually granted by admin)
+    applicant = MagicMock(spec=discord.Member)
+    applicant.id = 6611
+    applicant.bot = False
+    applicant.roles = [guest_role]
+
+    # Create open ticket and referral code
+    ref_code = "TAR-MGRANT"
+    await db.create_referral_code(ref_code, guild.id, 9999, "2099-01-01 00:00:00")
+    ticket_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=applicant.id,
+        channel_id=8811,
+        referral_code=ref_code,
+    )
+
+    thread = AsyncMock(spec=discord.Thread)
+    thread.id = 8811
+    thread.archived = False
+    thread.locked = False
+
+    guild.get_member.side_effect = lambda uid: applicant if uid == applicant.id else None
+    guild.get_thread.side_effect = lambda tid: thread if tid == 8811 else None
+
+    # Reconcile downtime state
+    summary = await service.reconcile_downtime_state()
+    assert summary["reconciled_tickets"] == 1
+
+    # Check ticket is approved
+    ticket = await db.get_guest_ticket_by_id(ticket_id)
+    assert ticket["status"] == "APPROVED"
+    assert "manually granted" in ticket["close_reason"]
+
+    # Check referral code is marked USED
+    ref = await db.get_referral_code(ref_code, guild.id)
+    assert ref["status"] == "USED"
+    assert ref["used_by_discord_id"] == applicant.id
+
+    # Check thread was closed and archived
+    thread.send.assert_awaited_once()
+    thread.edit.assert_awaited_once_with(archived=True, locked=True)
+
+    await db.close()

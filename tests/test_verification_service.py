@@ -323,3 +323,89 @@ async def test_perform_verification_database_collision_rollback(tmp_path):
 
     await db.close()
 
+
+@pytest.mark.asyncio
+async def test_reconcile_verified_members_restores_missing_faculty_role(tmp_path):
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.name = "Reconcile Guild"
+
+    # Setup FOCS role
+    focs_role = MagicMock(spec=discord.Role)
+    focs_role.name = "FOCS"
+    focs_role.position = 10
+    guild.roles = [focs_role]
+
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    bot_top_role = MagicMock(spec=discord.Role)
+    bot_top_role.name = "TARVeri Bot"
+    bot_top_role.position = 50
+    guild.me.top_role = bot_top_role
+
+    # Student 55555 is verified in DB as FOCS ("M"), but missing role in Discord
+    member = MagicMock(spec=discord.Member)
+    member.id = 55555
+    member.roles = []
+    member.add_roles = AsyncMock()
+
+    guild.get_member.side_effect = lambda uid: member if uid == 55555 else None
+    bot.guilds = [guild]
+
+    db = Database(str(tmp_path / "reconcile_roles_test.db"))
+    await db.connect()
+    await db.record_verification(55555, "hash_55555", "M")
+
+    rate_limiter = RateLimiter()
+    service = VerificationService(bot, db, "secret_123", rate_limiter)
+
+    # Run reconciliation
+    summary = await service.reconcile_verified_members(guild)
+    assert summary["checked"] == 1
+    assert summary["restored"] == 1
+    assert summary["failed"] == 0
+
+    member.add_roles.assert_awaited_once_with(
+        focs_role, reason="TARVeri: Self-healing automatic role restoration for verified student"
+    )
+
+    await db.close()
+
+
+def test_diagnose_guild_permissions_hierarchy_and_permissions(tmp_path):
+    bot = MagicMock()
+    db = MagicMock()
+    rate_limiter = RateLimiter()
+    service = VerificationService(bot, db, "secret_123", rate_limiter)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.name = "Diagnosis Guild"
+
+    # 1. Missing Manage Roles permission
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = False
+    bot_top_role = MagicMock()
+    bot_top_role.name = "TARVeri"
+    bot_top_role.position = 10
+    guild.me.top_role = bot_top_role
+    guild.roles = []
+
+    warnings = service.diagnose_guild_permissions(guild)
+    assert any("Manage Roles" in w for w in warnings)
+
+    # 2. Hierarchy conflict: Faculty role higher than bot role
+    guild.me.guild_permissions.manage_roles = True
+    focs_role = MagicMock(spec=discord.Role)
+    focs_role.name = "FOCS"
+    focs_role.position = 20  # Higher than bot (10)
+    guild.roles = [focs_role]
+
+    warnings = service.diagnose_guild_permissions(guild)
+    assert any("Role hierarchy conflict" in w and "FOCS" in w for w in warnings)
+
+    # 3. Healthy configuration: Bot role higher than all managed roles
+    bot_top_role.position = 100
+    warnings = service.diagnose_guild_permissions(guild)
+    assert warnings == []
+
+

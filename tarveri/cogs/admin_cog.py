@@ -121,6 +121,102 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(embed=embed, ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
+    @app_commands.command(
+        name="diagnose",
+        description="Run self-healing diagnostics and verify server permissions, roles, and channels.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def diagnose(self, interaction: discord.Interaction) -> None:
+        """Runs role hierarchy check, channel validity checks, and auto-reconciliation."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command must be used within a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        warnings = self.service.diagnose_guild_permissions(guild)
+
+        # Trigger member role reconciliation for this guild
+        reconcile_stats = await self.service.reconcile_verified_members(guild)
+
+        # Check channel configurations
+        settings = await self.db.get_guild_settings(guild.id)
+        w_id = settings[0] if settings else None
+        h_id = settings[1] if settings else None
+        r_id = settings[3] if settings and len(settings) > 3 else None
+
+        channel_status = []
+        if w_id:
+            w_ch = guild.get_channel(w_id)
+            if not w_ch:
+                await self.db.clear_stale_channel_setting(guild.id, "welcome")
+                channel_status.append("⚠️ Stale welcome channel ID was detected and auto-cleared.")
+            else:
+                channel_status.append(f"✅ Welcome channel: {w_ch.mention}")
+        else:
+            channel_status.append("ℹ️ Welcome channel: *Auto-detected*")
+
+        if h_id:
+            h_ch = guild.get_channel(h_id)
+            if not h_ch:
+                await self.db.clear_stale_channel_setting(guild.id, "help")
+                channel_status.append("⚠️ Stale help channel ID was detected and auto-cleared.")
+            else:
+                channel_status.append(f"✅ Help channel: {h_ch.mention}")
+        else:
+            channel_status.append("ℹ️ Help channel: *Auto-detected*")
+
+        if r_id:
+            r_ch = guild.get_channel(r_id)
+            if not r_ch:
+                await self.db.clear_stale_channel_setting(guild.id, "review")
+                channel_status.append("⚠️ Stale review channel ID was detected and auto-cleared.")
+            else:
+                channel_status.append(f"✅ Review channel: {r_ch.mention}")
+        else:
+            channel_status.append("ℹ️ Review channel: *Auto-detected*")
+
+        embed = discord.Embed(
+            title="🛡️ TARVeri — Server Health & Diagnostics",
+            color=discord.Color.green() if not warnings else discord.Color.orange(),
+        )
+
+        if warnings:
+            embed.add_field(
+                name="⚠️ Permission / Hierarchy Issues Detected",
+                value="\n".join(f"• {w}" for w in warnings),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="✅ Permissions & Role Hierarchy",
+                value="All required permissions and role positions are properly configured.",
+                inline=False,
+            )
+
+        embed.add_field(
+            name="🔄 Self-Healing Member Reconciliation",
+            value=f"• Checked **{reconcile_stats['checked']}** verified student(s)\n• Restored **{reconcile_stats['restored']}** missing role(s)\n• Failed **{reconcile_stats['failed']}** role(s)",
+            inline=False,
+        )
+
+        embed.add_field(
+            name="📁 Channel Configuration & Auto-Recovery",
+            value="\n".join(channel_status),
+            inline=False,
+        )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
+
     @app_commands.command(name="unverify", description="Unlink a member's student ID and revoke faculty roles.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(user="The Discord user to unverify", reason="Optional reason for unlinking")

@@ -14,6 +14,7 @@ import aiosqlite
 import discord
 
 from tarveri.config import (
+    FACULTY_COLORS,
     FACULTY_ROLE_NAMES,
     FACULTY_ROLES,
     hash_student_id,
@@ -98,12 +99,15 @@ class VerificationService:
 
         role = discord.utils.get(guild.roles, name=role_name)
         if not role:
-            if not guild.me.guild_permissions.manage_roles:
+            if not getattr(guild.me.guild_permissions, "manage_roles", False):
                 result.missing_role_in.append(guild.name)
                 return
             try:
+                color_val = FACULTY_COLORS.get(role_name, 0x3498DB)
                 role = await guild.create_role(
                     name=role_name,
+                    colour=discord.Colour(color_val),
+                    mentionable=True,
                     reason="TARVeri: auto-created missing faculty role for verification",
                 )
                 await self.db.log("INFO", "ROLE_CREATED", f"Created role '{role_name}'", guild=guild)
@@ -289,3 +293,142 @@ class VerificationService:
         finally:
             async with self._lock:
                 self._in_flight_users.discard(user.id)
+
+    async def reconcile_verified_members(self, guild: discord.Guild) -> dict[str, int]:
+        """
+        Self-healing: cross-references current guild members against the verifications table.
+        If a student verified in the database is missing their faculty role in this guild
+        (e.g., rejoined during maintenance, role was deleted/recreated), automatically restores it.
+        """
+        summary = {"checked": 0, "restored": 0, "failed": 0}
+        if not guild:
+            return summary
+
+        # Ensure guild member cache is populated if chunk method exists
+        if hasattr(guild, "chunk") and not getattr(guild, "chunked", True):
+            try:
+                await guild.chunk()
+            except Exception:
+                pass
+
+        all_verifications = await self.db.get_all_verifications()
+        if not all_verifications:
+            return summary
+
+        for discord_user_id, _, faculty_code, _ in all_verifications:
+            member = await self.get_or_fetch_member(guild, discord_user_id)
+            if not member:
+                continue
+
+            summary["checked"] += 1
+            target_role_name = FACULTY_ROLES.get(faculty_code)
+            if not target_role_name:
+                continue
+
+            # Check if member already has any faculty role
+            member_roles = getattr(member, "roles", [])
+            has_faculty_role = any(getattr(r, "name", "") in FACULTY_ROLE_NAMES for r in member_roles)
+            if has_faculty_role:
+                continue
+
+            # Member is verified in DB but missing faculty role in this guild -> restore role
+            target_role = discord.utils.get(getattr(guild, "roles", []), name=target_role_name)
+            if not target_role:
+                can_manage = (
+                    getattr(guild.me.guild_permissions, "manage_roles", False)
+                    if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
+                    else False
+                )
+                if can_manage:
+                    try:
+                        color_val = FACULTY_COLORS.get(target_role_name, 0x3498DB)
+                        target_role = await guild.create_role(
+                            name=target_role_name,
+                            colour=discord.Colour(color_val),
+                            mentionable=True,
+                            reason="TARVeri: auto-created missing faculty role during member reconciliation",
+                        )
+                        await self.db.log(
+                            "INFO",
+                            "ROLE_CREATED",
+                            f"Auto-created missing role '{target_role_name}' during member reconciliation",
+                            guild=guild,
+                        )
+                    except discord.HTTPException as e:
+                        summary["failed"] += 1
+                        continue
+                else:
+                    summary["failed"] += 1
+                    continue
+
+            # Check role hierarchy and permissions
+            me = getattr(guild, "me", None)
+            can_manage = (
+                getattr(me.guild_permissions, "manage_roles", False)
+                if me and hasattr(me, "guild_permissions")
+                else False
+            )
+            bot_top_role = getattr(me, "top_role", None) if me else None
+
+            bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
+            role_pos = getattr(target_role, "position", 0)
+            if not can_manage or (isinstance(bot_pos, int) and isinstance(role_pos, int) and role_pos >= bot_pos):
+                summary["failed"] += 1
+                continue
+
+            try:
+                await member.add_roles(
+                    target_role,
+                    reason="TARVeri: Self-healing automatic role restoration for verified student",
+                )
+                summary["restored"] += 1
+                await self.db.log(
+                    "INFO",
+                    "ROLE_RESTORED",
+                    f"Self-healing: Restored missing faculty role '{target_role_name}' to verified student {member} (ID: {discord_user_id})",
+                    guild=guild,
+                    user_id=discord_user_id,
+                )
+            except discord.HTTPException as e:
+                summary["failed"] += 1
+                logger.warning(
+                    f"Failed to restore role '{target_role_name}' for {member} in '{guild.name}': {e}"
+                )
+
+        if summary["restored"] > 0:
+            logger.info(
+                f"[{guild.name}] Self-healing verified member reconciliation: "
+                f"Checked {summary['checked']}, Restored {summary['restored']}, Failed {summary['failed']}"
+            )
+
+        return summary
+
+    def diagnose_guild_permissions(self, guild: discord.Guild) -> list[str]:
+        """
+        Diagnoses permission and hierarchy issues in a guild.
+        Returns a list of warning descriptions (empty if guild setup is fully healthy).
+        """
+        warnings: list[str] = []
+        if not guild or not hasattr(guild, "me") or not guild.me:
+            return warnings
+
+        me = guild.me
+        bot_perms = getattr(me, "guild_permissions", None)
+        bot_top_role = getattr(me, "top_role", None)
+
+        if not bot_perms or not getattr(bot_perms, "manage_roles", False):
+            warnings.append("❌ Missing `Manage Roles` permission — cannot create or assign faculty/guest roles.")
+
+        # Check hierarchy against existing faculty and guest roles
+        bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
+        for r in getattr(guild, "roles", []):
+            r_name = getattr(r, "name", "")
+            if r_name in FACULTY_ROLE_NAMES or r_name in ("Guest(Approved)", "Guest (Approved)", "Guest"):
+                r_pos = getattr(r, "position", 0)
+                if isinstance(bot_pos, int) and isinstance(r_pos, int) and r_pos >= bot_pos:
+                    bot_name = getattr(bot_top_role, "name", "TARVeri")
+                    warnings.append(
+                        f"⚠️ Role hierarchy conflict: Role **{r_name}** (pos {r_pos}) is higher than or equal to bot top role **{bot_name}** (pos {bot_pos}). Please drag the bot's role above **{r_name}** in Server Settings → Roles."
+                    )
+
+        return warnings

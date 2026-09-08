@@ -396,5 +396,57 @@ async def test_admin_stats_and_audit(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_admin_diagnose_command(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+    from tarveri.cogs.admin_cog import AdminCog
+    from tarveri.database import Database
 
+    db = Database(str(tmp_path / "diagnose_test.db"))
+    await db.connect()
 
+    service = MagicMock()
+    service.diagnose_guild_permissions.return_value = ["⚠️ Role hierarchy conflict: Role FOCS is higher than bot role."]
+    service.reconcile_verified_members = AsyncMock(return_value={"checked": 5, "restored": 2, "failed": 0})
+
+    cog = AdminCog(MagicMock(), db, service, MagicMock(), admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 8877
+    guild.name = "Diagnose Guild"
+
+    # Set up channels
+    welcome_ch = MagicMock(spec=discord.TextChannel)
+    welcome_ch.id = 1111
+    welcome_ch.mention = "<#1111>"
+
+    # Set up settings with valid welcome, but stale help and review channels
+    await db.set_guild_welcome_channel(guild.id, 1111)
+    await db.set_guild_help_channel(guild.id, 2222)  # Stale (get_channel returns None)
+    await db.set_guild_review_channel(guild.id, 3333)  # Stale
+
+    guild.get_channel.side_effect = lambda cid: welcome_ch if cid == 1111 else None
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await cog.diagnose.callback(cog, interaction)
+
+    interaction.followup.send.assert_called_once()
+    embed = interaction.followup.send.call_args[1]["embed"]
+    assert "Server Health & Diagnostics" in embed.title
+    assert len(embed.fields) >= 3
+
+    # Verify stale channels were cleaned in DB
+    settings = await db.get_guild_settings(guild.id)
+    assert settings[0] == 1111  # Kept
+    assert settings[1] is None  # Stale cleared
+    assert settings[3] is None  # Stale cleared
+
+    await db.close()

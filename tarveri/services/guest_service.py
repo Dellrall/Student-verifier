@@ -112,19 +112,44 @@ class GuestService:
         return True, "", record
 
     async def find_parent_review_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
-        """Finds the best parent text channel in which to spawn private guest review threads."""
+        """
+        Finds the best parent text channel in which to spawn private guest review threads.
+        Automatically heals deleted or stale channel configurations.
+        """
         settings = await self.db.get_guild_settings(guild.id)
         # 1. Configured review channel
         if settings and settings[3]:
             ch = guild.get_channel(settings[3])
             if isinstance(ch, discord.TextChannel):
-                return ch
+                perms = ch.permissions_for(guild.me)
+                if perms.view_channel and (perms.create_private_threads or perms.manage_threads):
+                    return ch
+            else:
+                # Stale or deleted review channel in DB
+                await self.db.clear_stale_channel_setting(guild.id, "review")
+                await self.db.log(
+                    "WARNING",
+                    "STALE_CHANNEL_HEALED",
+                    f"Configured review channel ID {settings[3]} no longer exists in '{guild.name}'. Setting cleared.",
+                    guild=guild,
+                )
 
         # 2. Configured help channel
         if settings and settings[1]:
             ch = guild.get_channel(settings[1])
             if isinstance(ch, discord.TextChannel):
-                return ch
+                perms = ch.permissions_for(guild.me)
+                if perms.view_channel and (perms.create_private_threads or perms.manage_threads):
+                    return ch
+            else:
+                # Stale or deleted help channel in DB
+                await self.db.clear_stale_channel_setting(guild.id, "help")
+                await self.db.log(
+                    "WARNING",
+                    "STALE_CHANNEL_HEALED",
+                    f"Configured help channel ID {settings[1]} no longer exists in '{guild.name}'. Setting cleared.",
+                    guild=guild,
+                )
 
         # 3. Autodetect channel by keywords: approval, review, tickets, verify, help
         keywords = ("approval", "review", "ticket", "mod", "admin", "staff", "verify", "help")
@@ -886,6 +911,49 @@ class GuestService:
                         await thread.edit(archived=True, locked=True)
                     except (discord.HTTPException, discord.Forbidden):
                         pass
+                continue
+
+            # Check if applicant was manually granted the guest role by an admin during downtime
+            guest_role = await self.get_or_create_guest_role(guild)
+            if (
+                guest_role
+                and applicant_member
+                and hasattr(applicant_member, "roles")
+                and guest_role in getattr(applicant_member, "roles", [])
+            ):
+                await self.db.close_guest_ticket(
+                    t["ticket_id"],
+                    status="APPROVED",
+                    close_reason="Applicant was manually granted guest role by admin",
+                )
+                if t.get("referral_code"):
+                    await self.db.update_referral_code_status(
+                        t["referral_code"], guild.id, "USED", used_by_discord_id=applicant_id
+                    )
+                thread = guild.get_thread(t["channel_id"])
+                if not thread and hasattr(guild, "fetch_channel"):
+                    try:
+                        fetched = await guild.fetch_channel(t["channel_id"])
+                        if isinstance(fetched, discord.Thread):
+                            thread = fetched
+                    except (discord.NotFound, discord.HTTPException):
+                        thread = None
+
+                if thread and not getattr(thread, "archived", False):
+                    try:
+                        await thread.send("✅ **Guest role was already granted to applicant.** Review ticket auto-resolved.")
+                        await thread.edit(archived=True, locked=True)
+                    except (discord.HTTPException, discord.Forbidden):
+                        pass
+
+                await self.db.log(
+                    "INFO",
+                    "MANUAL_GUEST_GRANT_RECONCILED",
+                    f"Ticket #{t.get('ticket_seq', t['ticket_id'])} auto-resolved because applicant {applicant_member} already has guest role.",
+                    guild=guild,
+                    user_id=applicant_id,
+                )
+                summary["reconciled_tickets"] += 1
                 continue
 
             # If referrer left or was banned during maintenance

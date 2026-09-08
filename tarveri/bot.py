@@ -139,12 +139,30 @@ class TARVeriBot(commands.Bot):
                 f"TARVeri ready: Logged in as {self.user} (ID: {self.user.id}) | Servers: {len(self.guilds)}"
             )
 
-            # Reconcile any events (member leaves, bans, expired codes) missed during maintenance
-            if self.guest_service:
-                asyncio.create_task(
-                    self.guest_service.reconcile_downtime_state(),
-                    name="tarveri_downtime_reconciliation",
-                )
+            # Run startup diagnostics and self-healing across connected guilds
+            async def _startup_self_healing() -> None:
+                try:
+                    for guild in self.guilds:
+                        # 1. Run permission and hierarchy diagnostics
+                        if self.service:
+                            warnings = self.service.diagnose_guild_permissions(guild)
+                            for w in warnings:
+                                logger.warning(f"[{guild.name}] Diagnostic Warning: {w}")
+                                await self.db.log(
+                                    "WARNING", "HIERARCHY_DIAGNOSTIC", f"[{guild.name}] {w}", guild=guild
+                                )
+
+                        # 2. Reconcile verified member roles
+                        if self.service:
+                            await self.service.reconcile_verified_members(guild)
+
+                    # 3. Reconcile guest tickets and downtime events
+                    if self.guest_service:
+                        await self.guest_service.reconcile_downtime_state()
+                except Exception as e:
+                    logger.error(f"Error during startup self-healing: {e}", exc_info=True)
+
+            asyncio.create_task(_startup_self_healing(), name="tarveri_startup_self_healing")
 
     async def close(self) -> None:
         """Gracefully tears down the bot, logs shutdown, and flushes SQLite WAL."""

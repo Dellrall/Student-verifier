@@ -197,7 +197,13 @@ class VerificationCog(commands.Cog, name="Verification"):
         # 1. Per-server configured help channel in database
         _, guild_help_id = await self.get_guild_channel_ids(channel.guild.id)
         if guild_help_id is not None:
-            return channel.id == guild_help_id
+            configured_ch = channel.guild.get_channel(guild_help_id)
+            if configured_ch is not None:
+                return channel.id == guild_help_id
+            else:
+                # Channel was deleted on Discord — self-heal database setting
+                await self.db.clear_stale_channel_setting(channel.guild.id, "help")
+                self.invalidate_guild_cache(channel.guild.id)
 
         # 2. Global fallback setting from environment
         if self.settings and self.settings.help_channel_id:
@@ -235,6 +241,10 @@ class VerificationCog(commands.Cog, name="Verification"):
             ch = guild.get_channel(guild_welcome_id)
             if isinstance(ch, discord.TextChannel) and _can_bot_send(ch):
                 return ch
+            elif ch is None:
+                # Channel was deleted on Discord — self-heal database setting
+                await self.db.clear_stale_channel_setting(guild.id, "welcome")
+                self.invalidate_guild_cache(guild.id)
 
         # 2. Global configured welcome channel ID from settings (.env)
         if self.settings and self.settings.welcome_channel_id:

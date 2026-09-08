@@ -438,3 +438,59 @@ async def test_verify_slash_direct_argument(mock_bot, mock_service, mock_rate_li
 
     await db.close()
 
+
+@pytest.mark.asyncio
+async def test_channel_self_healing_clears_deleted_help_and_welcome(mock_bot, mock_service, mock_rate_limiter, tmp_path):
+    db = Database(str(tmp_path / "self_healing_cog_channels.db"))
+    await db.connect()
+    cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 998811
+    guild.name = "Healing Cog Guild"
+    guild.system_channel = None
+
+    # Configure deleted help channel and deleted welcome channel in DB
+    stale_welcome_id = 111999
+    stale_help_id = 222999
+    await db.set_guild_welcome_channel(guild.id, stale_welcome_id)
+    await db.set_guild_help_channel(guild.id, stale_help_id)
+
+    # get_channel returns None for both stale channels
+    guild.get_channel.return_value = None
+
+    # Autodetected fallback channel
+    fallback_welcome = MagicMock(spec=discord.TextChannel)
+    fallback_welcome.name = "welcome-gate"
+    fallback_welcome.guild = guild
+    perms = MagicMock()
+    perms.view_channel = True
+    perms.send_messages = True
+    fallback_welcome.permissions_for.return_value = perms
+    guild.text_channels = [fallback_welcome]
+    guild.me = MagicMock()
+
+    # 1. Test get_welcome_or_verify_channel self-heals stale welcome channel
+    chosen = await cog.get_welcome_or_verify_channel(guild)
+    assert chosen == fallback_welcome
+
+    # Check DB setting for welcome channel was cleared
+    settings = await db.get_guild_settings(guild.id)
+    assert settings[0] is None
+
+    # 2. Test is_help_channel self-heals stale help channel
+    non_matching_ch = MagicMock(spec=discord.TextChannel)
+    non_matching_ch.id = 555555
+    non_matching_ch.name = "general-chat"
+    non_matching_ch.guild = guild
+
+    is_help = await cog.is_help_channel(non_matching_ch)
+    assert is_help is False
+
+    # Check DB setting for help channel was cleared
+    settings = await db.get_guild_settings(guild.id)
+    assert settings[1] is None
+
+    await db.close()
+
+

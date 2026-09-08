@@ -410,5 +410,70 @@ async def test_database_cleanup_expired_referrals(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_database_clear_stale_channel_setting(tmp_path):
+    db_file = str(tmp_path / "stale_channel_test.db")
+    db = Database(db_file)
+    await db.connect()
+
+    guild_id = 445566
+    await db.set_guild_welcome_channel(guild_id, 1001)
+    await db.set_guild_help_channel(guild_id, 1002)
+    await db.set_guild_review_channel(guild_id, 1003)
+    await db.set_guild_admin_role(guild_id, "Test Admin")
+
+    settings = await db.get_guild_settings(guild_id)
+    assert settings == (1001, 1002, "Guest", 1003, "Test Admin")
+
+    # Clear welcome channel
+    cleared_welcome = await db.clear_stale_channel_setting(guild_id, "welcome")
+    assert cleared_welcome is True
+    settings = await db.get_guild_settings(guild_id)
+    assert settings[0] is None
+    assert settings[1] == 1002
+
+    # Clear help channel using column name
+    cleared_help = await db.clear_stale_channel_setting(guild_id, "help_channel_id")
+    assert cleared_help is True
+    settings = await db.get_guild_settings(guild_id)
+    assert settings[1] is None
+
+    # Clear review channel
+    cleared_review = await db.clear_stale_channel_setting(guild_id, "review")
+    assert cleared_review is True
+    settings = await db.get_guild_settings(guild_id)
+    assert settings[3] is None
+
+    # Clearing again returns False because setting is already NULL
+    cleared_again = await db.clear_stale_channel_setting(guild_id, "review")
+    assert cleared_again is False
+
+    # Invalid setting raises ValueError
+    with pytest.raises(ValueError, match="Invalid channel/setting type"):
+        await db.clear_stale_channel_setting(guild_id, "invalid_setting")
+
+    await db.close()
 
 
+@pytest.mark.asyncio
+async def test_database_get_all_verifications(tmp_path):
+    db_file = str(tmp_path / "all_verif_test.db")
+    db = Database(db_file)
+    await db.connect()
+
+    # Empty initially
+    all_v = await db.get_all_verifications()
+    assert all_v == []
+
+    # Record 2 verifications
+    await db.record_verification(1001, "hash_user_1", "M")
+    await db.record_verification(1002, "hash_user_2", "B")
+
+    all_v = await db.get_all_verifications()
+    assert len(all_v) == 2
+    u_ids = {row[0] for row in all_v}
+    assert u_ids == {1001, 1002}
+    faculties = {row[2] for row in all_v}
+    assert faculties == {"M", "B"}
+
+    await db.close()

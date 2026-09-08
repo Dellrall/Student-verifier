@@ -80,6 +80,23 @@ class Database:
         await self._conn.execute("PRAGMA temp_store = MEMORY;")  # Keep temp tables & sorts in RAM
         await self._conn.execute("PRAGMA mmap_size = 67108864;")  # 64MB memory-mapped I/O
 
+        # Self-healing: verify database integrity upon connection
+        try:
+            cursor = await self._conn.execute("PRAGMA integrity_check;")
+            rows = await cursor.fetchall()
+            if rows == [("ok",)]:
+                logger.debug("Database integrity check passed (ok).")
+            else:
+                logger.error(f"Database integrity check issue detected: {rows}")
+        except Exception as e:
+            logger.warning(f"Could not execute database integrity check: {e}")
+
+        # Checkpoint WAL on startup to merge any uncheckpointed journal from previous process
+        try:
+            await self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        except Exception as e:
+            logger.debug(f"Initial WAL checkpoint notice: {e}")
+
         await self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS verifications (
@@ -360,6 +377,15 @@ class Database:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def get_all_verifications(self) -> list[tuple[int, str, str, str]]:
+        """Returns all verified student records as (discord_user_id, student_id_hash, faculty_code, verified_at)."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            "SELECT discord_user_id, student_id_hash, faculty_code, verified_at FROM verifications"
+        )
+        return await cursor.fetchall()
+
     async def counts_by_faculty(self) -> list[tuple[str, int]]:
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
@@ -493,6 +519,46 @@ class Database:
             (guild_id, role_to_set, ts),
         )
         await self._conn.commit()
+
+    async def clear_stale_channel_setting(self, guild_id: int, channel_type: str) -> bool:
+        """
+        Clears a deleted or invalid channel setting (welcome, help, or review) from guild_settings.
+        Returns True if a setting was successfully cleared.
+        """
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+
+        col_map = {
+            "welcome": "welcome_channel_id",
+            "welcome_channel_id": "welcome_channel_id",
+            "help": "help_channel_id",
+            "help_channel_id": "help_channel_id",
+            "review": "review_channel_id",
+            "review_channel_id": "review_channel_id",
+            "admin": "admin_role_name",
+            "admin_role_name": "admin_role_name",
+        }
+        normalized = channel_type.strip().lower()
+        target_col = col_map.get(normalized)
+        if not target_col:
+            raise ValueError(f"Invalid channel/setting type: {channel_type}")
+
+        ts = now_formatted()
+        cursor = await self._conn.execute(
+            f"""UPDATE guild_settings
+                SET {target_col} = NULL, updated_at = ?
+                WHERE guild_id = ? AND {target_col} IS NOT NULL""",
+            (ts, guild_id),
+        )
+        await self._conn.commit()
+        cleared = cursor.rowcount > 0
+        if cleared:
+            await self.log(
+                "INFO",
+                "STALE_SETTING_CLEARED",
+                f"Cleared stale guild setting '{target_col}' for guild ID {guild_id}",
+            )
+        return cleared
 
 
     async def create_referral_code(
