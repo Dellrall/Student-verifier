@@ -17,6 +17,7 @@ import discord
 from tarveri.config import get_configured_tz, now_formatted
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.utils import format_ticket_seq
 
 logger = logging.getLogger("tarveri")
 
@@ -364,16 +365,17 @@ class GuestService:
                     None,
                 )
 
-            # 7. Create Private Thread with sequential tracking number (e.g. guest-0001-username)
+            # 7. Create Private Thread with alphanumeric tracking number (e.g. guest-a0001-username)
             seq = await self.db.get_next_guild_ticket_seq(guild.id)
+            seq_code = format_ticket_seq(seq)
             clean_name = "".join(c for c in applicant.display_name if c.isalnum() or c in "-_")[:20].lower() or "guest"
-            thread_name = f"guest-{seq:04d}-{clean_name}"
+            thread_name = f"guest-{seq_code.lower()}-{clean_name}"
             try:
                 thread = await parent_ch.create_thread(
                     name=thread_name,
                     type=discord.ChannelType.private_thread,
                     auto_archive_duration=1440,
-                    reason=f"TARVeri Guest Verification Review #{seq:04d} for {applicant}",
+                    reason=f"TARVeri Guest Verification Review #{seq_code} for {applicant}",
                 )
             except (discord.HTTPException, discord.Forbidden) as e:
                 if referral_code:
@@ -506,13 +508,13 @@ class GuestService:
             await self.db.log(
                 "INFO",
                 "GUEST_TICKET_OPENED",
-                f"Opened guest review ticket #{seq:04d} (DB ID: {ticket_id}) for applicant {applicant} (ID: {applicant.id})"
+                f"Opened guest review ticket #{seq_code} (DB ID: {ticket_id}) for applicant {applicant} (ID: {applicant.id})"
                 + (f" with referral code '{referral_code}' (Vouched by ID: {referrer_id})" if referral_code else ""),
                 guild=guild,
                 user_id=applicant.id,
             )
 
-            return True, f"✅ Guest ticket #{seq:04d} created in private thread {thread.mention}!", thread
+            return True, f"✅ Guest ticket #{seq_code} created in private thread {thread.mention}!", thread
 
     async def approve_guest_application(
         self,

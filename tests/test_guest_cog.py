@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 import discord
 
-from tarveri.cogs.guest_cog import GuestCog, VerificationGatewayView, GuestReviewThreadView
+from tarveri.cogs.guest_cog import GuestCog, VerificationGatewayView, GuestReviewThreadView, build_review_embed
 from tarveri.database import Database
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
@@ -232,5 +232,29 @@ async def test_guest_review_thread_permissions(tmp_path):
     assert "Only the referring student" in interaction.response.send_message.call_args[0][0]
 
     await db.close()
+
+
+def test_build_review_embed_alphanumeric_sequence():
+    guild = MagicMock(spec=discord.Guild)
+    applicant = MagicMock(spec=discord.Member)
+    applicant.mention = "<@12345>"
+    applicant.id = 12345
+
+    ticket_1 = {
+        "applicant_id": 12345,
+        "ticket_seq": 1,
+        "status": "OPEN",
+    }
+    embed_1 = build_review_embed(ticket_1, guild, applicant)
+    assert embed_1.title == "📋 Guest Review Ticket #A0001"
+
+    ticket_series = {
+        "applicant_id": 12345,
+        "ticket_seq": 10000,
+        "status": "APPROVED",
+    }
+    embed_series = build_review_embed(ticket_series, guild, applicant)
+    assert embed_series.title == "📋 Guest Review Ticket #B0001"
+
 
 

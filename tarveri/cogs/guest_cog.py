@@ -17,7 +17,7 @@ from tarveri.config import FACULTY_ROLE_NAMES
 from tarveri.database import Database
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
-from tarveri.utils import schedule_ttl_delete
+from tarveri.utils import format_ticket_seq, schedule_ttl_delete
 
 logger = logging.getLogger("tarveri")
 
@@ -358,8 +358,9 @@ def build_review_embed(
     verification_mode = "Double Verification (Voucher + Admin Required)" if is_referral else "Admin Staff Review"
 
     seq = ticket.get("ticket_seq") or ticket.get("ticket_id", 0)
+    seq_code = format_ticket_seq(seq)
     embed = discord.Embed(
-        title=f"📋 Guest Review Ticket #{seq:04d}",
+        title=f"📋 Guest Review Ticket #{seq_code}",
         description=f"Status: **{status}**\nMode: **{verification_mode}**",
         color=color,
     )

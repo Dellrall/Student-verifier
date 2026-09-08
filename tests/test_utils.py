@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import discord
 
-from tarveri.utils import delete_after_delay, schedule_ttl_delete
+from tarveri.utils import delete_after_delay, format_ticket_seq, schedule_ttl_delete
 
 
 @pytest.mark.asyncio
@@ -72,4 +72,25 @@ async def test_delete_after_delay_cancellation_handled():
     except asyncio.CancelledError:
         pass
     interaction.delete_original_response.assert_not_called()
+
+
+def test_format_ticket_seq():
+    # Base cases
+    assert format_ticket_seq(1) == "A0001"
+    assert format_ticket_seq(2) == "A0002"
+    assert format_ticket_seq(9999) == "A9999"
+    assert format_ticket_seq(10000) == "B0001"
+    assert format_ticket_seq(19998) == "B9999"
+    assert format_ticket_seq(19999) == "C0001"
+    assert format_ticket_seq(26 * 9999 + 1) == "AA0001"
+
+    # Edge cases / fallbacks
+    assert format_ticket_seq(None) == "A0001"
+    assert format_ticket_seq(0) == "A0001"
+    assert format_ticket_seq(-10) == "A0001"
+    assert format_ticket_seq("15") == "A0015"
+    assert format_ticket_seq("A0042") == "A0042"
+    assert format_ticket_seq("b0010") == "B0010"
+    assert format_ticket_seq("custom_code") == "CUSTOM_CODE"
+
 

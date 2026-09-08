@@ -13,7 +13,7 @@ from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
-from tarveri.utils import schedule_ttl_delete
+from tarveri.utils import format_ticket_seq, schedule_ttl_delete
 
 
 def is_admin_or_has_role(interaction: discord.Interaction, admin_role_name: str) -> bool:
@@ -756,6 +756,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
         for t in tickets:
             seq = t.get("ticket_seq") or t.get("ticket_id")
+            seq_code = format_ticket_seq(seq)
             t_status = t.get("status", "OPEN")
             status_emoji = {
                 "OPEN": "⏳",
@@ -771,7 +772,7 @@ class AdminCog(commands.Cog, name="Admin"):
             admin_info = f" • Closed by <@{t['closed_by_admin_id']}>" if t.get("closed_by_admin_id") else ""
             reason_info = f"\n> Reason: *\"{t['close_reason']}\"*" if t.get("close_reason") else ""
 
-            field_name = f"{status_emoji} Ticket #{seq:04d} — {t_status}"
+            field_name = f"{status_emoji} Ticket #{seq_code} — {t_status}"
             field_value = (
                 f"**Applicant:** {applicant_mention} | **Thread:** {thread_mention}{admin_info}\n"
                 f"**Created:** `{t.get('created_at', 'N/A')}`{reason_info}"

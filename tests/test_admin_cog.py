@@ -391,7 +391,7 @@ async def test_admin_stats_and_audit(tmp_path):
     gt_embed = interaction.followup.send.call_args[1]["embed"]
     assert "Guest Review Tickets" in gt_embed.title
     assert len(gt_embed.fields) == 1
-    assert "Ticket #0001" in gt_embed.fields[0].name
+    assert "Ticket #A0001" in gt_embed.fields[0].name
 
     await db.close()
 
