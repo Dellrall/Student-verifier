@@ -448,7 +448,10 @@ class VerificationCog(commands.Cog, name="Verification"):
             return
 
         if message.guild is None:
-            if not message.content.startswith(self.bot.command_prefix):  # type: ignore
+            prefixes = await self.bot.get_prefix(message)
+            if isinstance(prefixes, str):
+                prefixes = [prefixes]
+            if not any(p and message.content.startswith(p) for p in prefixes):
                 response = await self.service.perform_verification(message.author, message.content)
                 if response:
                     await message.author.send(response)

@@ -9,8 +9,8 @@ import time
 
 class RateLimiter:
     """
-    Thread-safe/async-compatible sliding window rate limiter with automated
-    garbage collection of expired entries.
+    Async-compatible sliding window rate limiter for the single asyncio event loop,
+    with automated garbage collection of expired entries.
     """
 
     def __init__(self, max_attempts: int = 5, window_seconds: int = 600, max_tracked_users: int = 10_000):

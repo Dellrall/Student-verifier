@@ -15,6 +15,7 @@ from tarveri.services.verification_service import VerificationService
 def mock_bot():
     bot = MagicMock()
     bot.command_prefix = "!"
+    bot.get_prefix = AsyncMock(return_value=["!"])
     bot.guilds = []
     return bot
 
@@ -492,5 +493,54 @@ async def test_channel_self_healing_clears_deleted_help_and_welcome(mock_bot, mo
     assert settings[1] is None
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_on_message_dm_verification_with_callable_or_multi_prefix(mock_bot, mock_service, mock_rate_limiter, tmp_path):
+    db = Database(str(tmp_path / "dm_prefix_test.db"))
+    await db.connect()
+    try:
+        cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
+
+        mock_bot.get_prefix = AsyncMock(return_value=["!", "tarveri!"])
+        mock_service.perform_verification = AsyncMock(return_value="✅ Verified successfully")
+
+        message = MagicMock(spec=discord.Message)
+        message.guild = None
+        message.author = MagicMock(spec=discord.User)
+        message.author.bot = False
+        message.author.send = AsyncMock()
+        message.content = "23WMD09867"
+
+        await cog.on_message(message)
+        mock_service.perform_verification.assert_called_once_with(message.author, "23WMD09867")
+        message.author.send.assert_called_once_with("✅ Verified successfully")
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_on_message_dm_command_prefix_skipped(mock_bot, mock_service, mock_rate_limiter, tmp_path):
+    db = Database(str(tmp_path / "dm_prefix_skip_test.db"))
+    await db.connect()
+    try:
+        cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
+
+        mock_bot.get_prefix = AsyncMock(return_value=["!", "tarveri!"])
+        mock_service.perform_verification = AsyncMock()
+
+        message = MagicMock(spec=discord.Message)
+        message.guild = None
+        message.author = MagicMock(spec=discord.User)
+        message.author.bot = False
+        message.author.send = AsyncMock()
+        message.content = "!help"
+
+        await cog.on_message(message)
+        mock_service.perform_verification.assert_not_called()
+        message.author.send.assert_not_called()
+    finally:
+        await db.close()
+
 
 

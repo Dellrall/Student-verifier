@@ -283,6 +283,7 @@ async def test_perform_verification_role_create_missing_manage_roles_permission(
 async def test_perform_verification_database_collision_rollback(tmp_path):
     bot = MagicMock()
     guild = MagicMock(spec=discord.Guild)
+    guild.id = 555123
     guild.name = "Rollback Server"
 
     existing_role = MagicMock(spec=discord.Role)
@@ -304,24 +305,26 @@ async def test_perform_verification_database_collision_rollback(tmp_path):
     member.remove_roles = AsyncMock()
     guild.get_member.return_value = member
     bot.guilds = [guild]
+    bot.get_guild.return_value = guild
 
     db = Database(str(tmp_path / "collision_test.db"))
     await db.connect()
-    rate_limiter = RateLimiter()
-    service = VerificationService(bot, db, "secret_123", rate_limiter)
+    try:
+        rate_limiter = RateLimiter()
+        service = VerificationService(bot, db, "secret_123", rate_limiter)
 
-    user = MagicMock()
-    user.id = 10101
-    user.__str__.return_value = "User#10101"
+        user = MagicMock()
+        user.id = 10101
+        user.__str__.return_value = "User#10101"
 
-    # Simulate database collision on record_verification by raising IntegrityError
-    with patch.object(db, "record_verification", side_effect=sqlite3.IntegrityError("UNIQUE constraint failed")):
-        response = await service.perform_verification(user, "23WMD09867")
-        assert "Verification failed due to a collision" in response
-        # Rollback should remove the assigned role
-        member.remove_roles.assert_called_once()
-
-    await db.close()
+        # Simulate database collision on record_verification by raising IntegrityError
+        with patch.object(db, "record_verification", side_effect=sqlite3.IntegrityError("UNIQUE constraint failed")):
+            response = await service.perform_verification(user, "23WMD09867")
+            assert "Verification failed due to a collision" in response
+            # Rollback should remove the assigned role
+            member.remove_roles.assert_called_once()
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio

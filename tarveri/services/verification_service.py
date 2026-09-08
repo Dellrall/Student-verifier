@@ -29,8 +29,8 @@ logger = logging.getLogger("tarveri")
 
 @dataclass(slots=True)
 class RoleSyncResult:
-    verified_in: list[tuple[str, str]] = field(default_factory=list)
-    already_had_role_in: list[tuple[str, str]] = field(default_factory=list)
+    verified_in: list[tuple[int, str, str]] = field(default_factory=list)  # (guild_id, guild_name, role_name)
+    already_had_role_in: list[tuple[int, str, str]] = field(default_factory=list)  # (guild_id, guild_name, role_name)
     missing_role_in: list[str] = field(default_factory=list)
     failed_in: list[str] = field(default_factory=list)
 
@@ -94,7 +94,7 @@ class VerificationService:
 
         existing_roles = [r for r in member.roles if r.name in FACULTY_ROLE_NAMES]
         if existing_roles:
-            result.already_had_role_in.append((guild.name, existing_roles[0].name))
+            result.already_had_role_in.append((guild.id, guild.name, existing_roles[0].name))
             return
 
         guild_roles = getattr(guild, "roles", [])
@@ -131,7 +131,7 @@ class VerificationService:
 
         try:
             await member.add_roles(role, reason="TARVeri: Student verification role assignment")
-            result.verified_in.append((guild.name, role_name))
+            result.verified_in.append((guild.id, guild.name, role_name))
         except discord.HTTPException as e:
             result.failed_in.append(guild.name)
             await self.db.log(
@@ -161,10 +161,16 @@ class VerificationService:
         lines: list[str] = []
         if result.verified_in:
             lines.append("✅ You've been given the following role(s):")
-            lines.extend(f"   • **{g}** → {r}" for g, r in result.verified_in)
+            lines.extend(
+                f"   • **{item[1] if len(item) == 3 else item[0]}** → {item[2] if len(item) == 3 else item[1]}"
+                for item in result.verified_in
+            )
         if result.already_had_role_in:
             lines.append("ℹ️ You already had a faculty role in:")
-            lines.extend(f"   • **{g}** → {r} (unchanged)" for g, r in result.already_had_role_in)
+            lines.extend(
+                f"   • **{item[1] if len(item) == 3 else item[0]}** → {item[2] if len(item) == 3 else item[1]} (unchanged)"
+                for item in result.already_had_role_in
+            )
         if result.missing_role_in:
             lines.append("⚠️ I couldn't create/find the required role (contact an admin) in:")
             lines.extend(f"   • **{g}** (I likely need 'Manage Roles' permission there)" for g in result.missing_role_in)
@@ -261,14 +267,20 @@ class VerificationService:
                         "INFO",
                         "VERIFIED",
                         f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}) "
-                        f"→ role '{role_name}' in {[g for g, _ in sync_result.verified_in]}",
+                        f"→ role '{role_name}' in {[entry[1] if len(entry) == 3 else entry[0] for entry in sync_result.verified_in]}",
                         user_id=user.id,
                         guild=guild_ctx,
                     )
                 except (sqlite3.IntegrityError, aiosqlite.IntegrityError) as e:
                     # Rollback assigned roles if database collision occurs
-                    for g_name, r_name in sync_result.verified_in:
-                        guild = discord.utils.get(self.bot.guilds, name=g_name)
+                    for entry in sync_result.verified_in:
+                        if len(entry) == 3:
+                            g_id, _, r_name = entry
+                            guild = self.bot.get_guild(g_id)
+                        else:
+                            g_name, r_name = entry
+                            guild = discord.utils.get(self.bot.guilds, name=g_name)
+
                         if guild:
                             member = await self.get_or_fetch_member(guild, user.id)
                             if member:
