@@ -249,9 +249,15 @@ class VouchModal(discord.ui.Modal, title="🤝 Confirm Referral Vouch"):
             except discord.HTTPException:
                 pass
 
-        await interaction.followup.send("✅ Your vouch statement has been recorded for staff review!", ephemeral=True)
+        await interaction.followup.send("✅ Your vouch statement has been recorded! Waiting for Admin team approval.", ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
         if isinstance(interaction.channel, discord.Thread):
-            await interaction.channel.send(f"🤝 **{interaction.user.mention} submitted a vouch:**\n> {note}")
+            admin_mention = get_admin_role_mention(interaction.guild, self.guest_service.admin_role_name) if interaction.guild else "@Staff"
+            await interaction.channel.send(
+                f"🤝 **Voucher {interaction.user.mention} confirmed vouch for <@{self.ticket['applicant_id']}>:**\n"
+                f"> {note}\n\n"
+                f"{admin_mention} **Step 1/2 of Double Verification complete!** Please review and click **`Approve Guest`** to admit or **`Reject / Veto`** to decline."
+            )
 
 
 def get_admin_role_mention(guild: discord.Guild, admin_role_name: str) -> str:
@@ -269,12 +275,15 @@ def build_review_embed(
     color = discord.Color.gold()
     if status == "APPROVED":
         color = discord.Color.green()
-    elif status in ("REJECTED", "EXPIRED"):
+    elif status in ("REJECTED", "EXPIRED", "BANNED", "LEFT_SERVER"):
         color = discord.Color.red()
+
+    is_referral = bool(ticket.get("referrer_id") or ticket.get("referral_code"))
+    verification_mode = "Double Verification (Voucher + Admin Required)" if is_referral else "Admin Staff Review"
 
     embed = discord.Embed(
         title=f"📋 Guest Review Ticket #{ticket['ticket_id']}",
-        description=f"Status: **{status}**",
+        description=f"Status: **{status}**\nMode: **{verification_mode}**",
         color=color,
     )
     applicant_mention = f"<@{ticket['applicant_id']}>" if not applicant else applicant.mention
@@ -285,10 +294,20 @@ def build_review_embed(
     if ticket.get("referral_code"):
         embed.add_field(name="Referral Code", value=f"`{ticket['referral_code']}`", inline=True)
 
-    if ticket.get("vouch_note"):
-        embed.add_field(name="Student Vouch Statement", value=f"💬 {ticket['vouch_note']}", inline=False)
-
-    if ticket.get("reason"):
+    if is_referral:
+        vouch_status = (
+            f"✅ Confirmed: *\"{ticket['vouch_note']}\"*"
+            if ticket.get("vouch_note")
+            else f"⏳ Pending voucher confirmation from <@{ticket['referrer_id']}>"
+        )
+        embed.add_field(name="1️⃣ Voucher Status", value=vouch_status, inline=False)
+        admin_status = (
+            "✅ Approved by Admin"
+            if status == "APPROVED"
+            else ("🛑 Vetoed / Rejected by Admin" if status in ("REJECTED", "BANNED") else "⏳ Pending Admin final approval")
+        )
+        embed.add_field(name="2️⃣ Admin Decision", value=admin_status, inline=False)
+    elif ticket.get("reason"):
         embed.add_field(name="Application Details", value=ticket["reason"], inline=False)
 
     embed.set_footer(text=f"Server: {guild.name} • Created at {ticket.get('created_at', 'N/A')} UTC")
@@ -350,6 +369,7 @@ class GuestReviewThreadView(discord.ui.View):
     async def approve_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not is_admin_or_has_role(interaction, self.guest_service.admin_role_name):
             await interaction.response.send_message("❌ Only server administrators can approve guest requests.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         if not interaction.guild or not interaction.channel:
@@ -358,6 +378,18 @@ class GuestReviewThreadView(discord.ui.View):
         ticket = await self.guest_service.db.get_guest_ticket_by_channel(interaction.channel.id)
         if not ticket or ticket["status"] != "OPEN":
             await interaction.response.send_message("⚠️ This ticket is already resolved or not found.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        # Double verification requirement: for referral tickets, voucher must have confirmed vouch first
+        if ticket.get("referrer_id") and not ticket.get("vouch_note"):
+            await interaction.response.send_message(
+                f"⚠️ **Double Verification Required:** The referring student (<@{ticket['referrer_id']}>) has not confirmed their vouch yet.\n"
+                f"Both the voucher and Admin team must agree before the guest can be admitted.\n"
+                f"*(You can click **`Reject / Veto`** at any time to veto and reject this request).* ",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         await interaction.response.defer(ephemeral=True)
@@ -375,9 +407,10 @@ class GuestReviewThreadView(discord.ui.View):
                     pass
 
             await interaction.followup.send(msg, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             if isinstance(interaction.channel, discord.Thread):
                 await interaction.channel.send(
-                    f"🎉 **Application Approved by {interaction.user.mention}!** This thread will be locked and archived."
+                    f"🎉 **Application Approved by {interaction.user.mention}!** Double verification completed. This thread will be locked and archived."
                 )
                 await asyncio.sleep(5)
                 try:
@@ -386,16 +419,18 @@ class GuestReviewThreadView(discord.ui.View):
                     pass
         else:
             await interaction.followup.send(msg, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
 
     @discord.ui.button(
-        label="Reject & Kick",
+        label="Reject / Veto",
         style=discord.ButtonStyle.danger,
         emoji="🛑",
         custom_id="tarveri:review:reject",
     )
     async def reject_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if not is_admin_or_has_role(interaction, self.guest_service.admin_role_name):
-            await interaction.response.send_message("❌ Only server administrators can reject guest requests.", ephemeral=True)
+            await interaction.response.send_message("❌ Only server administrators can veto/reject guest requests.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         if not interaction.guild or not interaction.channel:
@@ -404,6 +439,7 @@ class GuestReviewThreadView(discord.ui.View):
         ticket = await self.guest_service.db.get_guest_ticket_by_channel(interaction.channel.id)
         if not ticket or ticket["status"] != "OPEN":
             await interaction.response.send_message("⚠️ This ticket is already resolved or not found.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         modal = RejectReasonModal(self.guest_service, ticket, interaction.message)
@@ -422,13 +458,18 @@ class GuestReviewThreadView(discord.ui.View):
         ticket = await self.guest_service.db.get_guest_ticket_by_channel(interaction.channel.id)
         if not ticket or ticket["status"] != "OPEN":
             await interaction.response.send_message("⚠️ This ticket is already resolved or not found.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         # Only the referrer or an admin can provide vouch input
         is_referrer = ticket.get("referrer_id") == interaction.user.id
         is_admin = is_admin_or_has_role(interaction, self.guest_service.admin_role_name)
         if not (is_referrer or is_admin):
-            await interaction.response.send_message("❌ Only the referring student or staff can submit a vouch statement.", ephemeral=True)
+            await interaction.response.send_message(
+                f"❌ Only the referring student (<@{ticket.get('referrer_id')}>) can submit the vouch confirmation.",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
             return
 
         modal = VouchModal(self.guest_service, ticket, interaction.message)
