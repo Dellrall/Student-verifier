@@ -14,7 +14,7 @@ from tarveri.config import (
     setup_logger,
     validate_student_id,
 )
-from tarveri.database import Database
+from tarveri.database import Database, rotate_backups
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
@@ -33,6 +33,7 @@ __all__ = [
     "VerificationService",
     "hash_student_id",
     "mask_student_id",
+    "rotate_backups",
     "run_bot",
     "setup_logger",
     "validate_student_id",

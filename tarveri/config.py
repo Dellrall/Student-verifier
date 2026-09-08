@@ -91,6 +91,8 @@ class Settings:
     help_channel_id: int | None = None
     welcome_channel_id: int | None = None
     timezone_name: str = "Asia/Kuala_Lumpur"
+    backup_dir: str = "backups"
+    max_backups: int = 10
 
     @property
     def database_path(self) -> str:
@@ -189,6 +191,19 @@ class Settings:
             or "Asia/Kuala_Lumpur"
         ).strip()
 
+        backup_dir = (
+            os.getenv("TARVERI_BACKUP_DIR")
+            or os.getenv("BACKUP_DIR")
+            or "backups"
+        ).strip()
+
+        max_backups_raw = (
+            os.getenv("TARVERI_MAX_BACKUPS")
+            or os.getenv("MAX_BACKUPS")
+            or "10"
+        ).strip()
+        max_backups = int(max_backups_raw) if max_backups_raw.isdigit() else 10
+
         if validate:
             if not bot_token:
                 raise RuntimeError(
@@ -213,6 +228,8 @@ class Settings:
             help_channel_id=help_channel_id,
             welcome_channel_id=welcome_channel_id,
             timezone_name=timezone_name,
+            backup_dir=backup_dir,
+            max_backups=max_backups,
         )
 
 

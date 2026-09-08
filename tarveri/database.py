@@ -20,6 +20,37 @@ logger = logging.getLogger("tarveri")
 SCHEMA_VERSION = 1
 
 
+def rotate_backups(backup_dir: str = "backups", max_backups: int = 10) -> list[str]:
+    """
+    Keeps only the `max_backups` most recent backup database files in `backup_dir`,
+    deleting older backups. Returns the list of deleted backup file paths.
+    """
+    if not os.path.exists(backup_dir) or max_backups <= 0:
+        return []
+
+    backup_files: list[str] = []
+    for entry in os.listdir(backup_dir):
+        full_path = os.path.join(backup_dir, entry)
+        if os.path.isfile(full_path) and entry.endswith(".db"):
+            backup_files.append(full_path)
+
+    # Sort files by modification time descending (newest first)
+    backup_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+
+    deleted: list[str] = []
+    if len(backup_files) > max_backups:
+        to_delete = backup_files[max_backups:]
+        for path in to_delete:
+            try:
+                os.remove(path)
+                deleted.append(path)
+                logger.info(f"Rotated old database backup: {path}")
+            except OSError as e:
+                logger.warning(f"Failed to remove old backup file '{path}': {e}")
+
+    return deleted
+
+
 class Database:
     """
     Database interface for TARVeri.
@@ -191,10 +222,11 @@ class Database:
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.close()
 
-    async def create_backup(self, backup_dir: str = "backups") -> str:
+    async def create_backup(self, backup_dir: str = "backups", max_backups: int = 10) -> str:
         """
         Creates a consistent, point-in-time point-and-restore snapshot of the database
-        even while WAL writes are occurring.
+        even while WAL writes are occurring, and rotates older backups so only the
+        `max_backups` most recent backups are kept.
         """
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
@@ -210,6 +242,11 @@ class Database:
         # VACUUM INTO safely creates an atomic copy of active database
         safe_path = backup_path.replace("'", "''")
         await self._conn.execute(f"VACUUM INTO '{safe_path}';")
+
+        # Rotate older backups keeping only the most recent max_backups
+        if max_backups > 0:
+            rotate_backups(backup_dir=backup_dir, max_backups=max_backups)
+
         return backup_path
 
     async def log(

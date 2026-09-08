@@ -183,7 +183,7 @@ SNAPSHOT_PATH="${BACKUP_DIR}/tarveri_pre_update_${TIMESTAMP}.db"
 log_info "[1/5] Creating pre-update database backup..."
 if [ -f "${DB_PATH}" ]; then
     ${PYTHON_BIN} -c "
-import sqlite3, sys
+import os, sqlite3, sys
 try:
     src = sqlite3.connect('${DB_PATH}')
     dst = sqlite3.connect('${SNAPSHOT_PATH}')
@@ -195,8 +195,25 @@ try:
 except Exception as e:
     print(f'Backup error: {e}', file=sys.stderr)
     sys.exit(1)
+
+# Rotate backups keeping only the 10 most recent
+backup_dir = '${BACKUP_DIR}'
+max_backups = 10
+if os.path.exists(backup_dir):
+    files = [
+        os.path.join(backup_dir, f)
+        for f in os.listdir(backup_dir)
+        if os.path.isfile(os.path.join(backup_dir, f)) and f.endswith('.db')
+    ]
+    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    if len(files) > max_backups:
+        for old_f in files[max_backups:]:
+            try:
+                os.remove(old_f)
+            except Exception:
+                pass
 "
-    log_success "Database snapshot saved to ${SNAPSHOT_PATH}"
+    log_success "Database snapshot saved to ${SNAPSHOT_PATH} (rotated to 10 most recent)"
 else
     log_info "No existing database file at ${DB_PATH}. Skipping backup."
 fi
