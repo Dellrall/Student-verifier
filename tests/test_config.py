@@ -77,6 +77,30 @@ def test_settings_from_env(monkeypatch):
     assert settings.welcome_channel_id == 6677889900
 
 
+def test_settings_legacy_env_fallbacks(monkeypatch):
+    from tarveri.config import Settings
+    # Clear any TARVERI_* vars
+    monkeypatch.delenv("TARVERI_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TARVERI_ID_HASH_SECRET", raising=False)
+    monkeypatch.delenv("TARVERI_DB_PATH", raising=False)
+    monkeypatch.delenv("TARVERI_ADMIN_ROLE_NAME", raising=False)
+
+    # Set legacy variable names
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "legacy_bot_token")
+    monkeypatch.setenv("HASH_SECRET", "legacy_hash_secret")
+    monkeypatch.setenv("DB_PATH", "legacy_tarveri.db")
+    monkeypatch.setenv("ADMIN_ROLE", "Legacy Admin")
+    monkeypatch.setenv("TIMEZONE", "Asia/Kuala_Lumpur")
+
+    settings = Settings.from_env()
+    assert settings.bot_token == "legacy_bot_token"
+    assert settings.id_hash_secret == "legacy_hash_secret"
+    assert settings.db_path == "legacy_tarveri.db"
+    assert settings.admin_role_name == "Legacy Admin"
+    assert settings.timezone_name == "Asia/Kuala_Lumpur"
+
+
+
 def test_role_help_keywords_pattern():
     from tarveri.config import ROLE_HELP_KEYWORDS_PATTERN
 

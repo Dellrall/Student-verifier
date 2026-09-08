@@ -119,19 +119,44 @@ class Database:
             """
         )
 
-        # Migration helper for existing databases: ensure new columns in guild_settings exist
+        # Migration helper for existing databases: ensure all expected columns exist
+        # 1. guild_settings
         cursor = await self._conn.execute("PRAGMA table_info(guild_settings);")
-        existing_cols = {row[1] for row in await cursor.fetchall()}
-        for col, col_def in [("guest_role_name", "TEXT DEFAULT 'Guest'"), ("review_channel_id", "INTEGER")]:
-            if col not in existing_cols:
+        existing_guild_cols = {row[1] for row in await cursor.fetchall()}
+        for col, col_def in [
+            ("welcome_channel_id", "INTEGER"),
+            ("help_channel_id", "INTEGER"),
+            ("guest_role_name", "TEXT DEFAULT 'Guest'"),
+            ("review_channel_id", "INTEGER"),
+            ("updated_at", "TEXT DEFAULT ''"),
+        ]:
+            if col not in existing_guild_cols:
                 await self._conn.execute(f"ALTER TABLE guild_settings ADD COLUMN {col} {col_def};")
 
-        # Migration helper for existing databases: ensure new columns in guest_tickets exist
+        # 2. referral_codes
+        cursor = await self._conn.execute("PRAGMA table_info(referral_codes);")
+        existing_referral_cols = {row[1] for row in await cursor.fetchall()}
+        for col, col_def in [
+            ("used_by_discord_id", "INTEGER"),
+            ("used_at", "TEXT"),
+            ("status", "TEXT NOT NULL DEFAULT 'ACTIVE'"),
+        ]:
+            if col not in existing_referral_cols:
+                await self._conn.execute(f"ALTER TABLE referral_codes ADD COLUMN {col} {col_def};")
+
+        # 3. guest_tickets
         cursor = await self._conn.execute("PRAGMA table_info(guest_tickets);")
         existing_ticket_cols = {row[1] for row in await cursor.fetchall()}
         for col, col_def in [
+            ("referrer_id", "INTEGER"),
+            ("referral_code", "TEXT"),
+            ("reason", "TEXT"),
+            ("vouch_note", "TEXT"),
             ("vouched_by_id", "INTEGER"),
             ("vouched_at", "TEXT"),
+            ("status", "TEXT NOT NULL DEFAULT 'OPEN'"),
+            ("closed_at", "TEXT"),
+            ("closed_by_admin_id", "INTEGER"),
             ("close_reason", "TEXT"),
         ]:
             if col not in existing_ticket_cols:

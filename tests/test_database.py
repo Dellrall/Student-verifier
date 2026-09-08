@@ -210,3 +210,84 @@ async def test_guest_tickets_reason_giver_and_comments(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_database_backwards_compatibility_migration(tmp_path):
+    """Verifies that an existing database created with an older legacy schema migrates smoothly without losing data."""
+    db_file = str(tmp_path / "legacy_v1.db")
+    
+    # Manually create a legacy v1 schema database with minimal columns
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    cursor.execute(
+        """CREATE TABLE verifications (
+            discord_user_id INTEGER PRIMARY KEY,
+            student_id_hash TEXT UNIQUE NOT NULL,
+            faculty_code TEXT NOT NULL,
+            verified_at TEXT NOT NULL
+        );"""
+    )
+    cursor.execute(
+        """CREATE TABLE guild_settings (
+            guild_id INTEGER PRIMARY KEY,
+            welcome_channel_id INTEGER,
+            help_channel_id INTEGER,
+            updated_at TEXT NOT NULL
+        );"""
+    )
+    cursor.execute(
+        """CREATE TABLE guest_tickets (
+            ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            applicant_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );"""
+    )
+    cursor.execute(
+        "INSERT INTO verifications VALUES (11111, 'hash_legacy', 'M', '2025-01-01 10:00:00');"
+    )
+    cursor.execute(
+        "INSERT INTO guild_settings VALUES (99999, 12345, 67890, '2025-01-01 10:00:00');"
+    )
+    cursor.execute(
+        "INSERT INTO guest_tickets (guild_id, applicant_id, channel_id, created_at) VALUES (99999, 22222, 33333, '2025-01-01 10:00:00');"
+    )
+    conn.commit()
+    conn.close()
+
+    # Now open with TARVeri Database class
+    db = Database(db_file)
+    await db.connect()
+
+    # Verify existing legacy data is intact
+    verif = await db.get_verification_by_user(11111)
+    assert verif is not None
+    assert verif[0] == "hash_legacy"
+    assert verif[1] == "M"
+
+    settings = await db.get_guild_settings(99999)
+    assert settings is not None
+    assert settings[0] == 12345
+    assert settings[1] == 67890
+    # Newly added guest_role_name and review_channel_id default gracefully
+    assert settings[2] == "Guest" or settings[2] is None
+
+    ticket = await db.get_guest_ticket_by_id(1)
+    assert ticket is not None
+    assert ticket["applicant_id"] == 22222
+    assert ticket["status"] == "OPEN"
+
+    # Verify newly added columns can be written to
+    await db.update_guest_ticket_vouch(1, "Backwards compatible vouch", vouched_by_id=55555)
+    updated_ticket = await db.get_guest_ticket_by_id(1)
+    assert updated_ticket["vouch_note"] == "Backwards compatible vouch"
+    assert updated_ticket["vouched_by_id"] == 55555
+
+    await db.set_guild_guest_role(99999, "Legacy Guest")
+    updated_settings = await db.get_guild_settings(99999)
+    assert updated_settings[2] == "Legacy Guest"
+
+    await db.close()
+
+
+

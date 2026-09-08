@@ -52,7 +52,13 @@ ROLE_HELP_KEYWORDS_PATTERN: Final[re.Pattern[str]] = re.compile(
 
 def get_configured_tz(tz_name: str | None = None) -> zoneinfo.ZoneInfo | timezone:
     """Resolves the configured timezone (defaults to Asia/Kuala_Lumpur or local system time)."""
-    raw = (tz_name or os.getenv("TARVERI_TIMEZONE", "Asia/Kuala_Lumpur")).strip()
+    raw = (
+        tz_name
+        or os.getenv("TARVERI_TIMEZONE")
+        or os.getenv("TIMEZONE")
+        or os.getenv("TZ")
+        or "Asia/Kuala_Lumpur"
+    ).strip()
     if raw.lower() in ("auto", "local", "system", ""):
         return datetime.now().astimezone().tzinfo or timezone.utc
     try:
@@ -96,35 +102,92 @@ class Settings:
 
     @classmethod
     def from_env(cls, validate: bool = True) -> Settings:
-        bot_token = os.getenv("TARVERI_BOT_TOKEN", "")
-        id_hash_secret = os.getenv("TARVERI_ID_HASH_SECRET", "")
-        db_path = os.getenv("TARVERI_DB_PATH", "tarveri.db")
-        admin_role_name = os.getenv("TARVERI_ADMIN_ROLE_NAME", "TARVeri Admin")
-        log_file = os.getenv("TARVERI_LOG_FILE", "tarveri.log")
+        bot_token = (
+            os.getenv("TARVERI_BOT_TOKEN")
+            or os.getenv("DISCORD_BOT_TOKEN")
+            or os.getenv("BOT_TOKEN")
+            or os.getenv("DISCORD_TOKEN")
+            or ""
+        ).strip()
 
-        hoster_id_raw = os.getenv("TARVERI_HOSTER_DISCORD_ID", "").strip()
+        id_hash_secret = (
+            os.getenv("TARVERI_ID_HASH_SECRET")
+            or os.getenv("ID_HASH_SECRET")
+            or os.getenv("HASH_SECRET")
+            or ""
+        ).strip()
+
+        db_path = (
+            os.getenv("TARVERI_DB_PATH")
+            or os.getenv("DB_PATH")
+            or os.getenv("DATABASE_PATH")
+            or "tarveri.db"
+        ).strip()
+
+        admin_role_name = (
+            os.getenv("TARVERI_ADMIN_ROLE_NAME")
+            or os.getenv("ADMIN_ROLE_NAME")
+            or os.getenv("ADMIN_ROLE")
+            or "TARVeri Admin"
+        ).strip()
+
+        log_file = (
+            os.getenv("TARVERI_LOG_FILE")
+            or os.getenv("LOG_FILE")
+            or "tarveri.log"
+        ).strip()
+
+        hoster_id_raw = (
+            os.getenv("TARVERI_HOSTER_DISCORD_ID")
+            or os.getenv("HOSTER_DISCORD_ID")
+            or os.getenv("HOSTER_ID")
+            or ""
+        ).strip()
         hoster_discord_id = int(hoster_id_raw) if hoster_id_raw.isdigit() else None
 
-        enable_checker_raw = os.getenv("TARVERI_ENABLE_UPDATE_CHECKER", "true").lower()
+        enable_checker_raw = (
+            os.getenv("TARVERI_ENABLE_UPDATE_CHECKER")
+            or os.getenv("ENABLE_UPDATE_CHECKER")
+            or "true"
+        ).lower().strip()
         enable_update_checker = enable_checker_raw in ("true", "1", "yes")
 
-        interval_raw = os.getenv("TARVERI_UPDATE_CHECK_INTERVAL_HOURS", "24").strip()
+        interval_raw = (
+            os.getenv("TARVERI_UPDATE_CHECK_INTERVAL_HOURS")
+            or os.getenv("UPDATE_CHECK_INTERVAL_HOURS")
+            or "24"
+        ).strip()
         update_check_interval_hours = int(interval_raw) if interval_raw.isdigit() else 24
 
         update_stream_raw = (
             os.getenv("TARVERI_UPDATE_STREAM")
             or os.getenv("TARVERI_UPDATE_BRANCH")
+            or os.getenv("UPDATE_STREAM")
+            or os.getenv("UPDATE_BRANCH")
             or "auto"
         ).strip()
         update_stream = update_stream_raw if update_stream_raw else "auto"
 
-        help_channel_raw = os.getenv("TARVERI_HELP_CHANNEL_ID", "").strip()
+        help_channel_raw = (
+            os.getenv("TARVERI_HELP_CHANNEL_ID")
+            or os.getenv("HELP_CHANNEL_ID")
+            or ""
+        ).strip()
         help_channel_id = int(help_channel_raw) if help_channel_raw.isdigit() else None
 
-        welcome_channel_raw = os.getenv("TARVERI_WELCOME_CHANNEL_ID", "").strip()
+        welcome_channel_raw = (
+            os.getenv("TARVERI_WELCOME_CHANNEL_ID")
+            or os.getenv("WELCOME_CHANNEL_ID")
+            or ""
+        ).strip()
         welcome_channel_id = int(welcome_channel_raw) if welcome_channel_raw.isdigit() else None
 
-        timezone_name = os.getenv("TARVERI_TIMEZONE", "Asia/Kuala_Lumpur").strip()
+        timezone_name = (
+            os.getenv("TARVERI_TIMEZONE")
+            or os.getenv("TIMEZONE")
+            or os.getenv("TZ")
+            or "Asia/Kuala_Lumpur"
+        ).strip()
 
         if validate:
             if not bot_token:
