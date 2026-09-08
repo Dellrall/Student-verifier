@@ -357,8 +357,9 @@ def build_review_embed(
     is_referral = bool(ticket.get("referrer_id") or ticket.get("referral_code"))
     verification_mode = "Double Verification (Voucher + Admin Required)" if is_referral else "Admin Staff Review"
 
+    seq = ticket.get("ticket_seq") or ticket.get("ticket_id", 0)
     embed = discord.Embed(
-        title=f"📋 Guest Review Ticket #{ticket['ticket_id']}",
+        title=f"📋 Guest Review Ticket #{seq:04d}",
         description=f"Status: **{status}**\nMode: **{verification_mode}**",
         color=color,
     )

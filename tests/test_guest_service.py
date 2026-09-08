@@ -136,6 +136,8 @@ async def test_guest_ticket_approval_and_rejection_lifecycle(tmp_path):
     )
     assert success is True
     assert created_thread == thread
+    assert "#0001" in msg
+    assert parent_channel.create_thread.call_args[1]["name"].startswith("guest-0001-")
     thread.add_user.assert_called()
     parent_channel.set_permissions.assert_called()
 

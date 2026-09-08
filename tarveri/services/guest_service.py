@@ -364,19 +364,21 @@ class GuestService:
                     None,
                 )
 
-            # 7. Create Private Thread
-            clean_name = "".join(c for c in applicant.display_name if c.isalnum() or c in "-_")[:20] or "guest"
+            # 7. Create Private Thread with sequential tracking number (e.g. guest-0001-username)
+            seq = await self.db.get_next_guild_ticket_seq(guild.id)
+            clean_name = "".join(c for c in applicant.display_name if c.isalnum() or c in "-_")[:20].lower() or "guest"
+            thread_name = f"guest-{seq:04d}-{clean_name}"
             try:
                 thread = await parent_ch.create_thread(
-                    name=f"guest-{clean_name}",
+                    name=thread_name,
                     type=discord.ChannelType.private_thread,
                     auto_archive_duration=1440,
-                    reason=f"TARVeri Guest Verification Review for {applicant}",
+                    reason=f"TARVeri Guest Verification Review #{seq:04d} for {applicant}",
                 )
             except (discord.HTTPException, discord.Forbidden) as e:
                 if referral_code:
                     await self.db.update_referral_code_status(referral_code, guild.id, "ACTIVE")
-                logger.error(f"Failed to create private thread in #{parent_ch.name} ({guild.name}): {e}")
+                logger.error(f"Failed to create private thread '{thread_name}' in #{parent_ch.name} ({guild.name}): {e}")
                 return False, f"❌ Failed to create private thread: {e}", None
 
             # 8. Grant thread chat & participation permissions to applicant on parent channel
@@ -498,18 +500,19 @@ class GuestService:
                 referrer_id=referrer_id,
                 referral_code=referral_code,
                 reason=reason,
+                ticket_seq=seq,
             )
 
             await self.db.log(
                 "INFO",
                 "GUEST_TICKET_OPENED",
-                f"Opened guest review ticket #{ticket_id} for applicant {applicant} (ID: {applicant.id})"
+                f"Opened guest review ticket #{seq:04d} (DB ID: {ticket_id}) for applicant {applicant} (ID: {applicant.id})"
                 + (f" with referral code '{referral_code}' (Vouched by ID: {referrer_id})" if referral_code else ""),
                 guild=guild,
                 user_id=applicant.id,
             )
 
-            return True, f"✅ Guest ticket #{ticket_id} created in private thread {thread.mention}!", thread
+            return True, f"✅ Guest ticket #{seq:04d} created in private thread {thread.mention}!", thread
 
     async def approve_guest_application(
         self,

@@ -124,6 +124,7 @@ class Database:
             CREATE TABLE IF NOT EXISTS guest_tickets (
                 ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
+                ticket_seq INTEGER,
                 applicant_id INTEGER NOT NULL,
                 referrer_id INTEGER,
                 channel_id INTEGER NOT NULL,
@@ -181,6 +182,7 @@ class Database:
         cursor = await self._conn.execute("PRAGMA table_info(guest_tickets);")
         existing_ticket_cols = {row[1] for row in await cursor.fetchall()}
         for col, col_def in [
+            ("ticket_seq", "INTEGER"),
             ("referrer_id", "INTEGER"),
             ("referral_code", "TEXT"),
             ("reason", "TEXT"),
@@ -590,6 +592,18 @@ class Database:
         await self._conn.commit()
         return cursor.rowcount > 0
 
+    async def get_next_guild_ticket_seq(self, guild_id: int) -> int:
+        """Returns the next sequence number (1-indexed) for guest tickets in the given guild."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT COALESCE(MAX(ticket_seq), COUNT(*), 0) FROM guest_tickets WHERE guild_id = ?""",
+            (guild_id,),
+        )
+        row = await cursor.fetchone()
+        current_max = row[0] if row and row[0] is not None else 0
+        return current_max + 1
+
     async def create_guest_ticket(
         self,
         guild_id: int,
@@ -598,16 +612,18 @@ class Database:
         referrer_id: int | None = None,
         referral_code: str | None = None,
         reason: str | None = None,
+        ticket_seq: int | None = None,
     ) -> int:
         """Creates a guest ticket record and returns its ticket_id."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
+        seq = ticket_seq if ticket_seq is not None else await self.get_next_guild_ticket_seq(guild_id)
         cursor = await self._conn.execute(
             """INSERT INTO guest_tickets
-               (guild_id, applicant_id, referrer_id, channel_id, referral_code, reason, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
-            (guild_id, applicant_id, referrer_id, channel_id, referral_code, reason, ts),
+               (guild_id, ticket_seq, applicant_id, referrer_id, channel_id, referral_code, reason, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+            (guild_id, seq, applicant_id, referrer_id, channel_id, referral_code, reason, ts),
         )
         await self._conn.commit()
         return cursor.lastrowid or 0
@@ -619,7 +635,7 @@ class Database:
         cursor = await self._conn.execute(
             """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
                       reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
-                      closed_by_admin_id, close_reason
+                      closed_by_admin_id, close_reason, ticket_seq
                FROM guest_tickets WHERE channel_id = ?""",
             (channel_id,),
         )
@@ -642,6 +658,7 @@ class Database:
             "closed_at": row[12],
             "closed_by_admin_id": row[13],
             "close_reason": row[14],
+            "ticket_seq": row[15] if len(row) > 15 and row[15] is not None else row[0],
         }
 
     async def get_guest_ticket_by_id(self, ticket_id: int) -> dict[str, Any] | None:
@@ -651,7 +668,7 @@ class Database:
         cursor = await self._conn.execute(
             """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
                       reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
-                      closed_by_admin_id, close_reason
+                      closed_by_admin_id, close_reason, ticket_seq
                FROM guest_tickets WHERE ticket_id = ?""",
             (ticket_id,),
         )
@@ -674,6 +691,7 @@ class Database:
             "closed_at": row[12],
             "closed_by_admin_id": row[13],
             "close_reason": row[14],
+            "ticket_seq": row[15] if len(row) > 15 and row[15] is not None else row[0],
         }
 
     async def get_open_guest_ticket_for_applicant(
@@ -685,7 +703,7 @@ class Database:
         cursor = await self._conn.execute(
             """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
                       reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
-                      closed_by_admin_id, close_reason
+                      closed_by_admin_id, close_reason, ticket_seq
                FROM guest_tickets
                WHERE guild_id = ? AND applicant_id = ? AND status = 'OPEN'""",
             (guild_id, applicant_id),
@@ -709,6 +727,7 @@ class Database:
             "closed_at": row[12],
             "closed_by_admin_id": row[13],
             "close_reason": row[14],
+            "ticket_seq": row[15] if len(row) > 15 and row[15] is not None else row[0],
         }
 
     async def update_guest_ticket_vouch(

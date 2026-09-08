@@ -212,6 +212,7 @@ async def test_guest_tickets_reason_giver_and_comments(tmp_path):
 
     ticket = await db.get_guest_ticket_by_id(ticket_id)
     assert ticket["applicant_id"] == applicant_id
+    assert ticket["ticket_seq"] == 1
     assert ticket["reason"] == "Attending TARUMT Hackathon 2026 as mentor"
     assert ticket["vouch_note"] is None
     assert ticket["vouched_by_id"] is None
@@ -250,6 +251,7 @@ async def test_guest_tickets_reason_giver_and_comments(tmp_path):
 
     ticket_rej = await db.get_guest_ticket_by_id(ticket_id_rej)
     assert ticket_rej["status"] == "REJECTED"
+    assert ticket_rej["ticket_seq"] == 2
     assert ticket_rej["closed_by_admin_id"] == admin_id
     assert ticket_rej["close_reason"] == rej_reason
 
