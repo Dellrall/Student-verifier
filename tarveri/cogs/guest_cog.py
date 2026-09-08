@@ -153,7 +153,8 @@ class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral
         if ticket:
             embed = build_review_embed(ticket, interaction.guild, interaction.user)
             view = GuestReviewThreadView(self.guest_service)
-            admin_mention = get_admin_role_mention(interaction.guild, self.guest_service.admin_role_name)
+            admin_role = await self.guest_service.get_admin_role_or_fallback(interaction.guild)
+            admin_mention = admin_role.mention if admin_role else get_admin_role_mention(interaction.guild, self.guest_service.admin_role_name)
             vouch_prompt = f"\n👋 {interaction.user.mention} has submitted referral code `{raw_code}`."
             if ticket.get("referrer_id"):
                 vouch_prompt += f" <@{ticket['referrer_id']}>, please confirm your vouch for this guest below."
@@ -216,7 +217,8 @@ class GuestApplicationModal(discord.ui.Modal, title="🌐 Guest Access Applicati
         if ticket:
             embed = build_review_embed(ticket, interaction.guild, interaction.user)
             view = GuestReviewThreadView(self.guest_service)
-            admin_mention = get_admin_role_mention(interaction.guild, self.guest_service.admin_role_name)
+            admin_role = await self.guest_service.get_admin_role_or_fallback(interaction.guild)
+            admin_mention = admin_role.mention if admin_role else get_admin_role_mention(interaction.guild, self.guest_service.admin_role_name)
 
             await thread.send(
                 content=f"{admin_mention} New guest application from {interaction.user.mention}:",

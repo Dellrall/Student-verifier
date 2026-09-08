@@ -195,6 +195,25 @@ async def test_setguestrole_and_setreviewchannel(tmp_path):
     settings = await db.get_guild_settings(998877)
     assert settings[3] == 776655
 
+    # 3. Set custom admin role
+    admin_custom_role = MagicMock(spec=discord.Role)
+    admin_custom_role.name = "Review Moderators"
+    admin_custom_role.mention = "<@&334455>"
+    interaction.followup.send.reset_mock()
+    await cog.setadminrole.callback(cog, interaction, role=admin_custom_role)
+    interaction.followup.send.assert_called_once()
+    assert "<@&334455>" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(998877)
+    assert settings[4] == "Review Moderators"
+
+    # 4. Reset custom admin role
+    interaction.followup.send.reset_mock()
+    await cog.setadminrole.callback(cog, interaction, role=None)
+    interaction.followup.send.assert_called_once()
+    assert "auto-detect" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(998877)
+    assert settings[4] is None
+
     await db.close()
 
 

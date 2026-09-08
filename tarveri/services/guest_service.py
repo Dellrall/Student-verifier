@@ -213,12 +213,13 @@ class GuestService:
             logger.warning(f"Could not create guest role '{role_name_to_create}' in '{guild.name}': {e}")
             return None
 
-    def get_admin_role_or_fallback(self, guild: discord.Guild) -> discord.Role | None:
+    async def get_admin_role_or_fallback(self, guild: discord.Guild) -> discord.Role | None:
         """
         Intelligently discovers the server's administrator or staff role in priority order:
-        1. Configured admin role name (e.g. self.admin_role_name or 'TARVeri Admin')
-        2. Common administrative role names: 'Admin', 'Administrator', 'Staff', 'Moderator', 'Mod'
-        3. Server roles with Administrator or Manage Guild permissions.
+        1. Configured per-guild admin role from database (guild_settings.admin_role_name)
+        2. Configured global admin role name (self.admin_role_name or 'TARVeri Admin')
+        3. Common administrative role names: 'Admin', 'Administrator', 'Staff', 'Moderator', 'Mod'
+        4. Server roles with Administrator or Manage Guild permissions.
         """
         if not guild or not hasattr(guild, "roles"):
             return None
@@ -227,13 +228,24 @@ class GuestService:
         if not roles:
             return None
 
-        # 1. Configured name
+        # 1. Guild-specific configured role from database
+        try:
+            settings = await self.db.get_guild_settings(guild.id)
+            if settings and len(settings) > 4 and settings[4]:
+                guild_admin_role_name = settings[4].strip()
+                for r in roles:
+                    if r.name == guild_admin_role_name or r.name.lower() == guild_admin_role_name.lower():
+                        return r
+        except Exception as e:
+            logger.debug(f"Failed to fetch guild settings for admin role check: {e}")
+
+        # 2. Configured global name
         if self.admin_role_name:
             for r in roles:
                 if r.name == self.admin_role_name or r.name.lower() == self.admin_role_name.lower():
                     return r
 
-        # 2. Known administrative aliases
+        # 3. Known administrative aliases
         aliases = (
             "admin",
             "administrator",
@@ -252,7 +264,7 @@ class GuestService:
                 if r.name.lower() == alias:
                     return r
 
-        # 3. Roles with Administrator or Manage Guild permissions (highest role first)
+        # 4. Roles with Administrator or Manage Guild permissions (highest role first)
         for r in reversed(roles):
             if getattr(r, "is_default", lambda: False)():
                 continue
@@ -366,7 +378,7 @@ class GuestService:
                 logger.error(f"Failed to create private thread in #{parent_ch.name} ({guild.name}): {e}")
                 return False, f"❌ Failed to create private thread: {e}", None
 
-            # 8. Invite applicant, referrer, and admin team members
+            # 8. Invite applicant, referrer, and all admin team members
             try:
                 await thread.add_user(applicant)
             except (discord.HTTPException, discord.Forbidden):
@@ -381,20 +393,63 @@ class GuestService:
                     except (discord.HTTPException, discord.Forbidden):
                         pass
 
-            # Auto-invite admin team members to private review thread
-            admin_role = self.get_admin_role_or_fallback(guild)
-            if admin_role and hasattr(admin_role, "members") and admin_role.members:
-                for adm_m in admin_role.members[:10]:
-                    if adm_m.id not in (applicant.id, referrer_id):
-                        try:
-                            await thread.add_user(adm_m)
-                        except (discord.HTTPException, discord.Forbidden):
-                            pass
-            elif getattr(guild, "owner", None) and guild.owner.id not in (applicant.id, referrer_id):
+            # Auto-invite all admin team members & reviewers to private review thread
+            if hasattr(guild, "chunk") and not getattr(guild, "chunked", True):
                 try:
-                    await thread.add_user(guild.owner)
-                except (discord.HTTPException, discord.Forbidden):
-                    pass
+                    await guild.chunk()
+                except Exception as e:
+                    logger.debug(f"Guild chunking skipped/failed: {e}")
+
+            admin_role = await self.get_admin_role_or_fallback(guild)
+
+            admin_members: set[discord.Member] = set()
+
+            # A. Members having the discovered admin/reviewer role
+            if admin_role:
+                if hasattr(admin_role, "members") and admin_role.members:
+                    admin_members.update(admin_role.members)
+                elif hasattr(guild, "members") and guild.members:
+                    for m in guild.members:
+                        if admin_role in getattr(m, "roles", []):
+                            admin_members.add(m)
+
+            # B. Members with Administrator, Manage Guild, or Manage Threads permissions
+            if hasattr(guild, "members") and guild.members:
+                for m in guild.members:
+                    if getattr(m, "bot", False):
+                        continue
+                    perms = getattr(m, "guild_permissions", None)
+                    if perms and (
+                        getattr(perms, "administrator", False)
+                        or getattr(perms, "manage_guild", False)
+                        or getattr(perms, "manage_threads", False)
+                    ):
+                        admin_members.add(m)
+
+            # C. Guild Owner
+            if getattr(guild, "owner", None):
+                admin_members.add(guild.owner)
+            elif getattr(guild, "owner_id", None):
+                owner_m = guild.get_member(guild.owner_id)
+                if owner_m:
+                    admin_members.add(owner_m)
+
+            # Exclude applicant, referrer, and bot itself
+            exclude_ids = {applicant.id, getattr(getattr(guild, "me", None), "id", None)}
+            if referrer_id:
+                exclude_ids.add(referrer_id)
+
+            # Invite all discovered admin members (capped at 25 to respect Discord rate limits)
+            invited_count = 0
+            for adm_m in admin_members:
+                if adm_m and adm_m.id not in exclude_ids:
+                    try:
+                        await thread.add_user(adm_m)
+                        invited_count += 1
+                        if invited_count >= 25:
+                            break
+                    except (discord.HTTPException, discord.Forbidden):
+                        pass
 
 
             # 9. Save ticket to database

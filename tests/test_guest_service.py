@@ -439,15 +439,25 @@ async def test_get_admin_role_or_fallback_and_auto_invite(tmp_path):
     staff_role.name = "Staff"
     staff_admin_member = MagicMock(spec=discord.Member)
     staff_admin_member.id = 7001
-    staff_role.members = [staff_admin_member]
     staff_role.is_default.return_value = False
-
     guild.roles = [staff_role]
 
-    discovered = service.get_admin_role_or_fallback(guild)
+    discovered = await service.get_admin_role_or_fallback(guild)
     assert discovered == staff_role
 
-    # 2. Test auto-inviting admin member to private review thread
+    # Test DB configured custom admin role overrides alias
+    custom_role = MagicMock(spec=discord.Role)
+    custom_role.name = "Custom Reviewers"
+    custom_admin_member = MagicMock(spec=discord.Member)
+    custom_admin_member.id = 7002
+    custom_role.members = [custom_admin_member]
+    guild.roles = [staff_role, custom_role]
+
+    await db.set_guild_admin_role(guild.id, "Custom Reviewers")
+    discovered_custom = await service.get_admin_role_or_fallback(guild)
+    assert discovered_custom == custom_role
+
+    # 2. Test auto-inviting multiple admin members (role member + admin permission + owner) to private review thread
     parent_channel = MagicMock(spec=discord.TextChannel)
     parent_channel.name = "guest-tickets"
     perms = MagicMock()
@@ -466,6 +476,24 @@ async def test_get_admin_role_or_fallback_and_auto_invite(tmp_path):
     applicant.roles = []
     applicant.display_name = "NewGuest"
 
+    # Server owner
+    owner_member = MagicMock(spec=discord.Member)
+    owner_member.id = 9001
+    guild.owner = owner_member
+
+    # Administrator permission member
+    admin_perm_member = MagicMock(spec=discord.Member)
+    admin_perm_member.id = 9002
+    admin_perm_member.bot = False
+    admin_perm_perms = MagicMock()
+    admin_perm_perms.administrator = True
+    admin_perm_perms.manage_guild = False
+    admin_perm_perms.manage_threads = False
+    admin_perm_member.guild_permissions = admin_perm_perms
+    admin_perm_member.roles = []
+
+    guild.members = [applicant, custom_admin_member, owner_member, admin_perm_member]
+
     success, msg, created_thread = await service.open_guest_review_ticket(
         guild=guild,
         applicant=applicant,
@@ -473,10 +501,12 @@ async def test_get_admin_role_or_fallback_and_auto_invite(tmp_path):
     )
     assert success is True
 
-    # Check that both applicant and staff_admin_member were explicitly added to thread
+    # Check that applicant, custom_admin_member, owner_member, and admin_perm_member were all added to thread
     added_user_ids = [call.args[0].id for call in thread.add_user.call_args_list]
     assert applicant.id in added_user_ids
-    assert staff_admin_member.id in added_user_ids
+    assert custom_admin_member.id in added_user_ids
+    assert owner_member.id in added_user_ids
+    assert admin_perm_member.id in added_user_ids
 
     await db.close()
 

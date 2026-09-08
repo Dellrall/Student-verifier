@@ -106,6 +106,7 @@ class Database:
                 help_channel_id INTEGER,
                 guest_role_name TEXT DEFAULT 'Guest',
                 review_channel_id INTEGER,
+                admin_role_name TEXT,
                 updated_at TEXT NOT NULL
             );
 
@@ -159,6 +160,7 @@ class Database:
             ("help_channel_id", "INTEGER"),
             ("guest_role_name", "TEXT DEFAULT 'Guest'"),
             ("review_channel_id", "INTEGER"),
+            ("admin_role_name", "TEXT"),
             ("updated_at", "TEXT DEFAULT ''"),
         ]:
             if col not in existing_guild_cols:
@@ -398,12 +400,12 @@ class Database:
 
     async def get_guild_settings(
         self, guild_id: int
-    ) -> tuple[int | None, int | None, str | None, int | None] | None:
-        """Returns (welcome_channel_id, help_channel_id, guest_role_name, review_channel_id) for the given guild, or None."""
+    ) -> tuple[int | None, int | None, str | None, int | None, str | None] | None:
+        """Returns (welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name) for the given guild, or None."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         cursor = await self._conn.execute(
-            """SELECT welcome_channel_id, help_channel_id, guest_role_name, review_channel_id
+            """SELECT welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name
                FROM guild_settings WHERE guild_id = ?""",
             (guild_id,),
         )
@@ -469,6 +471,23 @@ class Database:
             (guild_id, channel_id, ts),
         )
         await self._conn.commit()
+
+    async def set_guild_admin_role(self, guild_id: int, admin_role_name: str | None) -> None:
+        """Sets or clears the custom admin role name for a guild."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = now_formatted()
+        role_to_set = admin_role_name.strip() if admin_role_name else None
+        await self._conn.execute(
+            """INSERT INTO guild_settings (guild_id, admin_role_name, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET
+                   admin_role_name = excluded.admin_role_name,
+                   updated_at = excluded.updated_at""",
+            (guild_id, role_to_set, ts),
+        )
+        await self._conn.commit()
+
 
     async def create_referral_code(
         self, code: str, guild_id: int, referrer_discord_id: int, expires_at: str

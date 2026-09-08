@@ -82,11 +82,12 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 
 ### Admins
 * `/send_gateway_panel [channel]` — Post the persistent 3-button verification gateway panel (Student Verify / Referral Code / Guest Apply).
+* `/setadminrole [role]` — Configure or reset the server's reviewer/admin role for private guest review threads (auto-invites all role members).
 * `/setguestrole [role_name]` — Configure the server's guest role name (default: `Guest`).
 * `/setreviewchannel [channel]` — Configure the parent channel for private guest review threads.
 * `/setwelcomec [channel]` — Configure or reset the server's welcome channel for new member verification tags.
 * `/sethelpc [channel]` — Configure or reset the server's specific help channel for automated role tips.
-* `/stats` — View verification numbers, faculty breakdown, and configured channels.
+* `/stats` — View verification numbers, faculty breakdown, and configured channels/roles.
 * `/unverify @user` — Unlink a student ID and remove their roles.
 * `/audit` — View recent audit log entries.
 * `/backup` — Create an immediate database snapshot in `backups/` (auto-rotated to 10 recent files).

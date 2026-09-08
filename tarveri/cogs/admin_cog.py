@@ -105,10 +105,17 @@ class AdminCog(commands.Cog, name="Admin"):
             h_display = h_ch.mention if h_ch else (f"`ID: {h_id}`" if h_id else "*Auto-detect*")
             r_display = r_ch.mention if r_ch else (f"`ID: {r_id}`" if r_id else "*Auto-detect*")
 
+            adm_role = (
+                guild_settings[4]
+                if guild_settings and len(guild_settings) > 4 and guild_settings[4]
+                else f"*Auto-detect ({self.admin_role_name})*"
+            )
+
             embed.add_field(name="Welcome Channel", value=w_display, inline=True)
             embed.add_field(name="Help Channel", value=h_display, inline=True)
             embed.add_field(name="Guest Role", value=f"`{g_role}`", inline=True)
             embed.add_field(name="Review Channel", value=r_display, inline=True)
+            embed.add_field(name="Admin / Review Role", value=f"`{adm_role}`", inline=True)
 
         embed.set_footer(text=f"TARVeri Bot • Active in {len(self.bot.guilds)} servers")
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -645,6 +652,58 @@ class AdminCog(commands.Cog, name="Admin"):
                 ephemeral=True,
             )
         schedule_ttl_delete(interaction, delay=60.0)
+
+    @app_commands.command(
+        name="setadminrole",
+        description="Set or reset the server's reviewer/admin role for private guest review threads.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        role="The role whose members should manage verifications/reviews (leave empty for auto-detect)"
+    )
+    async def setadminrole(
+        self, interaction: discord.Interaction, role: discord.Role | None = None
+    ) -> None:
+        """Configures or clears the custom admin/reviewer role for this server."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ This command can only be used inside a server.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        role_name = role.name if role else None
+        await self.db.set_guild_admin_role(interaction.guild.id, role_name)
+
+        await self.db.log(
+            "INFO",
+            "CONFIG_ADMIN_ROLE",
+            f"Admin {interaction.user} set admin role for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{role_name if role_name else 'Auto-detect'}'",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
+
+        if role:
+            await interaction.followup.send(
+                f"✅ Review/Admin role for this server set to {role.mention}.\n"
+                f"Members with this role will be automatically invited to review new guest applications and referral tickets.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                "🔄 Review/Admin role reset to **auto-detect** mode (checks server admins, moderators, and staff roles).",
+                ephemeral=True,
+            )
+        schedule_ttl_delete(interaction, delay=60.0)
+
 
 
 
