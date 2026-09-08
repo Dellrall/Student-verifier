@@ -52,7 +52,7 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 
 # Or target a specific stream/branch directly
 ./scripts/update.sh main
-./scripts/update.sh refactor/modular-optimization
+./scripts/update.sh beta
 ```
 
 *(To check if updates are available without applying: `./scripts/update.sh --check` or `./scripts/update.sh --check main`)*

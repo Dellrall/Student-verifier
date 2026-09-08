@@ -19,7 +19,7 @@ from tarveri.rate_limiter import RateLimiter
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
 
-__version__ = "2.0.0"
+__version__ = "2.4.1"
 
 __all__ = [
     "__version__",

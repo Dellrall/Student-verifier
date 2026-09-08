@@ -2,7 +2,25 @@
 
 All notable changes to the **TARVeri** Discord Student & Guest Verification Bot are documented in this file.
 
-## [v2.4.0] — 2026-09-09 (Current)
+## [v2.4.1] — 2026-09-09 (Current)
+### 🐛 Bug Fixes & Reliability Patches
+* **Direct Message Callable Prefix Compatibility**:
+  - Fixed `TypeError` in `VerificationCog.on_message` when `command_prefix` is configured with a callable (e.g. `commands.when_mentioned_or("!")`) or tuple of prefixes.
+  - Resolves prefixes dynamically via `await self.bot.get_prefix(message)` before evaluating message content.
+* **Deterministic Database Collision Rollbacks via Guild ID**:
+  - Upgraded `RoleSyncResult` items from `(guild_name, role_name)` to `(guild_id, guild_name, role_name)`.
+  - Collision rollbacks now lookup guilds directly in $O(1)$ time by immutable snowflake ID (`bot.get_guild(g_id)`), preventing failures or mistaken role removals caused by duplicate or renamed servers.
+* **Safe Updater Remote Pruning & Automatic Branch Fallback**:
+  - Added `git fetch --prune origin` to `./scripts/update.sh` and `UpdateCheckerService` to automatically purge deleted remote branch tracking refs.
+  - Added automatic detection and redirection to `origin/main` whenever an active branch has been merged or deleted on GitHub.
+* **RateLimiter Async Documentation Refinement**:
+  - Clarified docstrings to reflect single-event-loop asyncio thread concurrency.
+* **Test Suite Expansion**:
+  - Added test cases covering callable prefix DM processing, command skipping, and remote stream fallback, bringing test coverage to **97 tests passing with 0 warnings**.
+
+---
+
+## [v2.4.0] — 2026-09-09
 ### 🛡️ Self-Healing & Auto-Recovery Engine
 * **Database Integrity & WAL Truncation**:
   - Automatically runs `PRAGMA integrity_check` on connection startup to detect and report corruptions immediately.
