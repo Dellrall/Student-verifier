@@ -431,3 +431,33 @@ class GuestService:
         )
 
         return True, f"🛑 Guest application rejected and applicant removed from the server by {admin_user.mention}."
+
+    async def handle_member_leave_or_ban(
+        self,
+        guild: discord.Guild,
+        user: discord.User | discord.Member,
+        is_ban: bool = False,
+    ) -> None:
+        """
+        Revokes guest access, expires open review tickets, and invalidates active referrals
+        when a user leaves, is kicked, or is banned from the server.
+        """
+        revocation_status = "BANNED" if is_ban else "LEFT_SERVER"
+        revoked_tickets = await self.db.revoke_guest_tickets_for_user(
+            guild.id, user.id, status=revocation_status
+        )
+        revoked_referrals = await self.db.revoke_active_referrals_for_user(
+            guild.id, user.id, status=revocation_status
+        )
+
+        action_type = "GUEST_REVOKED_ON_BAN" if is_ban else "GUEST_REVOKED_ON_LEAVE"
+        action_verb = "banned from" if is_ban else "left / was removed from"
+
+        if revoked_tickets > 0 or revoked_referrals > 0:
+            await self.db.log(
+                "INFO",
+                action_type,
+                f"Revoked guest status ({revoked_tickets} ticket(s), {revoked_referrals} referral(s)) for {user} (ID: {user.id}) who {action_verb} '{guild.name}'",
+                guild=guild,
+                user_id=user.id,
+            )

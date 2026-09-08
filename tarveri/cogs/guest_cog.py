@@ -580,3 +580,13 @@ class GuestCog(commands.Cog, name="Guest"):
         except (discord.HTTPException, discord.Forbidden) as e:
             await interaction.followup.send(f"❌ Failed to send gateway panel: {e}", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: discord.Member) -> None:
+        """Handles guest role revocation and cleanup when a member leaves, is kicked, or removed."""
+        await self.guest_service.handle_member_leave_or_ban(member.guild, member, is_ban=False)
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild: discord.Guild, user: discord.User | discord.Member) -> None:
+        """Handles guest role revocation and cleanup when a member is banned."""
+        await self.guest_service.handle_member_leave_or_ban(guild, user, is_ban=True)

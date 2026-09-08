@@ -238,3 +238,57 @@ async def test_get_or_create_guest_role_finds_existing(tmp_path):
 
     await db.close()
 
+
+@pytest.mark.asyncio
+async def test_handle_member_leave_or_ban_revokes_guest_access(tmp_path):
+    db_path = str(tmp_path / "guest_leave_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock(spec=discord.Client)
+    service = GuestService(bot, db)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 777888
+    guild.name = "Leave Test Guild"
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 554433
+    member.__str__.return_value = "GuestUser#1234"
+
+    # Create ticket and referral code
+    ticket_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=member.id,
+        channel_id=999111,
+        reason="Attending workshop",
+    )
+    await db.create_referral_code("TAR-LEAVE1", guild.id, member.id, "2099-01-01 00:00:00")
+
+    ticket_before = await db.get_guest_ticket_by_id(ticket_id)
+    assert ticket_before["status"] == "OPEN"
+
+    # 1. User leaves server
+    await service.handle_member_leave_or_ban(guild, member, is_ban=False)
+
+    ticket_after = await db.get_guest_ticket_by_id(ticket_id)
+    assert ticket_after["status"] == "LEFT_SERVER"
+
+    ref_code = await db.get_referral_code("TAR-LEAVE1", guild.id)
+    assert ref_code["status"] == "LEFT_SERVER"
+
+    # 2. User gets banned
+    ticket_id2 = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=member.id,
+        channel_id=999222,
+        reason="Attending workshop 2",
+    )
+    await service.handle_member_leave_or_ban(guild, member, is_ban=True)
+
+    ticket_after_ban = await db.get_guest_ticket_by_id(ticket_id2)
+    assert ticket_after_ban["status"] == "BANNED"
+
+    await db.close()
+
+
