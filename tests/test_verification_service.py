@@ -640,6 +640,11 @@ async def test_reconcile_duplicate_roles_migrates_members_and_deletes_redundant_
     db = Database(str(tmp_path / "dedup_test.db"))
     await db.connect()
     try:
+        # Record redundant roles as created by the bot
+        await db.record_bot_created_role(guild.id, 1002, "focs")
+        await db.record_bot_created_role(guild.id, 1003, "Faculty of Computing")
+        await db.record_bot_created_role(guild.id, 2002, "Guest")
+
         rate_limiter = RateLimiter()
         service = VerificationService(bot, db, "secret_123", rate_limiter)
 
@@ -671,6 +676,59 @@ async def test_reconcile_duplicate_roles_migrates_members_and_deletes_redundant_
 
 
 @pytest.mark.asyncio
+async def test_reconcile_duplicate_roles_preserves_admin_created_roles(tmp_path):
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 776655
+    guild.name = "Admin Role Preservation Guild"
+
+    primary_focs = MagicMock(spec=discord.Role)
+    primary_focs.id = 5001
+    primary_focs.name = "FOCS"
+    primary_focs.position = 20
+    primary_focs.members = []
+    primary_focs.managed = False
+    primary_focs.is_default.return_value = False
+    primary_focs.delete = AsyncMock()
+
+    # Admin created a duplicate role "focs" manually
+    admin_created_focs = MagicMock(spec=discord.Role)
+    admin_created_focs.id = 5002
+    admin_created_focs.name = "focs"
+    admin_created_focs.position = 10
+    admin_created_focs.members = []
+    admin_created_focs.managed = False
+    admin_created_focs.is_default.return_value = False
+    admin_created_focs.delete = AsyncMock()
+
+    guild.roles = [primary_focs, admin_created_focs]
+
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    guild.me.guild_permissions.view_audit_log = False
+    bot_top_role = MagicMock()
+    bot_top_role.position = 50
+    guild.me.top_role = bot_top_role
+
+    db = Database(str(tmp_path / "admin_preserve.db"))
+    await db.connect()
+    try:
+        # Neither role was recorded in bot_created_roles
+        rate_limiter = RateLimiter()
+        service = VerificationService(bot, db, "secret_123", rate_limiter)
+
+        stats = await service.reconcile_duplicate_roles(guild)
+
+        # Admin created duplicate role MUST NOT be deleted
+        assert stats["deleted_roles"] == 0
+        admin_created_focs.delete.assert_not_called()
+        primary_focs.delete.assert_not_called()
+        assert any("Preserved admin-created role" in d for d in stats["details"])
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
 async def test_reconcile_duplicate_roles_handles_hierarchy_and_forbidden_gracefully(tmp_path):
     bot = MagicMock()
     guild = MagicMock(spec=discord.Guild)
@@ -678,6 +736,7 @@ async def test_reconcile_duplicate_roles_handles_hierarchy_and_forbidden_gracefu
     guild.name = "Hierarchy Guild"
 
     primary_focs = MagicMock(spec=discord.Role)
+    primary_focs.id = 9001
     primary_focs.name = "FOCS"
     primary_focs.position = 10
     primary_focs.members = []
@@ -685,8 +744,9 @@ async def test_reconcile_duplicate_roles_handles_hierarchy_and_forbidden_gracefu
     primary_focs.is_default.return_value = False
     primary_focs.delete = AsyncMock()
 
-    # Redundant role is above bot's top role
+    # Redundant role is above bot's top role, but tracked as bot created
     high_focs = MagicMock(spec=discord.Role)
+    high_focs.id = 9002
     high_focs.name = "focs-high"
     high_focs.position = 60
     high_focs.members = []
@@ -705,6 +765,7 @@ async def test_reconcile_duplicate_roles_handles_hierarchy_and_forbidden_gracefu
     db = Database(str(tmp_path / "hierarchy_dedup.db"))
     await db.connect()
     try:
+        await db.record_bot_created_role(guild.id, 9002, "focs-high")
         rate_limiter = RateLimiter()
         service = VerificationService(bot, db, "secret_123", rate_limiter)
 

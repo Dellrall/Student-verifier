@@ -51,6 +51,32 @@ def rotate_backups(backup_dir: str = "backups", max_backups: int = 10) -> list[s
     return deleted
 
 
+def list_backups(backup_dir: str = "backups") -> list[dict[str, Any]]:
+    """
+    Returns a list of available backup files in `backup_dir` sorted newest to oldest.
+    Each item contains 'filename', 'path', 'mtime', 'size_bytes', and 'timestamp'.
+    """
+    if not os.path.exists(backup_dir):
+        return []
+    backup_files: list[dict[str, Any]] = []
+    for entry in os.listdir(backup_dir):
+        full_path = os.path.join(backup_dir, entry)
+        if os.path.isfile(full_path) and entry.endswith(".db"):
+            mtime = os.path.getmtime(full_path)
+            size = os.path.getsize(full_path)
+            backup_files.append(
+                {
+                    "filename": entry,
+                    "path": full_path,
+                    "mtime": mtime,
+                    "size_bytes": size,
+                    "timestamp": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+    backup_files.sort(key=lambda x: x["mtime"], reverse=True)
+    return backup_files
+
+
 class Database:
     """
     Database interface for TARVeri.
@@ -159,6 +185,13 @@ class Database:
                 last_pinged_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS bot_created_roles (
+                guild_id INTEGER NOT NULL,
+                role_id INTEGER PRIMARY KEY,
+                role_name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log(event_type);
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
             CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_log(user_id);
@@ -168,6 +201,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_guest_tickets_guild ON guest_tickets(guild_id);
             CREATE INDEX IF NOT EXISTS idx_guest_tickets_channel ON guest_tickets(channel_id);
             CREATE INDEX IF NOT EXISTS idx_guest_tickets_applicant ON guest_tickets(applicant_id);
+            CREATE INDEX IF NOT EXISTS idx_bot_created_roles_guild ON bot_created_roles(guild_id);
             """
         )
 
@@ -273,6 +307,152 @@ class Database:
             rotate_backups(backup_dir=backup_dir, max_backups=max_backups)
 
         return backup_path
+
+    def list_backups(self, backup_dir: str = "backups") -> list[dict[str, Any]]:
+        """Instance helper to list available database backups."""
+        return list_backups(backup_dir=backup_dir)
+
+    async def restore_guild_settings_from_backup(
+        self, backup_path: str, guild_id: int | None = None
+    ) -> dict[str, Any]:
+        """
+        Restores guild_settings from a specified backup database into the current active database.
+        If guild_id is provided, only that guild's settings are restored; otherwise all guilds are restored.
+        Returns a dictionary summarizing the restored settings.
+        """
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        if not os.path.isfile(backup_path):
+            raise FileNotFoundError(f"Backup file not found at '{backup_path}'.")
+
+        restored_guilds = 0
+        details: list[dict[str, Any]] = []
+
+        async with aiosqlite.connect(backup_path) as b_conn:
+            cursor = await b_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='guild_settings';"
+            )
+            if not await cursor.fetchone():
+                return {"restored_guilds": 0, "details": [], "message": "No guild_settings table found in backup."}
+
+            query = (
+                "SELECT guild_id, welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name, updated_at "
+                "FROM guild_settings"
+            )
+            params: tuple = ()
+            if guild_id is not None:
+                query += " WHERE guild_id = ?"
+                params = (guild_id,)
+
+            cursor = await b_conn.execute(query, params)
+            rows = await cursor.fetchall()
+
+            for row in rows:
+                g_id, w_id, h_id, g_role, r_id, adm_role, u_at = row
+                await self._conn.execute(
+                    """
+                    INSERT INTO guild_settings (guild_id, welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(guild_id) DO UPDATE SET
+                        welcome_channel_id = excluded.welcome_channel_id,
+                        help_channel_id = excluded.help_channel_id,
+                        guest_role_name = excluded.guest_role_name,
+                        review_channel_id = excluded.review_channel_id,
+                        admin_role_name = excluded.admin_role_name,
+                        updated_at = excluded.updated_at;
+                    """,
+                    (g_id, w_id, h_id, g_role, r_id, adm_role, u_at or now_formatted()),
+                )
+                restored_guilds += 1
+                details.append(
+                    {
+                        "guild_id": g_id,
+                        "welcome_channel_id": w_id,
+                        "help_channel_id": h_id,
+                        "guest_role_name": g_role,
+                        "review_channel_id": r_id,
+                        "admin_role_name": adm_role,
+                    }
+                )
+
+            await self._conn.commit()
+
+        return {"restored_guilds": restored_guilds, "details": details}
+
+    async def restore_latest_guild_settings(
+        self, guild_id: int | None = None, backup_dir: str = "backups"
+    ) -> dict[str, Any] | None:
+        """Restores guild settings from the newest available backup file in backup_dir."""
+        backups = self.list_backups(backup_dir=backup_dir)
+        if not backups:
+            return None
+        latest = backups[0]
+        result = await self.restore_guild_settings_from_backup(latest["path"], guild_id=guild_id)
+        result["backup_file"] = latest["filename"]
+        result["backup_path"] = latest["path"]
+        return result
+
+    async def restore_full_database(self, backup_path: str) -> None:
+        """
+        Restores the entire active database from a backup snapshot.
+        Safely closes active connection, replaces file, and reconnects.
+        """
+        import shutil
+
+        if not os.path.isfile(backup_path):
+            raise FileNotFoundError(f"Backup file not found at '{backup_path}'.")
+
+        await self.close()
+        shutil.copy2(backup_path, self.path)
+
+        wal_file = f"{self.path}-wal"
+        shm_file = f"{self.path}-shm"
+        for f in (wal_file, shm_file):
+            if os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+
+        await self.connect()
+
+    async def record_bot_created_role(self, guild_id: int, role_id: int, role_name: str) -> None:
+        """Records a role created by the bot so it can be distinguished from admin-created roles."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = now_formatted()
+        await self._conn.execute(
+            """
+            INSERT INTO bot_created_roles (guild_id, role_id, role_name, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(role_id) DO UPDATE SET
+                role_name = excluded.role_name,
+                created_at = excluded.created_at;
+            """,
+            (guild_id, role_id, role_name, ts),
+        )
+        await self._conn.commit()
+
+    async def get_bot_created_role_ids(self, guild_id: int) -> set[int]:
+        """Returns set of role IDs in a guild that were created by the bot."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            "SELECT role_id FROM bot_created_roles WHERE guild_id = ?",
+            (guild_id,),
+        )
+        rows = await cursor.fetchall()
+        return {r[0] for r in rows}
+
+    async def delete_bot_created_role(self, role_id: int) -> None:
+        """Deletes a role tracking entry after the role is deleted."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        await self._conn.execute(
+            "DELETE FROM bot_created_roles WHERE role_id = ?",
+            (role_id,),
+        )
+        await self._conn.commit()
 
     async def log(
         self,

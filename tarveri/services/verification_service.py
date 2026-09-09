@@ -222,6 +222,10 @@ class VerificationService:
                     reason="TARVeri: restore missing faculty SRC role",
                 )
                 guild_roles.append(role)
+                try:
+                    await self.db.record_bot_created_role(guild.id, role.id, src_name)
+                except Exception as e:
+                    logger.debug(f"Could not record bot created SRC role: {e}")
                 stats["created"] += 1
                 await self.db.log(
                     "INFO",
@@ -290,6 +294,10 @@ class VerificationService:
                 mentionable=True,
                 reason="TARVeri: auto-created missing faculty role for verification",
             )
+            try:
+                await self.db.record_bot_created_role(guild.id, role.id, role_name)
+            except Exception as e:
+                logger.debug(f"Could not record bot created faculty role: {e}")
             await self.db.log(
                 "INFO",
                 "ROLE_CREATED",
@@ -619,12 +627,54 @@ class VerificationService:
 
         return summary
 
+    async def is_role_created_by_bot(
+        self,
+        guild: discord.Guild,
+        role: discord.Role,
+        bot_created_ids: set[int] | None = None,
+    ) -> bool:
+        """
+        Checks whether a role was created by TARVeri (tracked in SQLite bot_created_roles
+        or verified via Discord audit logs). Admin-created roles return False.
+        """
+        if not role or not guild:
+            return False
+
+        # 1. Fast in-memory / pre-fetched set check
+        if bot_created_ids is not None and getattr(role, "id", None) in bot_created_ids:
+            return True
+
+        # 2. SQLite database lookup
+        try:
+            db_ids = await self.db.get_bot_created_role_ids(guild.id)
+            if getattr(role, "id", None) in db_ids:
+                return True
+        except Exception as e:
+            logger.debug(f"Could not query bot_created_role_ids for guild {guild.id}: {e}")
+
+        # 3. Discord Audit Logs fallback if bot has View Audit Log permission
+        me = getattr(guild, "me", None)
+        can_view_audit = getattr(getattr(me, "guild_permissions", None), "view_audit_log", False)
+        if can_view_audit and hasattr(guild, "audit_logs") and callable(guild.audit_logs):
+            try:
+                async for entry in guild.audit_logs(action=discord.AuditLogAction.role_create, limit=100):
+                    if entry.target and entry.target.id == getattr(role, "id", None):
+                        if entry.user and me and entry.user.id == me.id:
+                            await self.db.record_bot_created_role(guild.id, role.id, getattr(role, "name", "unknown"))
+                            return True
+                        else:
+                            return False
+            except (discord.Forbidden, discord.HTTPException, AttributeError):
+                pass
+
+        return False
+
     async def reconcile_duplicate_roles(self, guild: discord.Guild) -> dict[str, Any]:
         """
         Self-healing: scans guild for duplicate faculty and guest roles matching the same category.
         Identifies the primary role (highest position in hierarchy / highest member count),
-        migrates all members on redundant duplicate role(s) to the primary role, and deletes
-        the redundant duplicate role(s) from Discord.
+        migrates all members on redundant duplicate role(s) to the primary role, and ONLY deletes
+        redundant duplicate role(s) that were created by the bot (admin-created roles are preserved).
         """
         stats: dict[str, Any] = {
             "checked_categories": 0,
@@ -651,6 +701,12 @@ class VerificationService:
         )
         bot_top_role = getattr(me, "top_role", None) if me else None
         bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
+
+        # Pre-fetch bot-created role IDs from DB for this guild
+        try:
+            bot_created_ids = await self.db.get_bot_created_role_ids(guild.id)
+        except Exception:
+            bot_created_ids = set()
 
         guild_roles = list(getattr(guild, "roles", []))
 
@@ -699,6 +755,8 @@ class VerificationService:
             redundant_roles = sorted_roles[1:]
 
             for red_role in redundant_roles:
+                is_bot_created = await self.is_role_created_by_bot(guild, red_role, bot_created_ids)
+
                 # Migrate members
                 red_members = list(getattr(red_role, "members", []))
                 for member in red_members:
@@ -714,7 +772,7 @@ class VerificationService:
                             logger.warning(f"Failed to migrate member {member} to {primary_role.name}: {e}")
                             stats["failed"] += 1
 
-                    if red_role in getattr(member, "roles", []):
+                    if is_bot_created and red_role in getattr(member, "roles", []):
                         try:
                             await member.remove_roles(
                                 red_role,
@@ -723,7 +781,14 @@ class VerificationService:
                         except (discord.HTTPException, discord.Forbidden):
                             pass
 
-                # Delete redundant role
+                # If NOT created by bot, preserve the admin-created role (do not delete!)
+                if not is_bot_created:
+                    detail_msg = f"Preserved admin-created role '{red_role.name}' (ID: {getattr(red_role, 'id', 'N/A')}) — only bot-created roles are deleted"
+                    stats["details"].append(detail_msg)
+                    logger.info(f"[{guild.name}] {detail_msg}")
+                    continue
+
+                # Delete bot-created redundant role
                 red_pos = getattr(red_role, "position", 0)
                 is_manageable = (
                     can_manage
@@ -737,10 +802,14 @@ class VerificationService:
                 if is_manageable:
                     try:
                         await red_role.delete(
-                            reason=f"TARVeri Self-Healing: Removed duplicate role '{red_role.name}' (migrated to '{primary_role.name}')"
+                            reason=f"TARVeri Self-Healing: Removed bot-created duplicate role '{red_role.name}' (migrated to '{primary_role.name}')"
                         )
+                        try:
+                            await self.db.delete_bot_created_role(red_role.id)
+                        except Exception:
+                            pass
                         stats["deleted_roles"] += 1
-                        detail_msg = f"Deleted duplicate role '{red_role.name}' (migrated {len(red_members)} member(s) to '{primary_role.name}')"
+                        detail_msg = f"Deleted bot-created duplicate role '{red_role.name}' (migrated {len(red_members)} member(s) to '{primary_role.name}')"
                         stats["details"].append(detail_msg)
                         await self.db.log(
                             "INFO",
@@ -753,7 +822,7 @@ class VerificationService:
                         logger.warning(f"Failed to delete duplicate role {red_role.name} in {guild.name}: {e}")
                 else:
                     stats["failed"] += 1
-                    detail_msg = f"Cannot delete duplicate role '{red_role.name}' due to hierarchy/permissions (pos {red_pos} >= bot {bot_pos})"
+                    detail_msg = f"Cannot delete bot-created duplicate role '{red_role.name}' due to hierarchy/permissions (pos {red_pos} >= bot {bot_pos})"
                     stats["details"].append(detail_msg)
                     logger.warning(f"[{guild.name}] {detail_msg}")
 

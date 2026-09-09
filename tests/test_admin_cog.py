@@ -459,18 +459,24 @@ async def test_admin_diagnose_command(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_admin_restore_src_roles_command():
+async def test_admin_backup_command_actions(tmp_path):
     from unittest.mock import AsyncMock, MagicMock
     from tarveri.cogs.admin_cog import AdminCog
+    from tarveri.database import Database
+
+    db_path = str(tmp_path / "admin_backup_test.db")
+    backup_dir = str(tmp_path / "backups")
+    db = Database(db_path)
+    await db.connect()
 
     bot = MagicMock()
-    db = MagicMock()
     service = MagicMock()
-    service.restore_src_roles = AsyncMock(return_value={"created": 8, "existing": 0, "failed": 0})
-
     cog = AdminCog(bot, db, service, MagicMock(), admin_role_name="TARVeri Admin")
 
     guild = MagicMock(spec=discord.Guild)
+    guild.id = 887799
+    guild.name = "Backup Admin Guild"
+
     admin_user = MagicMock(spec=discord.Member)
     admin_user.guild_permissions.administrator = True
 
@@ -480,10 +486,21 @@ async def test_admin_restore_src_roles_command():
     interaction.response.defer = AsyncMock()
     interaction.followup.send = AsyncMock()
 
-    await cog.restore_src_roles.callback(cog, interaction)
-
+    # 1. Action: create backup
+    await cog.backup.callback(cog, interaction, action="create")
     interaction.followup.send.assert_called_once()
-    embed = interaction.followup.send.call_args[1]["embed"]
-    assert "SRC Roles Restoration" in embed.title
-    assert "Created missing SRC roles: **8**" in embed.description
+    assert "Database backup created successfully" in interaction.followup.send.call_args[0][0]
+
+    # 2. Action: list backups
+    # Mock list_backups to return entries
+    interaction.followup.send.reset_mock()
+    await cog.backup.callback(cog, interaction, action="list")
+    interaction.followup.send.assert_called_once()
+
+    # 3. Action: restore_settings (no previous backup in default dir, handled gracefully)
+    interaction.followup.send.reset_mock()
+    await cog.backup.callback(cog, interaction, action="restore_settings")
+    interaction.followup.send.assert_called_once()
+
+    await db.close()
 

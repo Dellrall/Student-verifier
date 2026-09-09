@@ -260,6 +260,10 @@ class GuestService:
                 colour=discord.Colour(GUEST_ROLE_COLOR),
                 reason="TARVeri: Auto-created Guest(Approved) role for verified guests",
             )
+            try:
+                await self.db.record_bot_created_role(guild.id, role.id, role_name_to_create)
+            except Exception as e:
+                logger.debug(f"Could not record bot created guest role: {e}")
             await self.db.log(
                 "INFO",
                 "ROLE_CREATED",

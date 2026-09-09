@@ -477,3 +477,88 @@ async def test_database_get_all_verifications(tmp_path):
     assert faculties == {"M", "B"}
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_bot_created_roles_tracking(tmp_path):
+    db_file = str(tmp_path / "bot_roles.db")
+    db = Database(db_file)
+    await db.connect()
+
+    guild_id = 998877
+    assert await db.get_bot_created_role_ids(guild_id) == set()
+
+    # Record 2 bot created roles
+    await db.record_bot_created_role(guild_id, 1111, "FOCS")
+    await db.record_bot_created_role(guild_id, 2222, "Guest(Approved)")
+    # Record for another guild
+    await db.record_bot_created_role(888888, 3333, "FAFB")
+
+    role_ids = await db.get_bot_created_role_ids(guild_id)
+    assert role_ids == {1111, 2222}
+
+    # Delete one
+    await db.delete_bot_created_role(1111)
+    role_ids = await db.get_bot_created_role_ids(guild_id)
+    assert role_ids == {2222}
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_database_backup_listing_and_restoration(tmp_path):
+    orig_db_file = str(tmp_path / "active.db")
+    backup_dir = str(tmp_path / "backups_test")
+    db = Database(orig_db_file)
+    await db.connect()
+
+    guild_1 = 1001
+    await db.set_guild_welcome_channel(guild_1, 5001)
+    await db.set_guild_help_channel(guild_1, 5002)
+    await db.set_guild_guest_role(guild_1, "Verified Guest")
+    await db.set_guild_review_channel(guild_1, 5003)
+    await db.set_guild_admin_role(guild_1, "TARVeri Admin")
+    await db.record_verification(9001, "hash_9001", "M")
+
+    # Create backup snapshot
+    backup_path = await db.create_backup(backup_dir=backup_dir)
+    assert os.path.isfile(backup_path)
+
+    # Test list_backups
+    backups = db.list_backups(backup_dir=backup_dir)
+    assert len(backups) == 1
+    assert backups[0]["path"] == backup_path
+    assert backups[0]["size_bytes"] > 0
+
+    # Simulate settings loss / corruption in active DB
+    await db.clear_stale_channel_setting(guild_1, "welcome")
+    await db.clear_stale_channel_setting(guild_1, "help")
+    await db.set_guild_guest_role(guild_1, "Guest")
+    corrupted = await db.get_guild_settings(guild_1)
+    assert corrupted[0] is None  # welcome cleared
+    assert corrupted[1] is None  # help cleared
+    assert corrupted[2] == "Guest"
+
+    # Restore settings from latest backup
+    res = await db.restore_latest_guild_settings(guild_id=guild_1, backup_dir=backup_dir)
+    assert res is not None
+    assert res["restored_guilds"] == 1
+
+    restored = await db.get_guild_settings(guild_1)
+    assert restored == (5001, 5002, "Verified Guest", 5003, "TARVeri Admin")
+
+    # Full database restore
+    # Add new dummy data to active
+    await db.record_verification(9002, "hash_9002", "B")
+    assert await db.total_verified() == 2
+
+    # Restore full DB from snapshot
+    await db.restore_full_database(backup_path)
+    assert db.is_connected
+    assert await db.total_verified() == 1  # reverted to 1 verification in snapshot
+    rec = await db.get_verification_by_user(9001)
+    assert rec is not None
+    assert rec[0] == "hash_9001"
+
+    await db.close()
+

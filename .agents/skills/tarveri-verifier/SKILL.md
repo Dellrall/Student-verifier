@@ -95,7 +95,7 @@ flowchart TD
 - `VerificationService.reconcile_duplicate_roles(guild)` automatically scans guilds for duplicate faculty or guest roles (e.g. `FOCS` vs `focs` or newly spawned bottom duplicates).
 - Identifies the primary role (highest position in role hierarchy and member count).
 - Migrates all members on redundant duplicate role(s) to the primary role (`add_roles` + `remove_roles`).
-- Safely deletes redundant duplicate role(s) from Discord and records an audit event in the database.
+- **Strict Bot-Created Protection**: ONLY deletes redundant duplicate role(s) that were created by the bot (tracked via SQLite `bot_created_roles` and Discord audit logs). Admin-created roles are strictly preserved.
 - Automatically invoked during bot startup self-healing and via the `/diagnose` slash command.
 
 ### 7. Role Hierarchy & Permission Diagnostics (`/diagnose`)
@@ -103,10 +103,10 @@ flowchart TD
 - Detects duplicate roles and logs alerts if the bot lacks `Manage Roles` or if a managed role is higher than the bot's top role.
 - Administrators can trigger this anytime via `/diagnose`.
 
-### 8. SRC & Council Role Protection & Auto-Restoration (`/restore_src_roles`)
+### 8. SRC & Council Role Protection & Auto-Restoration
 - Protects organizational, council, and functional roles (`ROLE_QUALIFIER_PATTERN`: `SRC`, `Council`, `Exco`, `Committee`, `Staff`, `Rep`, etc.) from being matched as generic faculty roles or cleaned up during deduplication.
 - `VerificationService.restore_src_roles(guild)` checks for all 8 faculty SRC roles (`FAFB SRC`, `CPUS SRC`, `FOCS SRC`, `FCCI SRC`, `FOAS SRC`, `FOBE SRC`, `FSSH SRC`, `FOET SRC`).
-- Recreates missing SRC roles using their corresponding official faculty palette colors and mentionable flag on bot startup, during `/diagnose`, or via `/restore_src_roles`.
+- Recreates missing SRC roles using their corresponding official faculty palette colors and mentionable flag on bot startup and during `/diagnose`.
 
 ---
 
@@ -134,7 +134,7 @@ flowchart TD
 
 ### Admin Commands
 - `/send_gateway_panel [channel]` — Post 3-button verification gateway panel.
-- `/diagnose` — Run self-healing diagnostics, check role hierarchy, and restore missing member roles.
+- `/diagnose` — Run self-healing diagnostics, check role hierarchy, restore SRC roles, and reconcile missing member roles.
 - `/setadminrole [role]` — Set server's reviewer/admin role.
 - `/setguestrole [role_name]` — Set custom guest role name (default: `Guest`).
 - `/setreviewchannel [channel]` — Set parent channel for guest review threads.
@@ -143,9 +143,8 @@ flowchart TD
 - `/guest_tickets [status] [limit]` — Query guest tickets with links to threads.
 - `/stats` — View verification numbers and faculty breakdown.
 - `/unverify @user` — Unlink student ID and strip faculty roles.
-- `/restore_src_roles` — Automatically restore all 8 missing faculty SRC roles with proper colors.
 - `/audit [limit] [event_type]` — Inspect database audit logs.
-- `/backup` — Create immediate database snapshot (10-file auto-rotation).
+- `/backup [action] [backup_file]` — Create backups, list snapshots, or restore previous latest server settings / full database.
 - `/resync` — Re-synchronize roles across mutual servers.
 - `/check_updates [stream]` — Check git upstream for new commits.
 

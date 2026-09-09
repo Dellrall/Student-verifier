@@ -242,41 +242,6 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(embed=embed, ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @app_commands.command(
-        name="restore_src_roles",
-        description="Restores all 8 faculty SRC (Student Representative Council) roles if missing.",
-    )
-    @app_commands.default_permissions(administrator=True)
-    async def restore_src_roles(self, interaction: discord.Interaction) -> None:
-        """Restores missing faculty SRC roles with proper server colors."""
-        if not self._check_admin(interaction):
-            await interaction.response.send_message(
-                "❌ You do not have permission to use this command.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        if not interaction.guild:
-            await interaction.response.send_message("❌ This command must be used within a server.", ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-        stats = await self.service.restore_src_roles(interaction.guild)
-
-        embed = discord.Embed(
-            title="🛡️ TARVeri — SRC Roles Restoration",
-            color=discord.Color.green(),
-            description=(
-                f"✅ **Restoration Complete!**\n\n"
-                f"• Created missing SRC roles: **{stats['created']}**\n"
-                f"• Already existing SRC roles: **{stats['existing']}**\n"
-                f"• Failed / permission errors: **{stats['failed']}**\n\n"
-                f"*(SRC roles: `FAFB SRC`, `CPUS SRC`, `FOCS SRC`, `FCCI SRC`, `FOAS SRC`, `FOBE SRC`, `FSSH SRC`, `FOET SRC`)*"
-            ),
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        schedule_ttl_delete(interaction, delay=60.0)
-
     @app_commands.command(name="unverify", description="Unlink a member's student ID and revoke faculty roles.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(user="The Discord user to unverify", reason="Optional reason for unlinking")
@@ -432,10 +397,30 @@ class AdminCog(commands.Cog, name="Admin"):
         )
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @app_commands.command(name="backup", description="Create an immediate point-in-time database backup.")
+    @app_commands.command(
+        name="backup",
+        description="Create, list, or restore database snapshots and server settings.",
+    )
     @app_commands.default_permissions(administrator=True)
-    async def backup(self, interaction: discord.Interaction) -> None:
-        """Creates a consistent SQLite backup snapshot."""
+    @app_commands.describe(
+        action="Backup operation to perform (default: Create Snapshot)",
+        backup_file="Optional specific backup filename (used for restore operations)",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="Create Backup Snapshot", value="create"),
+            app_commands.Choice(name="Restore Settings from Latest Backup", value="restore_settings"),
+            app_commands.Choice(name="List Available Backups", value="list"),
+            app_commands.Choice(name="Restore Full Database", value="restore_full"),
+        ]
+    )
+    async def backup(
+        self,
+        interaction: discord.Interaction,
+        action: str = "create",
+        backup_file: str | None = None,
+    ) -> None:
+        """Manages database backups and restores server settings."""
         if not self._check_admin(interaction):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
@@ -444,20 +429,143 @@ class AdminCog(commands.Cog, name="Admin"):
             return
 
         await interaction.response.defer(ephemeral=True)
-        try:
-            backup_path = await self.db.create_backup()
-            await self.db.log(
-                "INFO",
-                "ADMIN_BACKUP",
-                f"Admin {interaction.user} (ID: {interaction.user.id}) created database snapshot at '{backup_path}'",
-                guild=interaction.guild,
-                user_id=interaction.user.id,
+        import os
+        action_val = action.value if hasattr(action, "value") else str(action)
+
+        if action_val == "list":
+            backups = self.db.list_backups()
+            if not backups:
+                await interaction.followup.send("ℹ️ No database backup files found in `backups/` directory.", ephemeral=True)
+                schedule_ttl_delete(interaction, delay=60.0)
+                return
+
+            embed = discord.Embed(
+                title=f"📦 TARVeri Database Backups ({len(backups)})",
+                color=discord.Color.blue(),
+                description="Available point-in-time database snapshots in `backups/`:",
             )
-            await interaction.followup.send(
-                f"✅ Database backup created successfully at `{backup_path}`.", ephemeral=True
-            )
-        except Exception as e:
-            await interaction.followup.send(f"❌ Backup failed: {e}", ephemeral=True)
+            for b in backups[:10]:
+                size_kb = b["size_bytes"] / 1024
+                embed.add_field(
+                    name=f"📄 `{b['filename']}`",
+                    value=f"• **Created:** `{b['timestamp']}`\n• **Size:** `{size_kb:.1f} KB`",
+                    inline=False,
+                )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        elif action_val == "restore_settings":
+            target_file = None
+            if backup_file:
+                candidate = backup_file if os.path.isabs(backup_file) else os.path.join("backups", backup_file)
+                if os.path.isfile(candidate):
+                    target_file = candidate
+                else:
+                    await interaction.followup.send(f"❌ Backup file `{backup_file}` not found.", ephemeral=True)
+                    schedule_ttl_delete(interaction, delay=60.0)
+                    return
+
+            try:
+                g_id = interaction.guild.id if interaction.guild else None
+                if target_file:
+                    result = await self.db.restore_guild_settings_from_backup(target_file, guild_id=g_id)
+                    used_name = os.path.basename(target_file)
+                else:
+                    result = await self.db.restore_latest_guild_settings(guild_id=g_id)
+                    used_name = result.get("backup_file", "Latest") if result else "None"
+
+                if not result or result.get("restored_guilds", 0) == 0:
+                    await interaction.followup.send("⚠️ No previous server settings found in backup.", ephemeral=True)
+                    schedule_ttl_delete(interaction, delay=60.0)
+                    return
+
+                # Invalidate VerificationCog channel caches
+                verification_cog = self.bot.get_cog("Verification")
+                if verification_cog and hasattr(verification_cog, "invalidate_guild_cache") and interaction.guild:
+                    verification_cog.invalidate_guild_cache(interaction.guild.id)
+
+                await self.db.log(
+                    "INFO",
+                    "ADMIN_SETTINGS_RESTORED",
+                    f"Admin {interaction.user} (ID: {interaction.user.id}) restored guild settings from '{used_name}'",
+                    guild=interaction.guild,
+                    user_id=interaction.user.id,
+                )
+
+                embed = discord.Embed(
+                    title="🔄 Server Settings Restored",
+                    color=discord.Color.green(),
+                    description=f"✅ Restored server settings for **{result['restored_guilds']}** guild(s) from snapshot `{used_name}`.",
+                )
+                if interaction.guild:
+                    settings = await self.db.get_guild_settings(interaction.guild.id)
+                    if settings:
+                        embed.add_field(
+                            name="Restored Server Configuration",
+                            value=(
+                                f"• **Welcome Channel:** {f'<#{settings[0]}>' if settings[0] else '*Auto-detect*'}\n"
+                                f"• **Help Channel:** {f'<#{settings[1]}>' if settings[1] else '*Auto-detect*'}\n"
+                                f"• **Guest Role:** `{settings[2] or 'Guest'}`\n"
+                                f"• **Review Channel:** {f'<#{settings[3]}>' if settings[3] else '*Auto-detect*'}\n"
+                                f"• **Admin Role:** `{settings[4] or 'Auto-detect'}`"
+                            ),
+                            inline=False,
+                        )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+
+            except Exception as e:
+                await interaction.followup.send(f"❌ Failed to restore settings: {e}", ephemeral=True)
+
+        elif action_val == "restore_full":
+            target_file = None
+            if backup_file:
+                candidate = backup_file if os.path.isabs(backup_file) else os.path.join("backups", backup_file)
+                if os.path.isfile(candidate):
+                    target_file = candidate
+                else:
+                    await interaction.followup.send(f"❌ Backup file `{backup_file}` not found.", ephemeral=True)
+                    schedule_ttl_delete(interaction, delay=60.0)
+                    return
+            else:
+                backups = self.db.list_backups()
+                if not backups:
+                    await interaction.followup.send("❌ No backup snapshots available to restore.", ephemeral=True)
+                    schedule_ttl_delete(interaction, delay=60.0)
+                    return
+                target_file = backups[0]["path"]
+
+            try:
+                await self.db.restore_full_database(target_file)
+                used_name = os.path.basename(target_file)
+                await self.db.log(
+                    "WARNING",
+                    "ADMIN_FULL_DB_RESTORED",
+                    f"Admin {interaction.user} (ID: {interaction.user.id}) restored entire active database from snapshot '{used_name}'",
+                    guild=interaction.guild,
+                    user_id=interaction.user.id,
+                )
+                await interaction.followup.send(
+                    f"✅ **Database Full Restore Complete!** Restored active database from `{used_name}`.",
+                    ephemeral=True,
+                )
+            except Exception as e:
+                await interaction.followup.send(f"❌ Failed to restore full database: {e}", ephemeral=True)
+
+        else:  # "create"
+            try:
+                backup_path = await self.db.create_backup()
+                await self.db.log(
+                    "INFO",
+                    "ADMIN_BACKUP",
+                    f"Admin {interaction.user} (ID: {interaction.user.id}) created database snapshot at '{backup_path}'",
+                    guild=interaction.guild,
+                    user_id=interaction.user.id,
+                )
+                await interaction.followup.send(
+                    f"✅ Database backup created successfully at `{backup_path}`.", ephemeral=True
+                )
+            except Exception as e:
+                await interaction.followup.send(f"❌ Backup failed: {e}", ephemeral=True)
+
         schedule_ttl_delete(interaction, delay=60.0)
 
     @app_commands.command(
