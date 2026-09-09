@@ -168,49 +168,74 @@ class GuestService:
 
         return None
 
+    async def find_guest_role(self, guild: discord.Guild, configured_name: str | None = None) -> discord.Role | None:
+        """
+        Thoroughly searches for an existing guest role in a guild across in-memory cache and live API.
+        """
+        def _match_guest_in_list(roles: Sequence[discord.Role]) -> discord.Role | None:
+            if configured_name:
+                for r in roles:
+                    if getattr(r, "name", "") == configured_name:
+                        return r
+                for r in roles:
+                    if getattr(r, "name", "").strip().lower() == configured_name.strip().lower():
+                        return r
+
+            known_aliases = [
+                "Guest(Approved)",
+                "Guest (Approved)",
+                "Guest",
+                "Approved Guest",
+                "Guest(approved)",
+                "Guest (approved)",
+            ]
+            for alias in known_aliases:
+                for r in roles:
+                    if getattr(r, "name", "") == alias:
+                        return r
+
+            for r in roles:
+                normalized_name = getattr(r, "name", "").lower().replace(" ", "").replace("_", "")
+                if normalized_name in ("guest(approved)", "guestapproved", "guest"):
+                    return r
+            return None
+
+        # 1. Check in-memory guild.roles cache
+        guild_roles = getattr(guild, "roles", [])
+        if isinstance(guild_roles, (list, tuple)):
+            found = _match_guest_in_list(guild_roles)
+            if found is not None:
+                return found
+
+        # 2. Check live API
+        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
+            try:
+                live_roles = await guild.fetch_roles()
+                if isinstance(live_roles, (list, tuple)):
+                    found = _match_guest_in_list(live_roles)
+                    if found is not None:
+                        return found
+            except (discord.HTTPException, discord.Forbidden):
+                pass
+
+        return None
+
     async def get_or_create_guest_role(self, guild: discord.Guild) -> discord.Role | None:
         """
         Retrieves the guest role for the guild.
         First checks server configuration in DB, then searches for existing roles matching
-        'Guest(Approved)', 'Guest (Approved)', 'Guest', etc.
+        'Guest(Approved)', 'Guest (Approved)', 'Guest', etc. across cache and live API.
         Only creates a new 'Guest(Approved)' role if no matching guest role exists.
         """
         settings = await self.db.get_guild_settings(guild.id)
         configured_name = settings[2].strip() if settings and settings[2] else None
-        guild_roles = getattr(guild, "roles", [])
-        if not isinstance(guild_roles, (list, tuple)):
-            guild_roles = []
 
-        # 1. If explicitly configured, search by configured name first
-        if configured_name:
-            role = discord.utils.get(guild_roles, name=configured_name)
-            if role:
-                return role
-            for r in guild_roles:
-                if getattr(r, "name", "").lower() == configured_name.lower():
-                    return r
+        # 1. Exhaustive search across cache and live API
+        existing_role = await self.find_guest_role(guild, configured_name)
+        if existing_role is not None:
+            return existing_role
 
-        # 2. Search for existing roles in priority order (Guest(Approved), Guest (Approved), Guest, etc.)
-        known_aliases = [
-            "Guest(Approved)",
-            "Guest (Approved)",
-            "Guest",
-            "Approved Guest",
-            "Guest(approved)",
-            "Guest (approved)",
-        ]
-        for alias in known_aliases:
-            role = discord.utils.get(guild_roles, name=alias)
-            if role:
-                return role
-
-        # Fuzzy check across existing server roles
-        for r in guild_roles:
-            normalized_name = getattr(r, "name", "").lower().replace(" ", "").replace("_", "")
-            if normalized_name in ("guest(approved)", "guestapproved", "guest"):
-                return r
-
-        # 3. If no existing guest role was found, auto-create "Guest(Approved)"
+        # 2. If no existing guest role was found anywhere, auto-create "Guest(Approved)"
         if not getattr(guild.me.guild_permissions, "manage_roles", False):
             return None
 

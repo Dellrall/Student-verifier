@@ -411,4 +411,122 @@ def test_diagnose_guild_permissions_hierarchy_and_permissions(tmp_path):
     warnings = service.diagnose_guild_permissions(guild)
     assert warnings == []
 
+    # 4. Duplicate role detection: multiple roles matching same faculty
+    extra_focs = MagicMock(spec=discord.Role)
+    extra_focs.name = "focs"
+    extra_focs.position = 5
+    guild.roles = [focs_role, extra_focs]
+    warnings = service.diagnose_guild_permissions(guild)
+    assert any("Duplicate faculty roles detected" in w and "FOCS" in w for w in warnings)
+
+
+@pytest.mark.asyncio
+async def test_find_faculty_role_multi_tier_matching():
+    bot = MagicMock()
+    db = MagicMock()
+    rate_limiter = RateLimiter()
+    service = VerificationService(bot, db, "secret", rate_limiter)
+
+    guild = MagicMock(spec=discord.Guild)
+
+    # 1. Exact match
+    r1 = MagicMock(spec=discord.Role, name="FOCS")
+    r1.name = "FOCS"
+    r1.position = 10
+    guild.roles = [r1]
+    assert await service.find_faculty_role(guild, "FOCS") == r1
+
+    # 2. Case-insensitive & trimmed match
+    r2 = MagicMock(spec=discord.Role, name="focs ")
+    r2.name = "focs "
+    r2.position = 10
+    guild.roles = [r2]
+    assert await service.find_faculty_role(guild, "FOCS") == r2
+
+    # 3. Normalized alphanumeric / bracket / emoji match
+    r3 = MagicMock(spec=discord.Role, name="[FOCS]")
+    r3.name = "[FOCS]"
+    r3.position = 10
+    guild.roles = [r3]
+    assert await service.find_faculty_role(guild, "FOCS") == r3
+
+    # 4. Prefix & word-boundary match
+    r4 = MagicMock(spec=discord.Role, name="FOCS - Faculty of Computing")
+    r4.name = "FOCS - Faculty of Computing"
+    r4.position = 10
+    guild.roles = [r4]
+    assert await service.find_faculty_role(guild, "FOCS") == r4
+
+
+@pytest.mark.asyncio
+async def test_find_faculty_role_live_fetch_roles_fallback():
+    bot = MagicMock()
+    db = MagicMock()
+    rate_limiter = RateLimiter()
+    service = VerificationService(bot, db, "secret", rate_limiter)
+
+    guild = MagicMock(spec=discord.Guild)
+    # Cache is empty
+    guild.roles = []
+
+    live_role = MagicMock(spec=discord.Role, name="FOCS")
+    live_role.name = "FOCS"
+    live_role.position = 15
+    guild.fetch_roles = AsyncMock(return_value=[live_role])
+
+    # Should query fetch_roles and return the live role
+    found = await service.find_faculty_role(guild, "FOCS")
+    assert found == live_role
+    guild.fetch_roles.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_perform_verification_never_duplicates_existing_fuzzy_or_cached_role(tmp_path):
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 998811
+    guild.name = "Banana Hub"
+
+    # Server already has an existing role (e.g. named "FOCS" or "focs")
+    existing_role = MagicMock(spec=discord.Role)
+    existing_role.name = "FOCS"
+    existing_role.position = 5
+    existing_role.__ge__.return_value = False
+    guild.roles = [existing_role]
+
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    bot_top_role = MagicMock()
+    bot_top_role.position = 50
+    guild.me.top_role = bot_top_role
+    guild.create_role = AsyncMock()
+
+    member = MagicMock(spec=discord.Member)
+    member.roles = []
+    member.add_roles = AsyncMock()
+    guild.get_member.return_value = member
+    bot.guilds = [guild]
+    bot.get_guild.return_value = guild
+
+    db = Database(str(tmp_path / "never_duplicate.db"))
+    await db.connect()
+    try:
+        rate_limiter = RateLimiter()
+        service = VerificationService(bot, db, "secret_123", rate_limiter)
+
+        user = MagicMock()
+        user.id = 12345
+        user.__str__.return_value = "Student#1234"
+
+        response = await service.perform_verification(user, "23WMD09867")
+        assert "You've been given the following role(s)" in response
+
+        # create_role must NEVER be called because the role already exists
+        guild.create_role.assert_not_called()
+        # existing role was assigned to member
+        member.add_roles.assert_called_once_with(existing_role, reason="TARVeri: Student verification role assignment")
+    finally:
+        await db.close()
+
+
 

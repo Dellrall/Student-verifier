@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -84,6 +85,132 @@ class VerificationService:
 
         return mutual
 
+    @staticmethod
+    def _match_faculty_role_in_list(roles: Sequence[discord.Role], target_name: str) -> discord.Role | None:
+        """
+        Multi-tier matcher to find an existing faculty role in a list/sequence of roles:
+        Tier 1: Exact match (name == target_name)
+        Tier 2: Case-insensitive & whitespace-trimmed match (name.strip().upper() == target_name.upper())
+        Tier 3: Normalized alphanumeric match (e.g. '[FOCS]' or '🎓 FOCS')
+        Tier 4: Prefix / word-boundary match (e.g. 'FOCS - Faculty of Computing' or 'Faculty of Computing (FOCS)')
+        Prioritizes the role with the highest position if multiple matches exist.
+        """
+        if not roles:
+            return None
+
+        target_upper = target_name.strip().upper()
+        target_alnum = re.sub(r"[^A-Za-z0-9]", "", target_upper)
+
+        # Tier 1: Exact match
+        exact_matches = [r for r in roles if getattr(r, "name", None) == target_name]
+        if exact_matches:
+            return max(exact_matches, key=lambda r: getattr(r, "position", 0))
+
+        # Tier 2: Case-insensitive & trimmed match
+        ci_matches = [
+            r for r in roles if getattr(r, "name", "").strip().upper() == target_upper
+        ]
+        if ci_matches:
+            return max(ci_matches, key=lambda r: getattr(r, "position", 0))
+
+        # Tier 3: Normalized alphanumeric match
+        alnum_matches = [
+            r
+            for r in roles
+            if re.sub(r"[^A-Za-z0-9]", "", getattr(r, "name", "")).upper() == target_alnum
+        ]
+        if alnum_matches:
+            return max(alnum_matches, key=lambda r: getattr(r, "position", 0))
+
+        # Tier 4: Prefix or word boundary or bracket match
+        fuzzy_matches = []
+        for r in roles:
+            r_name = getattr(r, "name", "").strip().upper()
+            if not r_name:
+                continue
+            if (
+                r_name.startswith(f"{target_upper} ")
+                or r_name.startswith(f"{target_upper}-")
+                or r_name.startswith(f"{target_upper}:")
+                or f"({target_upper})" in r_name
+                or f"[{target_upper}]" in r_name
+                or bool(re.search(rf"\b{re.escape(target_upper)}\b", r_name))
+            ):
+                fuzzy_matches.append(r)
+
+        if fuzzy_matches:
+            return max(fuzzy_matches, key=lambda r: getattr(r, "position", 0))
+
+        return None
+
+    async def find_faculty_role(self, guild: discord.Guild, role_name: str) -> discord.Role | None:
+        """
+        Finds an existing faculty role in a guild by searching in-memory cache first,
+        and querying Discord REST API (fetch_roles) as a fallback to guarantee no duplicates.
+        """
+        # 1. Check in-memory guild.roles cache
+        guild_roles = getattr(guild, "roles", [])
+        if isinstance(guild_roles, (list, tuple)):
+            found = self._match_faculty_role_in_list(guild_roles, role_name)
+            if found is not None:
+                return found
+
+        # 2. If not found in cache, fetch live roles from Discord API
+        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
+            try:
+                live_roles = await guild.fetch_roles()
+                if isinstance(live_roles, (list, tuple)):
+                    found = self._match_faculty_role_in_list(live_roles, role_name)
+                    if found is not None:
+                        return found
+            except (discord.HTTPException, discord.Forbidden):
+                pass
+
+        return None
+
+    async def get_or_create_faculty_role(self, guild: discord.Guild, role_name: str) -> discord.Role | None:
+        """
+        Finds an existing faculty role. ONLY creates a new role if the role absolutely does not exist.
+        """
+        # 1. Exhaustive search across cache and live API
+        existing_role = await self.find_faculty_role(guild, role_name)
+        if existing_role is not None:
+            return existing_role
+
+        # 2. Check if bot has Manage Roles permission before attempting creation
+        can_manage = (
+            getattr(guild.me.guild_permissions, "manage_roles", False)
+            if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
+            else False
+        )
+        if not can_manage:
+            return None
+
+        # 3. Create the role only when absolutely not found anywhere
+        try:
+            color_val = FACULTY_COLORS.get(role_name, 0x3498DB)
+            role = await guild.create_role(
+                name=role_name,
+                colour=discord.Colour(color_val),
+                mentionable=True,
+                reason="TARVeri: auto-created missing faculty role for verification",
+            )
+            await self.db.log(
+                "INFO",
+                "ROLE_CREATED",
+                f"Created role '{role_name}' in '{guild.name}' (Guild ID: {guild.id})",
+                guild=guild,
+            )
+            return role
+        except discord.HTTPException as e:
+            await self.db.log(
+                "ERROR",
+                "ROLE_CREATE_FAILED",
+                f"Failed to create role '{role_name}' in '{guild.name}': {e}",
+                guild=guild,
+            )
+            return None
+
     async def _assign_role_in_guild(
         self, guild: discord.Guild, user_id: int, role_name: str, result: RoleSyncResult
     ) -> None:
@@ -92,52 +219,45 @@ class VerificationService:
         if member is None:
             return
 
-        existing_roles = [r for r in member.roles if r.name in FACULTY_ROLE_NAMES]
-        if existing_roles:
-            result.already_had_role_in.append((guild.id, guild.name, existing_roles[0].name))
+        # Check if member already has any faculty role
+        member_roles = getattr(member, "roles", [])
+        if isinstance(member_roles, (list, tuple)):
+            for r in member_roles:
+                for fac in FACULTY_ROLE_NAMES:
+                    if self._match_faculty_role_in_list([r], fac) is not None:
+                        result.already_had_role_in.append((guild.id, guild.name, getattr(r, "name", fac)))
+                        return
+
+        # Exhaustive search or create
+        role = await self.get_or_create_faculty_role(guild, role_name)
+        if not role:
+            result.missing_role_in.append(guild.name)
             return
 
-        guild_roles = getattr(guild, "roles", [])
-        if not isinstance(guild_roles, (list, tuple)):
-            guild_roles = []
+        # Check hierarchy and permissions
+        me = getattr(guild, "me", None)
+        can_manage = (
+            getattr(me.guild_permissions, "manage_roles", False)
+            if me and hasattr(me, "guild_permissions")
+            else False
+        )
+        bot_top_role = getattr(me, "top_role", None) if me else None
+        bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
+        role_pos = getattr(role, "position", 0)
 
-        role = discord.utils.get(guild_roles, name=role_name)
-        if not role:
-            if not getattr(guild.me.guild_permissions, "manage_roles", False):
-                result.missing_role_in.append(guild.name)
-                return
-            try:
-                color_val = FACULTY_COLORS.get(role_name, 0x3498DB)
-                role = await guild.create_role(
-                    name=role_name,
-                    colour=discord.Colour(color_val),
-                    mentionable=True,
-                    reason="TARVeri: auto-created missing faculty role for verification",
-                )
-                await self.db.log("INFO", "ROLE_CREATED", f"Created role '{role_name}'", guild=guild)
-            except discord.HTTPException as e:
-                await self.db.log(
-                    "ERROR",
-                    "ROLE_CREATE_FAILED",
-                    f"Failed to create role '{role_name}' in '{guild.name}': {e}",
-                    guild=guild,
-                )
-                result.missing_role_in.append(guild.name)
-                return
-
-        if role >= guild.me.top_role or not guild.me.guild_permissions.manage_roles:
+        if not can_manage or (isinstance(bot_pos, int) and isinstance(role_pos, int) and role_pos >= bot_pos):
             result.failed_in.append(guild.name)
             return
 
         try:
             await member.add_roles(role, reason="TARVeri: Student verification role assignment")
-            result.verified_in.append((guild.id, guild.name, role_name))
+            result.verified_in.append((guild.id, guild.name, getattr(role, "name", role_name)))
         except discord.HTTPException as e:
             result.failed_in.append(guild.name)
             await self.db.log(
                 "ERROR",
                 "ROLE_ASSIGN_FAILED",
-                f"Failed to assign '{role_name}' to user {user_id} in '{guild.name}': {e}",
+                f"Failed to assign '{role.name}' to user {user_id} in '{guild.name}': {e}",
                 guild=guild,
                 user_id=user_id,
             )
@@ -343,39 +463,24 @@ class VerificationService:
 
             # Check if member already has any faculty role
             member_roles = getattr(member, "roles", [])
-            has_faculty_role = any(getattr(r, "name", "") in FACULTY_ROLE_NAMES for r in member_roles)
+            has_faculty_role = False
+            if isinstance(member_roles, (list, tuple)):
+                for r in member_roles:
+                    for fac in FACULTY_ROLE_NAMES:
+                        if self._match_faculty_role_in_list([r], fac) is not None:
+                            has_faculty_role = True
+                            break
+                    if has_faculty_role:
+                        break
+
             if has_faculty_role:
                 continue
 
-            # Member is verified in DB but missing faculty role in this guild -> restore role
-            target_role = discord.utils.get(getattr(guild, "roles", []), name=target_role_name)
+            # Member is verified in DB but missing faculty role in this guild -> find or create
+            target_role = await self.get_or_create_faculty_role(guild, target_role_name)
             if not target_role:
-                can_manage = (
-                    getattr(guild.me.guild_permissions, "manage_roles", False)
-                    if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
-                    else False
-                )
-                if can_manage:
-                    try:
-                        color_val = FACULTY_COLORS.get(target_role_name, 0x3498DB)
-                        target_role = await guild.create_role(
-                            name=target_role_name,
-                            colour=discord.Colour(color_val),
-                            mentionable=True,
-                            reason="TARVeri: auto-created missing faculty role during member reconciliation",
-                        )
-                        await self.db.log(
-                            "INFO",
-                            "ROLE_CREATED",
-                            f"Auto-created missing role '{target_role_name}' during member reconciliation",
-                            guild=guild,
-                        )
-                    except discord.HTTPException as e:
-                        summary["failed"] += 1
-                        continue
-                else:
-                    summary["failed"] += 1
-                    continue
+                summary["failed"] += 1
+                continue
 
             # Check role hierarchy and permissions
             me = getattr(guild, "me", None)
@@ -401,14 +506,14 @@ class VerificationService:
                 await self.db.log(
                     "INFO",
                     "ROLE_RESTORED",
-                    f"Self-healing: Restored missing faculty role '{target_role_name}' to verified student {member} (ID: {discord_user_id})",
+                    f"Self-healing: Restored missing faculty role '{target_role.name}' to verified student {member} (ID: {discord_user_id})",
                     guild=guild,
                     user_id=discord_user_id,
                 )
             except discord.HTTPException as e:
                 summary["failed"] += 1
                 logger.warning(
-                    f"Failed to restore role '{target_role_name}' for {member} in '{guild.name}': {e}"
+                    f"Failed to restore role '{target_role.name}' for {member} in '{guild.name}': {e}"
                 )
 
         if summary["restored"] > 0:
@@ -421,7 +526,7 @@ class VerificationService:
 
     def diagnose_guild_permissions(self, guild: discord.Guild) -> list[str]:
         """
-        Diagnoses permission and hierarchy issues in a guild.
+        Diagnoses permission, hierarchy, and duplicate role issues in a guild.
         Returns a list of warning descriptions (empty if guild setup is fully healthy).
         """
         warnings: list[str] = []
@@ -435,9 +540,29 @@ class VerificationService:
         if not bot_perms or not getattr(bot_perms, "manage_roles", False):
             warnings.append("❌ Missing `Manage Roles` permission — cannot create or assign faculty/guest roles.")
 
+        guild_roles = getattr(guild, "roles", [])
+        if not isinstance(guild_roles, (list, tuple)):
+            guild_roles = []
+
+        # Check for duplicate faculty roles
+        seen_faculties: dict[str, list[discord.Role]] = {}
+        for r in guild_roles:
+            r_name = getattr(r, "name", "")
+            for fac in FACULTY_ROLE_NAMES:
+                if self._match_faculty_role_in_list([r], fac) is not None:
+                    seen_faculties.setdefault(fac, []).append(r)
+                    break
+
+        for fac, matched_roles in seen_faculties.items():
+            if len(matched_roles) > 1:
+                role_descs = ", ".join(f"`{r.name}` (pos: {getattr(r, 'position', 0)})" for r in matched_roles)
+                warnings.append(
+                    f"⚠️ Duplicate faculty roles detected for **{fac}**: {role_descs}. Please delete redundant roles in Server Settings → Roles."
+                )
+
         # Check hierarchy against existing faculty and guest roles
         bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
-        for r in getattr(guild, "roles", []):
+        for r in guild_roles:
             r_name = getattr(r, "name", "")
             if r_name in FACULTY_ROLE_NAMES or r_name in ("Guest(Approved)", "Guest (Approved)", "Guest"):
                 r_pos = getattr(r, "position", 0)
