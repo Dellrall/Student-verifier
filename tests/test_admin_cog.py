@@ -406,6 +406,9 @@ async def test_admin_diagnose_command(tmp_path):
     await db.connect()
 
     service = MagicMock()
+    service.reconcile_duplicate_roles = AsyncMock(
+        return_value={"checked_categories": 1, "migrated_members": 2, "deleted_roles": 1, "failed": 0, "details": []}
+    )
     service.diagnose_guild_permissions.return_value = ["⚠️ Role hierarchy conflict: Role FOCS is higher than bot role."]
     service.reconcile_verified_members = AsyncMock(return_value={"checked": 5, "restored": 2, "failed": 0})
 
@@ -441,7 +444,8 @@ async def test_admin_diagnose_command(tmp_path):
     interaction.followup.send.assert_called_once()
     embed = interaction.followup.send.call_args[1]["embed"]
     assert "Server Health & Diagnostics" in embed.title
-    assert len(embed.fields) >= 3
+    assert len(embed.fields) >= 4
+    assert any("Duplicate Role Cleanup" in f.name for f in embed.fields)
 
     # Verify stale channels were cleaned in DB
     settings = await db.get_guild_settings(guild.id)

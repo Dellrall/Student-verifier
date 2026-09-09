@@ -142,9 +142,13 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
+        # 1. Trigger duplicate role reconciliation (migrate members & cleanup redundant roles)
+        dedup_stats = await self.service.reconcile_duplicate_roles(guild)
+
+        # 2. Check permissions & role hierarchy diagnostics
         warnings = self.service.diagnose_guild_permissions(guild)
 
-        # Trigger member role reconciliation for this guild
+        # 3. Trigger member role reconciliation for this guild
         reconcile_stats = await self.service.reconcile_verified_members(guild)
 
         # Check channel configurations
@@ -199,6 +203,17 @@ class AdminCog(commands.Cog, name="Admin"):
             embed.add_field(
                 name="✅ Permissions & Role Hierarchy",
                 value="All required permissions and role positions are properly configured.",
+                inline=False,
+            )
+
+        if dedup_stats.get("deleted_roles", 0) > 0 or dedup_stats.get("migrated_members", 0) > 0 or dedup_stats.get("failed", 0) > 0:
+            embed.add_field(
+                name="🧹 Duplicate Role Cleanup & Migration",
+                value=(
+                    f"• Deleted **{dedup_stats.get('deleted_roles', 0)}** duplicate role(s)\n"
+                    f"• Migrated **{dedup_stats.get('migrated_members', 0)}** member(s) to primary role\n"
+                    f"• Blocked / hierarchy errors: **{dedup_stats.get('failed', 0)}**"
+                ),
                 inline=False,
             )
 

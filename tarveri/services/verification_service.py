@@ -524,6 +524,154 @@ class VerificationService:
 
         return summary
 
+    async def reconcile_duplicate_roles(self, guild: discord.Guild) -> dict[str, Any]:
+        """
+        Self-healing: scans guild for duplicate faculty and guest roles matching the same category.
+        Identifies the primary role (highest position in hierarchy / highest member count),
+        migrates all members on redundant duplicate role(s) to the primary role, and deletes
+        the redundant duplicate role(s) from Discord.
+        """
+        stats: dict[str, Any] = {
+            "checked_categories": 0,
+            "migrated_members": 0,
+            "deleted_roles": 0,
+            "failed": 0,
+            "details": [],
+        }
+        if not guild:
+            return stats
+
+        # Ensure guild member cache is populated if chunk method exists
+        if hasattr(guild, "chunk") and not getattr(guild, "chunked", True):
+            try:
+                await guild.chunk()
+            except Exception:
+                pass
+
+        me = getattr(guild, "me", None)
+        can_manage = (
+            getattr(me.guild_permissions, "manage_roles", False)
+            if me and hasattr(me, "guild_permissions")
+            else False
+        )
+        bot_top_role = getattr(me, "top_role", None) if me else None
+        bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
+
+        guild_roles = list(getattr(guild, "roles", []))
+
+        def _role_rank(role: discord.Role, target_name: str) -> tuple[int, int, int]:
+            pos = getattr(role, "position", 0) if isinstance(getattr(role, "position", 0), int) else 0
+            member_count = len(getattr(role, "members", []))
+            exact_match = 1 if getattr(role, "name", "").strip().lower() == target_name.strip().lower() else 0
+            return (exact_match, pos, member_count)
+
+        # 1. Group by faculty
+        category_roles: dict[str, list[discord.Role]] = {}
+        for r in guild_roles:
+            r_name = getattr(r, "name", "")
+            if not r_name:
+                continue
+            for fac in FACULTY_ROLE_NAMES:
+                if self._match_faculty_role_in_list([r], fac) is not None:
+                    category_roles.setdefault(fac, []).append(r)
+                    break
+
+        # 2. Group guest roles
+        settings = await self.db.get_guild_settings(guild.id)
+        configured_guest_name = settings[2].strip() if settings and len(settings) > 2 and settings[2] else None
+        guest_roles: list[discord.Role] = []
+        for r in guild_roles:
+            r_name = getattr(r, "name", "")
+            if not r_name:
+                continue
+            if configured_guest_name and r_name.strip().lower() == configured_guest_name.lower():
+                guest_roles.append(r)
+            else:
+                r_clean = r_name.lower().replace(" ", "").replace("_", "")
+                if r_clean in ("guest(approved)", "guestapproved", "guest", "approvedguest"):
+                    guest_roles.append(r)
+
+        if guest_roles:
+            category_roles["Guest"] = guest_roles
+
+        # 3. Process categories with duplicates
+        for cat_name, roles_found in category_roles.items():
+            stats["checked_categories"] += 1
+            if len(roles_found) <= 1:
+                continue
+
+            target_name = cat_name if cat_name != "Guest" else (configured_guest_name or "Guest(Approved)")
+            sorted_roles = sorted(roles_found, key=lambda r: _role_rank(r, target_name), reverse=True)
+            primary_role = sorted_roles[0]
+            redundant_roles = sorted_roles[1:]
+
+            for red_role in redundant_roles:
+                # Migrate members
+                red_members = list(getattr(red_role, "members", []))
+                for member in red_members:
+                    member_roles = getattr(member, "roles", [])
+                    if primary_role not in member_roles:
+                        try:
+                            await member.add_roles(
+                                primary_role,
+                                reason=f"TARVeri Self-Healing: Migrate from duplicate role '{red_role.name}' to primary '{primary_role.name}'",
+                            )
+                            stats["migrated_members"] += 1
+                        except (discord.HTTPException, discord.Forbidden) as e:
+                            logger.warning(f"Failed to migrate member {member} to {primary_role.name}: {e}")
+                            stats["failed"] += 1
+
+                    if red_role in getattr(member, "roles", []):
+                        try:
+                            await member.remove_roles(
+                                red_role,
+                                reason=f"TARVeri Self-Healing: Remove duplicate role '{red_role.name}'",
+                            )
+                        except (discord.HTTPException, discord.Forbidden):
+                            pass
+
+                # Delete redundant role
+                red_pos = getattr(red_role, "position", 0)
+                is_manageable = (
+                    can_manage
+                    and isinstance(bot_pos, int)
+                    and isinstance(red_pos, int)
+                    and red_pos < bot_pos
+                    and not getattr(red_role, "managed", False)
+                    and not (hasattr(red_role, "is_default") and red_role.is_default())
+                )
+
+                if is_manageable:
+                    try:
+                        await red_role.delete(
+                            reason=f"TARVeri Self-Healing: Removed duplicate role '{red_role.name}' (migrated to '{primary_role.name}')"
+                        )
+                        stats["deleted_roles"] += 1
+                        detail_msg = f"Deleted duplicate role '{red_role.name}' (migrated {len(red_members)} member(s) to '{primary_role.name}')"
+                        stats["details"].append(detail_msg)
+                        await self.db.log(
+                            "INFO",
+                            "DUPLICATE_ROLE_DELETED",
+                            f"Self-Healing: [{guild.name}] {detail_msg}",
+                            guild=guild,
+                        )
+                    except (discord.HTTPException, discord.Forbidden) as e:
+                        stats["failed"] += 1
+                        logger.warning(f"Failed to delete duplicate role {red_role.name} in {guild.name}: {e}")
+                else:
+                    stats["failed"] += 1
+                    detail_msg = f"Cannot delete duplicate role '{red_role.name}' due to hierarchy/permissions (pos {red_pos} >= bot {bot_pos})"
+                    stats["details"].append(detail_msg)
+                    logger.warning(f"[{guild.name}] {detail_msg}")
+
+        if stats["deleted_roles"] > 0 or stats["migrated_members"] > 0:
+            logger.info(
+                f"[{guild.name}] Self-healing duplicate role reconciliation complete: "
+                f"Deleted {stats['deleted_roles']} role(s), Migrated {stats['migrated_members']} member(s), Failed {stats['failed']}"
+            )
+
+        return stats
+
     def diagnose_guild_permissions(self, guild: discord.Guild) -> list[str]:
         """
         Diagnoses permission, hierarchy, and duplicate role issues in a guild.
@@ -559,6 +707,19 @@ class VerificationService:
                 warnings.append(
                     f"⚠️ Duplicate faculty roles detected for **{fac}**: {role_descs}. Please delete redundant roles in Server Settings → Roles."
                 )
+
+        # Check for duplicate guest roles
+        matched_guest_roles: list[discord.Role] = []
+        for r in guild_roles:
+            r_clean = getattr(r, "name", "").lower().replace(" ", "").replace("_", "")
+            if r_clean in ("guest(approved)", "guestapproved", "guest", "approvedguest"):
+                matched_guest_roles.append(r)
+
+        if len(matched_guest_roles) > 1:
+            role_descs = ", ".join(f"`{r.name}` (pos: {getattr(r, 'position', 0)})" for r in matched_guest_roles)
+            warnings.append(
+                f"⚠️ Duplicate guest roles detected: {role_descs}. Please delete redundant roles in Server Settings → Roles."
+            )
 
         # Check hierarchy against existing faculty and guest roles
         bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0

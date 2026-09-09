@@ -143,7 +143,11 @@ class TARVeriBot(commands.Bot):
             async def _startup_self_healing() -> None:
                 try:
                     for guild in self.guilds:
-                        # 1. Run permission and hierarchy diagnostics
+                        # 1. Deduplicate faculty and guest roles (migrate members & cleanup redundant roles)
+                        if self.service:
+                            await self.service.reconcile_duplicate_roles(guild)
+
+                        # 2. Run permission and hierarchy diagnostics
                         if self.service:
                             warnings = self.service.diagnose_guild_permissions(guild)
                             for w in warnings:
@@ -152,11 +156,11 @@ class TARVeriBot(commands.Bot):
                                     "WARNING", "HIERARCHY_DIAGNOSTIC", f"[{guild.name}] {w}", guild=guild
                                 )
 
-                        # 2. Reconcile verified member roles
+                        # 3. Reconcile verified member roles
                         if self.service:
                             await self.service.reconcile_verified_members(guild)
 
-                    # 3. Reconcile guest tickets and downtime events
+                    # 4. Reconcile guest tickets and downtime events
                     if self.guest_service:
                         await self.guest_service.reconcile_downtime_state()
                 except Exception as e:

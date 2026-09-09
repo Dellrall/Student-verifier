@@ -529,4 +529,174 @@ async def test_perform_verification_never_duplicates_existing_fuzzy_or_cached_ro
         await db.close()
 
 
+@pytest.mark.asyncio
+async def test_reconcile_duplicate_roles_migrates_members_and_deletes_redundant_roles(tmp_path):
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 998822
+    guild.name = "Dedup Guild"
+
+    # 1. Primary FOCS role (pos: 15, name: "FOCS")
+    primary_focs = MagicMock(spec=discord.Role)
+    primary_focs.id = 1001
+    primary_focs.name = "FOCS"
+    primary_focs.position = 15
+    primary_focs.managed = False
+    primary_focs.is_default.return_value = False
+    primary_focs.delete = AsyncMock()
+
+    # 2. Redundant duplicate FOCS role 1 (pos: 2, name: "focs")
+    redundant_focs_1 = MagicMock(spec=discord.Role)
+    redundant_focs_1.id = 1002
+    redundant_focs_1.name = "focs"
+    redundant_focs_1.position = 2
+    redundant_focs_1.managed = False
+    redundant_focs_1.is_default.return_value = False
+    redundant_focs_1.delete = AsyncMock()
+
+    # 3. Redundant duplicate FOCS role 2 (pos: 1, name: "[FOCS]")
+    redundant_focs_2 = MagicMock(spec=discord.Role)
+    redundant_focs_2.id = 1003
+    redundant_focs_2.name = "[FOCS]"
+    redundant_focs_2.position = 1
+    redundant_focs_2.managed = False
+    redundant_focs_2.is_default.return_value = False
+    redundant_focs_2.delete = AsyncMock()
+
+    # 4. Guest roles
+    primary_guest = MagicMock(spec=discord.Role)
+    primary_guest.id = 2001
+    primary_guest.name = "Guest(Approved)"
+    primary_guest.position = 10
+    primary_guest.managed = False
+    primary_guest.is_default.return_value = False
+    primary_guest.delete = AsyncMock()
+
+    redundant_guest = MagicMock(spec=discord.Role)
+    redundant_guest.id = 2002
+    redundant_guest.name = "Guest"
+    redundant_guest.position = 3
+    redundant_guest.managed = False
+    redundant_guest.is_default.return_value = False
+    redundant_guest.delete = AsyncMock()
+
+    # Members setup
+    m1 = MagicMock(spec=discord.Member)  # Already has primary FOCS
+    m1.roles = [primary_focs]
+    m1.add_roles = AsyncMock()
+    m1.remove_roles = AsyncMock()
+
+    m2 = MagicMock(spec=discord.Member)  # Has redundant FOCS 1, missing primary
+    m2.roles = [redundant_focs_1]
+    m2.add_roles = AsyncMock()
+    m2.remove_roles = AsyncMock()
+
+    m3 = MagicMock(spec=discord.Member)  # Has redundant FOCS 2 and primary
+    m3.roles = [redundant_focs_2, primary_focs]
+    m3.add_roles = AsyncMock()
+    m3.remove_roles = AsyncMock()
+
+    guest_m = MagicMock(spec=discord.Member)  # Has redundant Guest, missing primary
+    guest_m.roles = [redundant_guest]
+    guest_m.add_roles = AsyncMock()
+    guest_m.remove_roles = AsyncMock()
+
+    primary_focs.members = [m1, m3]
+    redundant_focs_1.members = [m2]
+    redundant_focs_2.members = [m3]
+    primary_guest.members = []
+    redundant_guest.members = [guest_m]
+
+    guild.roles = [primary_focs, redundant_focs_1, redundant_focs_2, primary_guest, redundant_guest]
+
+    # Bot perms and top role
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    bot_top_role = MagicMock()
+    bot_top_role.position = 50
+    guild.me.top_role = bot_top_role
+
+    db = Database(str(tmp_path / "dedup_test.db"))
+    await db.connect()
+    try:
+        rate_limiter = RateLimiter()
+        service = VerificationService(bot, db, "secret_123", rate_limiter)
+
+        stats = await service.reconcile_duplicate_roles(guild)
+
+        assert stats["deleted_roles"] == 3
+        assert stats["migrated_members"] == 2  # m2 and guest_m
+        assert stats["failed"] == 0
+
+        # Verify m2 was given primary FOCS and had redundant FOCS removed
+        m2.add_roles.assert_called_once()
+        assert m2.add_roles.call_args[0][0] == primary_focs
+        m2.remove_roles.assert_called_once_with(
+            redundant_focs_1, reason="TARVeri Self-Healing: Remove duplicate role 'focs'"
+        )
+
+        # Verify guest_m was given primary guest
+        guest_m.add_roles.assert_called_once()
+        assert guest_m.add_roles.call_args[0][0] == primary_guest
+
+        # Verify all 3 redundant roles were deleted
+        redundant_focs_1.delete.assert_called_once()
+        redundant_focs_2.delete.assert_called_once()
+        redundant_guest.delete.assert_called_once()
+        primary_focs.delete.assert_not_called()
+        primary_guest.delete.assert_not_called()
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_duplicate_roles_handles_hierarchy_and_forbidden_gracefully(tmp_path):
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 998833
+    guild.name = "Hierarchy Guild"
+
+    primary_focs = MagicMock(spec=discord.Role)
+    primary_focs.name = "FOCS"
+    primary_focs.position = 10
+    primary_focs.members = []
+    primary_focs.managed = False
+    primary_focs.is_default.return_value = False
+    primary_focs.delete = AsyncMock()
+
+    # Redundant role is above bot's top role
+    high_focs = MagicMock(spec=discord.Role)
+    high_focs.name = "focs-high"
+    high_focs.position = 60
+    high_focs.members = []
+    high_focs.managed = False
+    high_focs.is_default.return_value = False
+    high_focs.delete = AsyncMock()
+
+    guild.roles = [high_focs, primary_focs]
+
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    bot_top_role = MagicMock()
+    bot_top_role.position = 20  # Below high_focs (60)
+    guild.me.top_role = bot_top_role
+
+    db = Database(str(tmp_path / "hierarchy_dedup.db"))
+    await db.connect()
+    try:
+        rate_limiter = RateLimiter()
+        service = VerificationService(bot, db, "secret_123", rate_limiter)
+
+        stats = await service.reconcile_duplicate_roles(guild)
+
+        # High role should NOT be deleted due to hierarchy
+        high_focs.delete.assert_not_called()
+        primary_focs.delete.assert_not_called()
+        assert stats["deleted_roles"] == 0
+        assert stats["failed"] >= 1
+    finally:
+        await db.close()
+
+
+
 
