@@ -103,6 +103,11 @@ flowchart TD
 - Detects duplicate roles and logs alerts if the bot lacks `Manage Roles` or if a managed role is higher than the bot's top role.
 - Administrators can trigger this anytime via `/diagnose`.
 
+### 8. SRC & Council Role Protection & Auto-Restoration (`/restore_src_roles`)
+- Protects organizational, council, and functional roles (`ROLE_QUALIFIER_PATTERN`: `SRC`, `Council`, `Exco`, `Committee`, `Staff`, `Rep`, etc.) from being matched as generic faculty roles or cleaned up during deduplication.
+- `VerificationService.restore_src_roles(guild)` checks for all 8 faculty SRC roles (`FAFB SRC`, `CPUS SRC`, `FOCS SRC`, `FCCI SRC`, `FOAS SRC`, `FOBE SRC`, `FSSH SRC`, `FOET SRC`).
+- Recreates missing SRC roles using their corresponding official faculty palette colors and mentionable flag on bot startup, during `/diagnose`, or via `/restore_src_roles`.
+
 ---
 
 ## 🎟️ Alphanumeric Ticket Sequencing & Smart Escalation
@@ -138,6 +143,7 @@ flowchart TD
 - `/guest_tickets [status] [limit]` — Query guest tickets with links to threads.
 - `/stats` — View verification numbers and faculty breakdown.
 - `/unverify @user` — Unlink student ID and strip faculty roles.
+- `/restore_src_roles` — Automatically restore all 8 missing faculty SRC roles with proper colors.
 - `/audit [limit] [event_type]` — Inspect database audit logs.
 - `/backup` — Create immediate database snapshot (10-file auto-rotation).
 - `/resync` — Re-synchronize roles across mutual servers.

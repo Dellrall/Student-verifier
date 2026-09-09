@@ -142,13 +142,16 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
-        # 1. Trigger duplicate role reconciliation (migrate members & cleanup redundant roles)
+        # 1. Restore faculty SRC roles if missing
+        src_stats = await self.service.restore_src_roles(guild)
+
+        # 2. Trigger duplicate role reconciliation (migrate members & cleanup redundant roles)
         dedup_stats = await self.service.reconcile_duplicate_roles(guild)
 
-        # 2. Check permissions & role hierarchy diagnostics
+        # 3. Check permissions & role hierarchy diagnostics
         warnings = self.service.diagnose_guild_permissions(guild)
 
-        # 3. Trigger member role reconciliation for this guild
+        # 4. Trigger member role reconciliation for this guild
         reconcile_stats = await self.service.reconcile_verified_members(guild)
 
         # Check channel configurations
@@ -206,6 +209,13 @@ class AdminCog(commands.Cog, name="Admin"):
                 inline=False,
             )
 
+        if src_stats.get("created", 0) > 0:
+            embed.add_field(
+                name="🏛️ SRC Roles Self-Healing",
+                value=f"• Restored **{src_stats['created']}** missing faculty SRC role(s)",
+                inline=False,
+            )
+
         if dedup_stats.get("deleted_roles", 0) > 0 or dedup_stats.get("migrated_members", 0) > 0 or dedup_stats.get("failed", 0) > 0:
             embed.add_field(
                 name="🧹 Duplicate Role Cleanup & Migration",
@@ -229,6 +239,41 @@ class AdminCog(commands.Cog, name="Admin"):
             inline=False,
         )
 
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
+
+    @app_commands.command(
+        name="restore_src_roles",
+        description="Restores all 8 faculty SRC (Student Representative Council) roles if missing.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def restore_src_roles(self, interaction: discord.Interaction) -> None:
+        """Restores missing faculty SRC roles with proper server colors."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command must be used within a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        stats = await self.service.restore_src_roles(interaction.guild)
+
+        embed = discord.Embed(
+            title="🛡️ TARVeri — SRC Roles Restoration",
+            color=discord.Color.green(),
+            description=(
+                f"✅ **Restoration Complete!**\n\n"
+                f"• Created missing SRC roles: **{stats['created']}**\n"
+                f"• Already existing SRC roles: **{stats['existing']}**\n"
+                f"• Failed / permission errors: **{stats['failed']}**\n\n"
+                f"*(SRC roles: `FAFB SRC`, `CPUS SRC`, `FOCS SRC`, `FCCI SRC`, `FOAS SRC`, `FOBE SRC`, `FSSH SRC`, `FOET SRC`)*"
+            ),
+        )
         await interaction.followup.send(embed=embed, ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 

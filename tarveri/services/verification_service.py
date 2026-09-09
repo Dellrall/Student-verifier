@@ -20,6 +20,9 @@ from tarveri.config import (
     FACULTY_ROLE_NAMES,
     FACULTY_ROLES,
     GUEST_ROLE_PATTERN,
+    ROLE_QUALIFIER_PATTERN,
+    SRC_ROLE_NAMES,
+    SRC_ROLES,
     hash_student_id,
     mask_student_id,
     validate_student_id,
@@ -94,9 +97,11 @@ class VerificationService:
         Tier 1: Exact match (name == target_name)
         Tier 2: Case-insensitive & whitespace-trimmed match (name.strip().upper() == target_name.upper())
         Tier 3: Normalized alphanumeric match (e.g. '[FOCS]' or '🎓 FOCS')
-        Tier 4: Prefix / word-boundary / bracket match (e.g. 'FOCS - Faculty of Computing' or 'Faculty of Computing (FOCS)')
+        Tier 4: Prefix / word-boundary / bracket match (e.g. 'FOCS - Computing' or 'Faculty of Computing (FOCS)')
         Tier 5: Full faculty name & aliases match from FACULTY_ALIASES (e.g. 'Faculty of Computing and Information Technology')
         Tier 6: Normalized alphanumeric alias match (stripping punctuation/brackets from aliases)
+
+        CRITICAL GUARD: Excludes roles containing committee/council/staff qualifiers (e.g. 'FOCS SRC', 'FOCS Council', 'FOCS Exco').
         Prioritizes the role with the highest position if multiple matches exist.
         """
         if not roles:
@@ -104,16 +109,25 @@ class VerificationService:
 
         target_upper = target_name.strip().upper()
         target_alnum = re.sub(r"[^A-Za-z0-9]", "", target_upper)
+        target_has_qualifier = bool(ROLE_QUALIFIER_PATTERN.search(target_name))
         aliases = FACULTY_ALIASES.get(target_name, [target_name])
+
+        def _is_safe_role(r_name: str) -> bool:
+            if not target_has_qualifier and ROLE_QUALIFIER_PATTERN.search(r_name):
+                return False
+            return True
 
         # Tier 1: Exact match
         exact_matches = [r for r in roles if getattr(r, "name", None) == target_name]
         if exact_matches:
             return max(exact_matches, key=lambda r: getattr(r, "position", 0))
 
+        # Filter candidates for Tiers 2-6 to avoid matching SRC / Council / Exco roles
+        safe_roles = [r for r in roles if _is_safe_role(getattr(r, "name", ""))]
+
         # Tier 2: Case-insensitive & trimmed match
         ci_matches = [
-            r for r in roles if getattr(r, "name", "").strip().upper() == target_upper
+            r for r in safe_roles if getattr(r, "name", "").strip().upper() == target_upper
         ]
         if ci_matches:
             return max(ci_matches, key=lambda r: getattr(r, "position", 0))
@@ -121,7 +135,7 @@ class VerificationService:
         # Tier 3: Normalized alphanumeric match
         alnum_matches = [
             r
-            for r in roles
+            for r in safe_roles
             if re.sub(r"[^A-Za-z0-9]", "", getattr(r, "name", "")).upper() == target_alnum
         ]
         if alnum_matches:
@@ -129,7 +143,7 @@ class VerificationService:
 
         # Tier 4: Prefix or word boundary or bracket match of acronym
         fuzzy_matches = []
-        for r in roles:
+        for r in safe_roles:
             r_name = getattr(r, "name", "").strip().upper()
             if not r_name:
                 continue
@@ -148,7 +162,7 @@ class VerificationService:
 
         # Tier 5 & 6: Full faculty name & dynamic aliases match
         alias_matches = []
-        for r in roles:
+        for r in safe_roles:
             r_name = getattr(r, "name", "").strip()
             if not r_name:
                 continue
@@ -170,6 +184,59 @@ class VerificationService:
             return max(alias_matches, key=lambda r: getattr(r, "position", 0))
 
         return None
+
+    async def restore_src_roles(self, guild: discord.Guild) -> dict[str, int]:
+        """
+        Restores / creates the faculty SRC (Student Representative Council) roles if missing.
+        FAFB SRC, CPUS SRC, FOCS SRC, FCCI SRC, FOAS SRC, FOBE SRC, FSSH SRC, FOET SRC.
+        """
+        stats = {"created": 0, "existing": 0, "failed": 0}
+        if not guild or not hasattr(guild, "roles"):
+            return stats
+
+        can_manage = (
+            getattr(guild.me.guild_permissions, "manage_roles", False)
+            if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
+            else False
+        )
+        if not can_manage:
+            stats["failed"] = len(SRC_ROLES)
+            return stats
+
+        guild_roles = list(getattr(guild, "roles", []))
+
+        for fac_code, src_name in SRC_ROLES.items():
+            # Check if role already exists (exact or case-insensitive)
+            exists = any(getattr(r, "name", "").strip().lower() == src_name.lower() for r in guild_roles)
+            if exists:
+                stats["existing"] += 1
+                continue
+
+            # Role missing, create it
+            color_val = FACULTY_COLORS.get(fac_code, 0x3498DB)
+            try:
+                role = await guild.create_role(
+                    name=src_name,
+                    colour=discord.Colour(color_val),
+                    mentionable=True,
+                    reason="TARVeri: restore missing faculty SRC role",
+                )
+                guild_roles.append(role)
+                stats["created"] += 1
+                await self.db.log(
+                    "INFO",
+                    "SRC_ROLE_RESTORED",
+                    f"Restored SRC role '{src_name}' in '{guild.name}' (Guild ID: {guild.id})",
+                    guild=guild,
+                )
+            except discord.HTTPException as e:
+                stats["failed"] += 1
+                logger.warning(f"Failed to restore SRC role '{src_name}' in '{guild.name}': {e}")
+
+        if stats["created"] > 0:
+            logger.info(f"[{guild.name}] Restored {stats['created']} missing SRC role(s).")
+
+        return stats
 
     async def find_faculty_role(self, guild: discord.Guild, role_name: str) -> discord.Role | None:
         """
@@ -593,11 +660,11 @@ class VerificationService:
             exact_match = 1 if getattr(role, "name", "").strip().lower() == target_name.strip().lower() else 0
             return (exact_match, pos, member_count)
 
-        # 1. Group by faculty
+        # 1. Group by faculty (strictly ignoring SRC, Council, Committee, and staff roles)
         category_roles: dict[str, list[discord.Role]] = {}
         for r in guild_roles:
             r_name = getattr(r, "name", "")
-            if not r_name:
+            if not r_name or ROLE_QUALIFIER_PATTERN.search(r_name):
                 continue
             for fac in FACULTY_ROLE_NAMES:
                 if self._match_faculty_role_in_list([r], fac) is not None:
@@ -610,7 +677,7 @@ class VerificationService:
         guest_roles: list[discord.Role] = []
         for r in guild_roles:
             r_name = getattr(r, "name", "")
-            if not r_name:
+            if not r_name or ROLE_QUALIFIER_PATTERN.search(r_name):
                 continue
             if configured_guest_name and r_name.strip().lower() == configured_guest_name.lower():
                 guest_roles.append(r)

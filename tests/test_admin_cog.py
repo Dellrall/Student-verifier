@@ -406,6 +406,7 @@ async def test_admin_diagnose_command(tmp_path):
     await db.connect()
 
     service = MagicMock()
+    service.restore_src_roles = AsyncMock(return_value={"created": 2, "existing": 6, "failed": 0})
     service.reconcile_duplicate_roles = AsyncMock(
         return_value={"checked_categories": 1, "migrated_members": 2, "deleted_roles": 1, "failed": 0, "details": []}
     )
@@ -446,6 +447,7 @@ async def test_admin_diagnose_command(tmp_path):
     assert "Server Health & Diagnostics" in embed.title
     assert len(embed.fields) >= 4
     assert any("Duplicate Role Cleanup" in f.name for f in embed.fields)
+    assert any("SRC Roles Self-Healing" in f.name for f in embed.fields)
 
     # Verify stale channels were cleaned in DB
     settings = await db.get_guild_settings(guild.id)
@@ -454,3 +456,34 @@ async def test_admin_diagnose_command(tmp_path):
     assert settings[3] is None  # Stale cleared
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_restore_src_roles_command():
+    from unittest.mock import AsyncMock, MagicMock
+    from tarveri.cogs.admin_cog import AdminCog
+
+    bot = MagicMock()
+    db = MagicMock()
+    service = MagicMock()
+    service.restore_src_roles = AsyncMock(return_value={"created": 8, "existing": 0, "failed": 0})
+
+    cog = AdminCog(bot, db, service, MagicMock(), admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await cog.restore_src_roles.callback(cog, interaction)
+
+    interaction.followup.send.assert_called_once()
+    embed = interaction.followup.send.call_args[1]["embed"]
+    assert "SRC Roles Restoration" in embed.title
+    assert "Created missing SRC roles: **8**" in embed.description
+

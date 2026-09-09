@@ -118,6 +118,25 @@ FACULTY_ALIASES: Final[dict[str, list[str]]] = {
     ],
 }
 
+# Faculty SRC (Student Representative Council) roles
+SRC_ROLES: Final[dict[str, str]] = {
+    "FAFB": "FAFB SRC",
+    "CPUS": "CPUS SRC",
+    "FOCS": "FOCS SRC",
+    "FCCI": "FCCI SRC",
+    "FOAS": "FOAS SRC",
+    "FOBE": "FOBE SRC",
+    "FSSH": "FSSH SRC",
+    "FOET": "FOET SRC",
+}
+SRC_ROLE_NAMES: Final[set[str]] = set(SRC_ROLES.values())
+
+# Organizational, council, and functional role qualifiers that must NEVER be matched as general faculty roles
+ROLE_QUALIFIER_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(src|council|committee|exco|reps?|representatives?|staff|admins?|leads?|mentors?|tutors?|lecturers?|societ(?:y|ies)|clubs?|presidents?|vp|secretar(?:y|ies)|treasurers?|bureaus?|alumni|seniors?|juniors?|sub[\s\-_]*committee)\b",
+    re.IGNORECASE,
+)
+
 # Dynamic pattern matching for guest and visitor roles
 GUEST_ROLE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\b(guests?|visitors?|external|non[\s\-_]*students?)\b",

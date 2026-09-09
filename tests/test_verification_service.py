@@ -719,5 +719,102 @@ async def test_reconcile_duplicate_roles_handles_hierarchy_and_forbidden_gracefu
         await db.close()
 
 
+@pytest.mark.asyncio
+async def test_src_roles_never_matched_or_deleted_as_duplicates(tmp_path):
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 112233
+    guild.name = "SRC Protection Guild"
+
+    # Regular FOCS role
+    focs_role = MagicMock(spec=discord.Role)
+    focs_role.name = "FOCS"
+    focs_role.position = 15
+    focs_role.members = []
+    focs_role.delete = AsyncMock()
+
+    # FOCS SRC role (MUST NEVER be matched or deleted)
+    focs_src_role = MagicMock(spec=discord.Role)
+    focs_src_role.name = "FOCS SRC"
+    focs_src_role.position = 12
+    focs_src_role.members = []
+    focs_src_role.delete = AsyncMock()
+
+    # FOET Council role
+    foet_council = MagicMock(spec=discord.Role)
+    foet_council.name = "FOET Council"
+    foet_council.position = 10
+    foet_council.members = []
+    foet_council.delete = AsyncMock()
+
+    guild.roles = [focs_role, focs_src_role, foet_council]
+
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    bot_top_role = MagicMock()
+    bot_top_role.position = 50
+    guild.me.top_role = bot_top_role
+
+    db = Database(str(tmp_path / "src_protection.db"))
+    await db.connect()
+    try:
+        rate_limiter = RateLimiter()
+        service = VerificationService(bot, db, "secret_123", rate_limiter)
+
+        # 1. Matching engine must NOT match FOCS SRC to FOCS
+        matched = service._match_faculty_role_in_list([focs_src_role], "FOCS")
+        assert matched is None
+
+        # 2. Reconcile duplicate roles must NOT delete FOCS SRC or FOET Council
+        stats = await service.reconcile_duplicate_roles(guild)
+        assert stats["deleted_roles"] == 0
+        focs_src_role.delete.assert_not_called()
+        foet_council.delete.assert_not_called()
+        focs_role.delete.assert_not_called()
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_restore_src_roles_creates_all_8_roles(tmp_path):
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 554433
+    guild.name = "SRC Restore Guild"
+
+    # Server already has FOCS SRC
+    existing_focs_src = MagicMock(spec=discord.Role)
+    existing_focs_src.name = "FOCS SRC"
+    guild.roles = [existing_focs_src]
+
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    created_roles = []
+
+    async def mock_create_role(name, colour, mentionable, reason):
+        r = MagicMock(spec=discord.Role)
+        r.name = name
+        created_roles.append(r)
+        return r
+
+    guild.create_role = AsyncMock(side_effect=mock_create_role)
+
+    db = Database(str(tmp_path / "src_restore.db"))
+    await db.connect()
+    try:
+        rate_limiter = RateLimiter()
+        service = VerificationService(bot, db, "secret_123", rate_limiter)
+
+        stats = await service.restore_src_roles(guild)
+
+        assert stats["created"] == 7  # 8 total - 1 already existing
+        assert stats["existing"] == 1
+        assert stats["failed"] == 0
+        assert guild.create_role.call_count == 7
+    finally:
+        await db.close()
+
+
+
 
 
