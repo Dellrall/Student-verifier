@@ -217,6 +217,9 @@ class Settings:
     timezone_name: str = "Asia/Kuala_Lumpur"
     backup_dir: str = "backups"
     max_backups: int = 10
+    enable_outage_watchdog: bool = True
+    outage_timeout_seconds: int = 300
+    outage_probe_interval_seconds: int = 15
 
     @property
     def database_path(self) -> str:
@@ -328,6 +331,27 @@ class Settings:
         ).strip()
         max_backups = int(max_backups_raw) if max_backups_raw.isdigit() else 10
 
+        enable_outage_raw = (
+            os.getenv("TARVERI_ENABLE_OUTAGE_WATCHDOG")
+            or os.getenv("ENABLE_OUTAGE_WATCHDOG")
+            or "true"
+        ).lower().strip()
+        enable_outage_watchdog = enable_outage_raw in ("true", "1", "yes")
+
+        outage_timeout_raw = (
+            os.getenv("TARVERI_OUTAGE_TIMEOUT_SECONDS")
+            or os.getenv("OUTAGE_TIMEOUT_SECONDS")
+            or "300"
+        ).strip()
+        outage_timeout_seconds = int(outage_timeout_raw) if outage_timeout_raw.isdigit() else 300
+
+        outage_probe_raw = (
+            os.getenv("TARVERI_OUTAGE_PROBE_INTERVAL_SECONDS")
+            or os.getenv("OUTAGE_PROBE_INTERVAL_SECONDS")
+            or "15"
+        ).strip()
+        outage_probe_interval_seconds = int(outage_probe_raw) if outage_probe_raw.isdigit() else 15
+
         if validate:
             if not bot_token:
                 raise RuntimeError(
@@ -354,6 +378,9 @@ class Settings:
             timezone_name=timezone_name,
             backup_dir=backup_dir,
             max_backups=max_backups,
+            enable_outage_watchdog=enable_outage_watchdog,
+            outage_timeout_seconds=outage_timeout_seconds,
+            outage_probe_interval_seconds=outage_probe_interval_seconds,
         )
 
 

@@ -22,9 +22,10 @@ from tarveri.config import (
 from tarveri.database import Database, list_backups, rotate_backups
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.guest_service import GuestService
+from tarveri.services.outage_service import OutageService
 from tarveri.services.verification_service import VerificationService
 
-__version__ = "2.4.2"
+__version__ = "2.4.3"
 
 __all__ = [
     "__version__",
@@ -34,6 +35,7 @@ __all__ = [
     "FACULTY_ROLE_NAMES",
     "GUEST_ROLE_PATTERN",
     "GuestService",
+    "OutageService",
     "ROLE_QUALIFIER_PATTERN",
     "RateLimiter",
     "SRC_ROLES",

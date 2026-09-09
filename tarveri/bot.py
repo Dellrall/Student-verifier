@@ -18,6 +18,7 @@ from tarveri.config import Settings, setup_logger
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.guest_service import GuestService
+from tarveri.services.outage_service import OutageService
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
 
@@ -62,6 +63,16 @@ class TARVeriBot(commands.Bot):
                 update_stream=settings.update_stream,
             )
             if settings.enable_update_checker
+            else None
+        )
+        self.outage_service = (
+            OutageService(
+                bot=self,
+                db=self.db,
+                timeout_seconds=settings.outage_timeout_seconds,
+                probe_interval=settings.outage_probe_interval_seconds,
+            )
+            if settings.enable_outage_watchdog
             else None
         )
         self._is_ready_logged = False
@@ -125,7 +136,28 @@ class TARVeriBot(commands.Bot):
         if self.guest_service:
             self.guest_service.start_escalation_task()
 
+        if self.outage_service:
+            self.outage_service.start()
+
+    async def on_disconnect(self) -> None:
+        logger.warning("Discord gateway connection lost (disconnect event).")
+        if self.outage_service:
+            self.outage_service.on_disconnect()
+
+    async def on_resumed(self) -> None:
+        logger.info("Discord gateway session successfully resumed.")
+        if self.outage_service:
+            self.outage_service.on_reconnect()
+
+    async def on_connect(self) -> None:
+        logger.debug("Discord gateway connected.")
+        if self.outage_service:
+            self.outage_service.on_reconnect()
+
     async def on_ready(self) -> None:
+        if self.outage_service:
+            self.outage_service.on_reconnect()
+
         if self.user and not self._is_ready_logged:
             self._is_ready_logged = True
             total_verified = await self.db.total_verified()
@@ -179,6 +211,9 @@ class TARVeriBot(commands.Bot):
         if self._cmd_sync_task and not self._cmd_sync_task.done():
             self._cmd_sync_task.cancel()
 
+        if self.outage_service:
+            self.outage_service.stop()
+
         if self.update_checker:
             self.update_checker.stop()
 
@@ -216,15 +251,31 @@ async def run_bot(settings: Settings | None = None) -> None:
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
-    def handle_signal() -> None:
+    def handle_signal(sig: int) -> None:
         if not stop_event.is_set():
             stop_event.set()
-            logger.info("Interrupt signal received (SIGINT/SIGTERM). Closing TARVeri...")
+            try:
+                sig_name = signal.Signals(sig).name
+            except (ValueError, AttributeError):
+                sig_name = str(sig)
+
+            if sig_name == "SIGPWR":
+                logger.critical("⚡ Power failure / outage signal (SIGPWR) received. Flushing SQLite WAL and shutting down gracefully...")
+                if bot.outage_service:
+                    bot.outage_service.on_power_signal(sig_name)
+            else:
+                logger.info(f"Signal {sig_name} received. Closing TARVeri gracefully...")
             asyncio.create_task(bot.close())
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    signals_to_handle = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        signals_to_handle.append(signal.SIGHUP)
+    if hasattr(signal, "SIGPWR"):
+        signals_to_handle.append(signal.SIGPWR)
+
+    for sig in signals_to_handle:
         try:
-            loop.add_signal_handler(sig, handle_signal)
+            loop.add_signal_handler(sig, lambda s=sig: handle_signal(s))
         except (NotImplementedError, RuntimeError):
             pass
 

@@ -1,0 +1,218 @@
+"""
+Network and Power Outage Detection and Graceful Shutdown Watchdog Service.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
+
+from tarveri.config import now_formatted
+
+if TYPE_CHECKING:
+    import discord
+    from discord.ext import commands
+    from tarveri.database import Database
+
+logger = logging.getLogger("tarveri")
+
+DEFAULT_PROBE_TARGETS: tuple[tuple[str, int], ...] = (
+    ("1.1.1.1", 53),      # Cloudflare DNS (Raw IP - no DNS dependency)
+    ("8.8.8.8", 53),      # Google DNS (Raw IP - no DNS dependency)
+    ("discord.com", 443), # Discord HTTPS API
+)
+
+
+class OutageService:
+    """
+    Monitors network connectivity, Discord gateway disconnections, and power outage signals.
+    If a continuous network/gateway outage exceeds `timeout_seconds` (default: 300s / 5 minutes),
+    it automatically initiates an emergency graceful shutdown to safeguard database integrity
+    and cleanly checkpoint SQLite WAL files.
+    """
+
+    def __init__(
+        self,
+        bot: commands.Bot,
+        db: Database,
+        timeout_seconds: int = 300,
+        probe_interval: int = 15,
+        probe_targets: tuple[tuple[str, int], ...] | None = None,
+    ):
+        self.bot = bot
+        self.db = db
+        self.timeout_seconds = max(10, timeout_seconds)
+        self.probe_interval = max(1, probe_interval)
+        self.probe_targets = probe_targets or DEFAULT_PROBE_TARGETS
+
+        self._task: asyncio.Task[None] | None = None
+        self._disconnected_at: float | None = None
+        self._disconnect_walltime: str | None = None
+        self._last_probe_success: bool = True
+        self._last_probe_latency_ms: float | None = None
+        self._last_probe_time: float | None = None
+        self._shutdown_triggered: bool = False
+        self._shutdown_reason: str | None = None
+
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    @property
+    def is_outage_active(self) -> bool:
+        return self._disconnected_at is not None
+
+    @property
+    def disconnected_at(self) -> float | None:
+        return self._disconnected_at
+
+    @property
+    def disconnect_duration(self) -> float:
+        if self._disconnected_at is None:
+            return 0.0
+        return time.monotonic() - self._disconnected_at
+
+    @property
+    def last_probe_success(self) -> bool:
+        return self._last_probe_success
+
+    @property
+    def last_probe_latency_ms(self) -> float | None:
+        return self._last_probe_latency_ms
+
+    async def check_connectivity(self, timeout: float = 2.0) -> tuple[bool, float | None]:
+        """
+        Probes internet connectivity by attempting fast socket handshakes
+        to raw DNS IPs and Discord endpoints. Returns (is_reachable, latency_ms).
+        """
+        t0 = time.monotonic()
+        for host, port in self.probe_targets:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port),
+                    timeout=timeout,
+                )
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                latency_ms = (time.monotonic() - t0) * 1000.0
+                self._last_probe_success = True
+                self._last_probe_latency_ms = latency_ms
+                self._last_probe_time = time.monotonic()
+                return True, latency_ms
+            except (asyncio.TimeoutError, OSError):
+                continue
+            except Exception as e:
+                logger.debug(f"Connectivity probe to {host}:{port} failed: {e}")
+                continue
+
+        self._last_probe_success = False
+        self._last_probe_latency_ms = None
+        self._last_probe_time = time.monotonic()
+        return False, None
+
+    def on_disconnect(self) -> None:
+        """Invoked when Discord gateway connection drops."""
+        if self._disconnected_at is None:
+            self._disconnected_at = time.monotonic()
+            self._disconnect_walltime = now_formatted()
+            logger.warning(
+                f"⚠️ [OutageWatchdog] Discord gateway disconnect detected at {self._disconnect_walltime}. "
+                f"Starting {self.timeout_seconds}s (5 min) grace countdown before emergency graceful shutdown..."
+            )
+            asyncio.create_task(self._log_initial_disconnect_status(), name="tarveri_initial_disconnect_probe")
+
+    async def _log_initial_disconnect_status(self) -> None:
+        reachable, latency = await self.check_connectivity(timeout=2.0)
+        net_status = f"Online (Latency: {latency:.1f}ms - Discord gateway issue)" if reachable else "Offline (Local network / power loss suspected)"
+        logger.warning(f"🔍 [OutageWatchdog] Network Probe Status: {net_status}")
+
+    def on_reconnect(self) -> None:
+        """Invoked when Discord gateway reconnects or resumes."""
+        if self._disconnected_at is not None:
+            downtime = time.monotonic() - self._disconnected_at
+            logger.info(
+                f"✅ [OutageWatchdog] Gateway reconnected after {downtime:.1f}s. "
+                f"Emergency graceful shutdown countdown cancelled."
+            )
+            self._disconnected_at = None
+            self._disconnect_walltime = None
+            self._shutdown_triggered = False
+
+    def on_power_signal(self, sig_name: str) -> None:
+        """Invoked when an OS power outage / failure signal (e.g. SIGPWR) is received."""
+        logger.critical(
+            f"⚡ [OutageWatchdog] OS Power Outage Signal '{sig_name}' received! "
+            f"Initiating immediate emergency graceful shutdown to flush SQLite WAL and preserve state."
+        )
+        self._shutdown_reason = f"Power outage signal ({sig_name})"
+        self._shutdown_triggered = True
+
+    async def _watchdog_loop(self) -> None:
+        """Main periodic watchdog loop checking connection and outage timeout."""
+        logger.info(
+            f"Outage watchdog started: {self.timeout_seconds}s outage timeout, {self.probe_interval}s probe interval."
+        )
+        try:
+            while not self.bot.is_closed():
+                await asyncio.sleep(self.probe_interval)
+
+                is_disconnected = False
+                if self._disconnected_at is not None:
+                    is_disconnected = True
+                elif hasattr(self.bot, "is_ready") and not self.bot.is_ready():
+                    if self._disconnected_at is None and getattr(self.bot, "_is_ready_logged", False):
+                        self.on_disconnect()
+                        is_disconnected = True
+
+                if is_disconnected and self._disconnected_at is not None:
+                    elapsed = time.monotonic() - self._disconnected_at
+                    remaining = max(0.0, self.timeout_seconds - elapsed)
+
+                    reachable, latency = await self.check_connectivity(timeout=2.0)
+                    probe_desc = f"Internet: {'Reachable (' + str(round(latency, 1)) + 'ms)' if reachable else 'Unreachable / Offline'}"
+
+                    if elapsed >= self.timeout_seconds:
+                        self._shutdown_triggered = True
+                        self._shutdown_reason = f"Network outage exceeded {self.timeout_seconds}s limit ({elapsed:.1f}s total downtime)"
+                        logger.critical(
+                            f"🛑 [OutageWatchdog] Outage persisted for {elapsed:.1f}s (limit: {self.timeout_seconds}s). "
+                            f"{probe_desc}. Executing emergency graceful shutdown..."
+                        )
+                        try:
+                            if self.db.is_connected:
+                                await self.db.log(
+                                    "CRITICAL",
+                                    "OUTAGE_SHUTDOWN",
+                                    f"Emergency graceful shutdown triggered after {elapsed:.1f}s continuous outage. {probe_desc}.",
+                                )
+                        except Exception:
+                            pass
+
+                        asyncio.create_task(self.bot.close(), name="tarveri_outage_graceful_shutdown")
+                        break
+                    else:
+                        logger.warning(
+                            f"⏳ [OutageWatchdog] Outage in progress: {elapsed:.0f}s elapsed, {remaining:.0f}s remaining "
+                            f"until emergency shutdown. {probe_desc}."
+                        )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Unexpected error in outage watchdog loop: {e}", exc_info=True)
+
+    def start(self) -> None:
+        """Starts the outage watchdog background task if not already running."""
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._watchdog_loop(), name="tarveri_outage_watchdog")
+
+    def stop(self) -> None:
+        """Stops and cancels the outage watchdog background task."""
+        if self._task and not self._task.done():
+            self._task.cancel()
+            self._task = None
