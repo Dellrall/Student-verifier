@@ -32,6 +32,98 @@ FACULTY_ROLES: Final[dict[str, str]] = {
 }
 FACULTY_ROLE_NAMES: Final[set[str]] = set(FACULTY_ROLES.values())
 
+# Rich dynamic synonyms, expansions, and aliases for each faculty
+FACULTY_ALIASES: Final[dict[str, list[str]]] = {
+    "FAFB": [
+        "Faculty of Accountancy, Finance and Business",
+        "Faculty of Accountancy, Finance & Business",
+        "Faculty of Accountancy",
+        "Accountancy, Finance and Business",
+        "Accountancy, Finance & Business",
+        "Accountancy & Finance",
+        "Accountancy",
+        "Finance",
+        "FAFB",
+    ],
+    "CPUS": [
+        "Centre for Pre-University Studies",
+        "Centre for Pre-U Studies",
+        "Center for Pre-University Studies",
+        "Pre-University Studies",
+        "Pre-University",
+        "Pre-U Studies",
+        "Pre-U",
+        "Foundation Studies",
+        "Foundation",
+        "CPUS",
+    ],
+    "FOCS": [
+        "Faculty of Computing and Information Technology",
+        "Faculty of Computing & Information Technology",
+        "Faculty of Computing",
+        "Computing and Information Technology",
+        "Computing & Information Technology",
+        "Computing & IT",
+        "Computing",
+        "Computer Science",
+        "Information Technology",
+        "FOCS",
+        "FCIT",
+    ],
+    "FCCI": [
+        "Faculty of Communication and Creative Industries",
+        "Faculty of Communication & Creative Industries",
+        "Faculty of Communication",
+        "Communication and Creative Industries",
+        "Communication & Creative Industries",
+        "Creative Industries",
+        "Communication",
+        "FCCI",
+    ],
+    "FOAS": [
+        "Faculty of Applied Sciences",
+        "Faculty of Applied Science",
+        "Applied Sciences",
+        "Applied Science",
+        "FOAS",
+        "FAS",
+    ],
+    "FOBE": [
+        "Faculty of Built Environment",
+        "Built Environment",
+        "Architecture",
+        "Surveying",
+        "FOBE",
+    ],
+    "FSSH": [
+        "Faculty of Social Science and Humanities",
+        "Faculty of Social Science & Humanities",
+        "Faculty of Social Science",
+        "Social Science and Humanities",
+        "Social Science & Humanities",
+        "Social Science",
+        "Humanities",
+        "FSSH",
+        "FSS",
+    ],
+    "FOET": [
+        "Faculty of Engineering and Technology",
+        "Faculty of Engineering & Technology",
+        "Faculty of Engineering",
+        "Engineering and Technology",
+        "Engineering & Technology",
+        "Engineering",
+        "FOET",
+        "FOE",
+    ],
+}
+
+# Dynamic pattern matching for guest and visitor roles
+GUEST_ROLE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(guests?|visitors?|external|non[\s\-_]*students?)\b",
+    re.IGNORECASE,
+)
+
 # Default role colors matching server design palette
 FACULTY_COLORS: Final[dict[str, int]] = {
     "FAFB": 0x992D22,  # Dark Red (#992D22)

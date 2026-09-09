@@ -457,6 +457,27 @@ async def test_find_faculty_role_multi_tier_matching():
     guild.roles = [r4]
     assert await service.find_faculty_role(guild, "FOCS") == r4
 
+    # 5. Full name expansion without acronym (e.g. "Faculty of Computing and Information Technology")
+    r5 = MagicMock(spec=discord.Role, name="Faculty of Computing and Information Technology")
+    r5.name = "Faculty of Computing and Information Technology"
+    r5.position = 10
+    guild.roles = [r5]
+    assert await service.find_faculty_role(guild, "FOCS") == r5
+
+    # 6. Pre-University Studies for CPUS
+    r6 = MagicMock(spec=discord.Role, name="Centre for Pre-University Studies")
+    r6.name = "Centre for Pre-University Studies"
+    r6.position = 10
+    guild.roles = [r6]
+    assert await service.find_faculty_role(guild, "CPUS") == r6
+
+    # 7. Engineering & Technology for FOET
+    r7 = MagicMock(spec=discord.Role, name="Faculty of Engineering & Technology")
+    r7.name = "Faculty of Engineering & Technology"
+    r7.position = 10
+    guild.roles = [r7]
+    assert await service.find_faculty_role(guild, "FOET") == r7
+
 
 @pytest.mark.asyncio
 async def test_find_faculty_role_live_fetch_roles_fallback():

@@ -6,8 +6,10 @@ from __future__ import annotations
 
 from tarveri.bot import TARVeriBot, run_bot
 from tarveri.config import (
+    FACULTY_ALIASES,
     FACULTY_ROLE_NAMES,
     FACULTY_ROLES,
+    GUEST_ROLE_PATTERN,
     Settings,
     hash_student_id,
     mask_student_id,
@@ -24,8 +26,10 @@ __version__ = "2.4.1"
 __all__ = [
     "__version__",
     "Database",
+    "FACULTY_ALIASES",
     "FACULTY_ROLES",
     "FACULTY_ROLE_NAMES",
+    "GUEST_ROLE_PATTERN",
     "GuestService",
     "RateLimiter",
     "Settings",

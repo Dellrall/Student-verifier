@@ -14,6 +14,7 @@ from discord.ext import commands
 from tarveri.config import (
     FACULTY_ROLE_NAMES,
     FACULTY_ROLES,
+    GUEST_ROLE_PATTERN,
     ROLE_HELP_KEYWORDS_PATTERN,
     Settings,
 )
@@ -278,13 +279,18 @@ class VerificationCog(commands.Cog, name="Verification"):
 
     def is_unverified_member(self, member: discord.Member) -> bool:
         """Checks if a member does not hold any TARVeri faculty role or approved guest role."""
-        if any(r.name in FACULTY_ROLE_NAMES for r in member.roles):
-            return False
-        # Treat members with Guest roles as verified
-        for r in member.roles:
-            norm = r.name.lower().replace(" ", "")
-            if "guest" in norm:
-                return False
+        member_roles = getattr(member, "roles", [])
+        if isinstance(member_roles, (list, tuple)):
+            for r in member_roles:
+                r_name = getattr(r, "name", "")
+                if not r_name:
+                    continue
+                # Dynamic faculty role check
+                if any(VerificationService._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES):
+                    return False
+                # Dynamic guest / visitor role check
+                if GUEST_ROLE_PATTERN.search(r_name):
+                    return False
         return True
 
     async def handle_help_channel_message(self, message: discord.Message) -> None:

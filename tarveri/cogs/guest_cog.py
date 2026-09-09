@@ -613,7 +613,12 @@ class GuestCog(commands.Cog, name="Guest"):
         is_verified = bool(await self.db.get_verification_by_user(interaction.user.id))
         if not is_verified:
             # Also check if member has any faculty role in Discord
-            has_faculty_role = any(r.name in FACULTY_ROLE_NAMES for r in interaction.user.roles)
+            user_roles = getattr(interaction.user, "roles", [])
+            has_faculty_role = any(
+                VerificationService._match_faculty_role_in_list([r], fac) is not None
+                for fac in FACULTY_ROLE_NAMES
+                for r in user_roles
+            )
             is_verified = has_faculty_role
 
         if not is_verified:

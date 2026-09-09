@@ -263,7 +263,11 @@ class AdminCog(commands.Cog, name="Admin"):
         for guild in mutual_guilds:
             member = await self.service.get_or_fetch_member(guild, user.id)
             if member:
-                roles_to_remove = [r for r in member.roles if r.name in FACULTY_ROLE_NAMES]
+                member_roles = getattr(member, "roles", [])
+                roles_to_remove = [
+                    r for r in member_roles
+                    if any(VerificationService._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES)
+                ]
                 for r in roles_to_remove:
                     try:
                         await member.remove_roles(r, reason=f"TARVeri unverify by {interaction.user}: {reason}")

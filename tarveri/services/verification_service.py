@@ -15,9 +15,11 @@ import aiosqlite
 import discord
 
 from tarveri.config import (
+    FACULTY_ALIASES,
     FACULTY_COLORS,
     FACULTY_ROLE_NAMES,
     FACULTY_ROLES,
+    GUEST_ROLE_PATTERN,
     hash_student_id,
     mask_student_id,
     validate_student_id,
@@ -85,14 +87,16 @@ class VerificationService:
 
         return mutual
 
-    @staticmethod
-    def _match_faculty_role_in_list(roles: Sequence[discord.Role], target_name: str) -> discord.Role | None:
+    @classmethod
+    def _match_faculty_role_in_list(cls, roles: Sequence[discord.Role], target_name: str) -> discord.Role | None:
         """
-        Multi-tier matcher to find an existing faculty role in a list/sequence of roles:
+        Multi-tier dynamic matcher to find an existing faculty role in a list/sequence of roles:
         Tier 1: Exact match (name == target_name)
         Tier 2: Case-insensitive & whitespace-trimmed match (name.strip().upper() == target_name.upper())
         Tier 3: Normalized alphanumeric match (e.g. '[FOCS]' or '🎓 FOCS')
-        Tier 4: Prefix / word-boundary match (e.g. 'FOCS - Faculty of Computing' or 'Faculty of Computing (FOCS)')
+        Tier 4: Prefix / word-boundary / bracket match (e.g. 'FOCS - Faculty of Computing' or 'Faculty of Computing (FOCS)')
+        Tier 5: Full faculty name & aliases match from FACULTY_ALIASES (e.g. 'Faculty of Computing and Information Technology')
+        Tier 6: Normalized alphanumeric alias match (stripping punctuation/brackets from aliases)
         Prioritizes the role with the highest position if multiple matches exist.
         """
         if not roles:
@@ -100,6 +104,7 @@ class VerificationService:
 
         target_upper = target_name.strip().upper()
         target_alnum = re.sub(r"[^A-Za-z0-9]", "", target_upper)
+        aliases = FACULTY_ALIASES.get(target_name, [target_name])
 
         # Tier 1: Exact match
         exact_matches = [r for r in roles if getattr(r, "name", None) == target_name]
@@ -122,7 +127,7 @@ class VerificationService:
         if alnum_matches:
             return max(alnum_matches, key=lambda r: getattr(r, "position", 0))
 
-        # Tier 4: Prefix or word boundary or bracket match
+        # Tier 4: Prefix or word boundary or bracket match of acronym
         fuzzy_matches = []
         for r in roles:
             r_name = getattr(r, "name", "").strip().upper()
@@ -140,6 +145,29 @@ class VerificationService:
 
         if fuzzy_matches:
             return max(fuzzy_matches, key=lambda r: getattr(r, "position", 0))
+
+        # Tier 5 & 6: Full faculty name & dynamic aliases match
+        alias_matches = []
+        for r in roles:
+            r_name = getattr(r, "name", "").strip()
+            if not r_name:
+                continue
+            r_lower = r_name.lower()
+            r_clean = re.sub(r"[^A-Za-z0-9]", "", r_lower)
+            for alias in aliases:
+                a_lower = alias.lower()
+                a_clean = re.sub(r"[^A-Za-z0-9]", "", a_lower)
+                # Exact alias match or stripped alphanumeric match
+                if r_lower == a_lower or (a_clean and r_clean == a_clean):
+                    alias_matches.append(r)
+                    break
+                # Word boundary match for full alias (if length > 3 to avoid acronym collisions)
+                if len(alias) > 3 and re.search(rf"\b{re.escape(alias)}\b", r_name, re.IGNORECASE):
+                    alias_matches.append(r)
+                    break
+
+        if alias_matches:
+            return max(alias_matches, key=lambda r: getattr(r, "position", 0))
 
         return None
 
@@ -586,10 +614,8 @@ class VerificationService:
                 continue
             if configured_guest_name and r_name.strip().lower() == configured_guest_name.lower():
                 guest_roles.append(r)
-            else:
-                r_clean = r_name.lower().replace(" ", "").replace("_", "")
-                if r_clean in ("guest(approved)", "guestapproved", "guest", "approvedguest"):
-                    guest_roles.append(r)
+            elif GUEST_ROLE_PATTERN.search(r_name):
+                guest_roles.append(r)
 
         if guest_roles:
             category_roles["Guest"] = guest_roles
@@ -711,8 +737,10 @@ class VerificationService:
         # Check for duplicate guest roles
         matched_guest_roles: list[discord.Role] = []
         for r in guild_roles:
-            r_clean = getattr(r, "name", "").lower().replace(" ", "").replace("_", "")
-            if r_clean in ("guest(approved)", "guestapproved", "guest", "approvedguest"):
+            r_name = getattr(r, "name", "")
+            if not r_name:
+                continue
+            if GUEST_ROLE_PATTERN.search(r_name):
                 matched_guest_roles.append(r)
 
         if len(matched_guest_roles) > 1:
@@ -725,7 +753,13 @@ class VerificationService:
         bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
         for r in guild_roles:
             r_name = getattr(r, "name", "")
-            if r_name in FACULTY_ROLE_NAMES or r_name in ("Guest(Approved)", "Guest (Approved)", "Guest"):
+            if not r_name:
+                continue
+            is_managed = (
+                any(self._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES)
+                or bool(GUEST_ROLE_PATTERN.search(r_name))
+            )
+            if is_managed:
                 r_pos = getattr(r, "position", 0)
                 if isinstance(bot_pos, int) and isinstance(r_pos, int) and r_pos >= bot_pos:
                     bot_name = getattr(bot_top_role, "name", "TARVeri")

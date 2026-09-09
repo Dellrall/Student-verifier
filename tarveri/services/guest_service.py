@@ -14,7 +14,7 @@ from typing import Any
 
 import discord
 
-from tarveri.config import GUEST_ROLE_COLOR, get_configured_tz, now_formatted
+from tarveri.config import GUEST_ROLE_COLOR, GUEST_ROLE_PATTERN, get_configured_tz, now_formatted
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.utils import format_ticket_seq, parse_db_timestamp
@@ -171,33 +171,34 @@ class GuestService:
     async def find_guest_role(self, guild: discord.Guild, configured_name: str | None = None) -> discord.Role | None:
         """
         Thoroughly searches for an existing guest role in a guild across in-memory cache and live API.
+        Dynamically matches configured names, known aliases, and guest/visitor regex patterns.
         """
         def _match_guest_in_list(roles: Sequence[discord.Role]) -> discord.Role | None:
+            if not roles:
+                return None
+
+            # 1. Check configured guest role name first
             if configured_name:
                 for r in roles:
-                    if getattr(r, "name", "") == configured_name:
+                    if getattr(r, "name", None) == configured_name:
                         return r
+                conf_clean = configured_name.strip().lower()
                 for r in roles:
-                    if getattr(r, "name", "").strip().lower() == configured_name.strip().lower():
+                    if getattr(r, "name", "").strip().lower() == conf_clean:
                         return r
 
-            known_aliases = [
-                "Guest(Approved)",
-                "Guest (Approved)",
-                "Guest",
-                "Approved Guest",
-                "Guest(approved)",
-                "Guest (approved)",
-            ]
-            for alias in known_aliases:
-                for r in roles:
-                    if getattr(r, "name", "") == alias:
-                        return r
-
+            # 2. Check dynamic regex pattern (matches "Guest", "Guests", "Visitor", "Visitors", "Guest (Approved)", etc.)
+            matched = []
             for r in roles:
-                normalized_name = getattr(r, "name", "").lower().replace(" ", "").replace("_", "")
-                if normalized_name in ("guest(approved)", "guestapproved", "guest"):
-                    return r
+                r_name = getattr(r, "name", "").strip()
+                if not r_name:
+                    continue
+                if GUEST_ROLE_PATTERN.search(r_name):
+                    matched.append(r)
+
+            if matched:
+                return max(matched, key=lambda r: getattr(r, "position", 0))
+
             return None
 
         # 1. Check in-memory guild.roles cache
