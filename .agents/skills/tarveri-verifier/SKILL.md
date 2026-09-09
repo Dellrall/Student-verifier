@@ -91,9 +91,16 @@ flowchart TD
 - `VerificationService.reconcile_verified_members(guild)` checks all verified students in the database against present guild members.
 - If a verified student rejoined during maintenance or had their role stripped, the bot automatically re-assigns their faculty role.
 
-### 6. Role Hierarchy & Permission Diagnostics (`/diagnose`)
+### 6. Duplicate Role Reconciliation & Cleanup Engine
+- `VerificationService.reconcile_duplicate_roles(guild)` automatically scans guilds for duplicate faculty or guest roles (e.g. `FOCS` vs `focs` or newly spawned bottom duplicates).
+- Identifies the primary role (highest position in role hierarchy and member count).
+- Migrates all members on redundant duplicate role(s) to the primary role (`add_roles` + `remove_roles`).
+- Safely deletes redundant duplicate role(s) from Discord and records an audit event in the database.
+- Automatically invoked during bot startup self-healing and via the `/diagnose` slash command.
+
+### 7. Role Hierarchy & Permission Diagnostics (`/diagnose`)
 - Compares `guild.me.top_role.position` against managed roles (`Guest(Approved)`, `TARUMT Verified`, faculty roles).
-- Logs alerts if the bot lacks `Manage Roles` or if a managed role is higher than the bot's top role.
+- Detects duplicate roles and logs alerts if the bot lacks `Manage Roles` or if a managed role is higher than the bot's top role.
 - Administrators can trigger this anytime via `/diagnose`.
 
 ---
