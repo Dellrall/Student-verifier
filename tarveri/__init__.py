@@ -25,7 +25,7 @@ from tarveri.services.guest_service import GuestService
 from tarveri.services.outage_service import OutageService
 from tarveri.services.verification_service import VerificationService
 
-__version__ = "2.4.3"
+__version__ = "2.4.4"
 
 __all__ = [
     "__version__",

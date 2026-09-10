@@ -18,12 +18,14 @@ async def test_outage_service_initialization(tmp_path):
     db = Database(str(tmp_path / "outage_init.db"))
     await db.connect()
 
-    service = OutageService(bot, db, timeout_seconds=300, probe_interval=15)
+    service = OutageService(bot, db, timeout_seconds=300, probe_interval=15, alert_grace_seconds=20)
     assert service.timeout_seconds == 300
     assert service.probe_interval == 15
+    assert service.alert_grace_seconds == 20
     assert service.probe_targets == DEFAULT_PROBE_TARGETS
     assert not service.is_running
     assert not service.is_outage_active
+    assert not service.alert_logged
     assert service.disconnected_at is None
     assert service.disconnect_duration == 0.0
     assert service.last_probe_success is True
@@ -81,22 +83,21 @@ async def test_outage_service_disconnect_and_reconnect_lifecycle(tmp_path):
     service = OutageService(bot, db, timeout_seconds=300)
 
     # 1. Trigger disconnect
-    with patch.object(service, "check_connectivity", AsyncMock(return_value=(False, None))):
-        service.on_disconnect()
-        assert service.is_outage_active is True
-        assert service.disconnected_at is not None
-        assert service.disconnect_duration >= 0.0
+    service.on_disconnect()
+    assert service.is_outage_active is True
+    assert service.disconnected_at is not None
+    assert service.disconnect_duration >= 0.0
 
-        # Calling on_disconnect again while active should not reset start time
-        t_first = service.disconnected_at
-        service.on_disconnect()
-        assert service.disconnected_at == t_first
+    # Calling on_disconnect again while active should not reset start time
+    t_first = service.disconnected_at
+    service.on_disconnect()
+    assert service.disconnected_at == t_first
 
-        # 2. Trigger reconnect
-        service.on_reconnect()
-        assert service.is_outage_active is False
-        assert service.disconnected_at is None
-        assert service.disconnect_duration == 0.0
+    # 2. Trigger reconnect
+    service.on_reconnect()
+    assert service.is_outage_active is False
+    assert service.disconnected_at is None
+    assert service.disconnect_duration == 0.0
 
     await db.close()
 
@@ -191,17 +192,107 @@ async def test_outage_service_start_and_stop(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_outage_service_debounce_suppresses_quick_resumes(tmp_path):
+    bot = MagicMock()
+    bot.is_closed = MagicMock(side_effect=[False, True])
+    bot.close = AsyncMock()
+
+    db = Database(str(tmp_path / "outage_debounce.db"))
+    await db.connect()
+
+    # 20s alert grace period
+    service = OutageService(bot, db, timeout_seconds=300, probe_interval=1, alert_grace_seconds=20)
+    service.on_disconnect()
+    assert service.is_outage_active is True
+    assert not service.alert_logged
+
+    # Simulate 5s elapsed (less than 20s grace period) with reachable internet
+    service._disconnected_at = time.monotonic() - 5.0
+
+    with patch.object(service, "check_connectivity", AsyncMock(return_value=(True, 4.5))):
+        with patch("asyncio.sleep", AsyncMock(return_value=None)):
+            await service._watchdog_loop()
+
+    # Alert should NOT have been logged because elapsed (5s) < alert_grace_seconds (20s) and internet is reachable
+    assert service.alert_logged is False
+
+    # Simulate fast reconnect (e.g. after 0.7s)
+    service.on_reconnect()
+    assert service.is_outage_active is False
+    assert service.alert_logged is False
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_outage_service_debounce_alerts_immediately_when_offline(tmp_path):
+    bot = MagicMock()
+    bot.is_closed = MagicMock(side_effect=[False, True])
+    bot.close = AsyncMock()
+
+    db = Database(str(tmp_path / "outage_offline_alert.db"))
+    await db.connect()
+
+    service = OutageService(bot, db, timeout_seconds=300, probe_interval=1, alert_grace_seconds=20)
+    service.on_disconnect()
+    assert service.is_outage_active is True
+    assert not service.alert_logged
+
+    # Even with only 2s elapsed, unreachable internet must trigger alert immediately
+    service._disconnected_at = time.monotonic() - 2.0
+
+    with patch.object(service, "check_connectivity", AsyncMock(return_value=(False, None))):
+        with patch("asyncio.sleep", AsyncMock(return_value=None)):
+            await service._watchdog_loop()
+
+    assert service.alert_logged is True
+
+    # Reconnect after alert logged resets state
+    service.on_reconnect()
+    assert service.is_outage_active is False
+    assert service.alert_logged is False
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_outage_service_debounce_alerts_on_sustained_gateway_disconnect(tmp_path):
+    bot = MagicMock()
+    bot.is_closed = MagicMock(side_effect=[False, True])
+    bot.close = AsyncMock()
+
+    db = Database(str(tmp_path / "outage_sustained_alert.db"))
+    await db.connect()
+
+    service = OutageService(bot, db, timeout_seconds=300, probe_interval=1, alert_grace_seconds=20)
+    service.on_disconnect()
+
+    # Disconnect persisted for 25s (exceeding 20s grace period)
+    service._disconnected_at = time.monotonic() - 25.0
+
+    with patch.object(service, "check_connectivity", AsyncMock(return_value=(True, 5.0))):
+        with patch("asyncio.sleep", AsyncMock(return_value=None)):
+            await service._watchdog_loop()
+
+    assert service.alert_logged is True
+
+    await db.close()
+
+
 def test_settings_outage_watchdog_env_parsing(monkeypatch):
     monkeypatch.setenv("TARVERI_BOT_TOKEN", "test_token")
     monkeypatch.setenv("TARVERI_ID_HASH_SECRET", "test_secret")
     monkeypatch.setenv("TARVERI_ENABLE_OUTAGE_WATCHDOG", "true")
     monkeypatch.setenv("TARVERI_OUTAGE_TIMEOUT_SECONDS", "180")
     monkeypatch.setenv("TARVERI_OUTAGE_PROBE_INTERVAL_SECONDS", "10")
+    monkeypatch.setenv("TARVERI_OUTAGE_ALERT_GRACE_SECONDS", "30")
 
     s = Settings.from_env()
     assert s.enable_outage_watchdog is True
     assert s.outage_timeout_seconds == 180
     assert s.outage_probe_interval_seconds == 10
+    assert s.outage_alert_grace_seconds == 30
 
     monkeypatch.setenv("TARVERI_ENABLE_OUTAGE_WATCHDOG", "false")
     s2 = Settings.from_env()

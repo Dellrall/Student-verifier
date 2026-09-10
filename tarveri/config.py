@@ -220,6 +220,7 @@ class Settings:
     enable_outage_watchdog: bool = True
     outage_timeout_seconds: int = 300
     outage_probe_interval_seconds: int = 15
+    outage_alert_grace_seconds: int = 20
 
     @property
     def database_path(self) -> str:
@@ -352,6 +353,13 @@ class Settings:
         ).strip()
         outage_probe_interval_seconds = int(outage_probe_raw) if outage_probe_raw.isdigit() else 15
 
+        outage_grace_raw = (
+            os.getenv("TARVERI_OUTAGE_ALERT_GRACE_SECONDS")
+            or os.getenv("OUTAGE_ALERT_GRACE_SECONDS")
+            or "20"
+        ).strip()
+        outage_alert_grace_seconds = int(outage_grace_raw) if outage_grace_raw.isdigit() else 20
+
         if validate:
             if not bot_token:
                 raise RuntimeError(
@@ -381,6 +389,7 @@ class Settings:
             enable_outage_watchdog=enable_outage_watchdog,
             outage_timeout_seconds=outage_timeout_seconds,
             outage_probe_interval_seconds=outage_probe_interval_seconds,
+            outage_alert_grace_seconds=outage_alert_grace_seconds,
         )
 
 

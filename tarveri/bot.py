@@ -71,6 +71,7 @@ class TARVeriBot(commands.Bot):
                 db=self.db,
                 timeout_seconds=settings.outage_timeout_seconds,
                 probe_interval=settings.outage_probe_interval_seconds,
+                alert_grace_seconds=settings.outage_alert_grace_seconds,
             )
             if settings.enable_outage_watchdog
             else None
@@ -140,12 +141,12 @@ class TARVeriBot(commands.Bot):
             self.outage_service.start()
 
     async def on_disconnect(self) -> None:
-        logger.warning("Discord gateway connection lost (disconnect event).")
+        logger.debug("Discord gateway connection lost (disconnect event).")
         if self.outage_service:
             self.outage_service.on_disconnect()
 
     async def on_resumed(self) -> None:
-        logger.info("Discord gateway session successfully resumed.")
+        logger.debug("Discord gateway session successfully resumed.")
         if self.outage_service:
             self.outage_service.on_reconnect()
 
