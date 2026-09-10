@@ -793,6 +793,17 @@ class Database:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def count_successful_referrals_by_user(self, referrer_discord_id: int) -> int:
+        """Counts total guest referrals successfully used/approved across all guilds for a student."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*) FROM referral_codes WHERE referrer_discord_id = ? AND status = 'USED'",
+            (referrer_discord_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
     async def get_user_referrals(
         self, guild_id: int, referrer_discord_id: int, limit: int = 10
     ) -> list[dict[str, Any]]:
@@ -947,6 +958,26 @@ class Database:
                       closed_by_admin_id, close_reason, ticket_seq, pinged_admin_ids, last_pinged_at
                FROM guest_tickets
                WHERE guild_id = ? AND applicant_id = ? AND status = 'OPEN'""",
+            (guild_id, applicant_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_ticket(row)
+
+    async def get_latest_guest_ticket_for_user(
+        self, guild_id: int, applicant_id: int
+    ) -> dict[str, Any] | None:
+        """Fetches the newest guest ticket for an applicant in this guild."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
+                      reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
+                      closed_by_admin_id, close_reason, ticket_seq, pinged_admin_ids, last_pinged_at
+               FROM guest_tickets
+               WHERE guild_id = ? AND applicant_id = ?
+               ORDER BY ticket_id DESC LIMIT 1""",
             (guild_id, applicant_id),
         )
         row = await cursor.fetchone()

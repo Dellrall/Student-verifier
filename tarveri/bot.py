@@ -12,11 +12,13 @@ import discord
 from discord.ext import commands
 
 from tarveri.cogs.admin_cog import AdminCog
+from tarveri.cogs.card_cog import CardCog
 from tarveri.cogs.guest_cog import GuestCog, GuestReviewThreadView, VerificationGatewayView
 from tarveri.cogs.verification_cog import VerificationCog
 from tarveri.config import Settings, setup_logger
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.services.card_service import CardService
 from tarveri.services.guest_service import GuestService
 from tarveri.services.log_service import LogRotationService
 from tarveri.services.outage_service import OutageService
@@ -54,6 +56,10 @@ class TARVeriBot(commands.Bot):
             db=self.db,
             admin_role_name=settings.admin_role_name,
             rate_limiter=self.rate_limiter,
+        )
+        self.card_service = CardService(
+            db=self.db,
+            admin_role_name=settings.admin_role_name,
         )
         self.update_checker = (
             UpdateCheckerService(
@@ -129,6 +135,13 @@ class TARVeriBot(commands.Bot):
                 db=self.db,
                 guest_service=self.guest_service,
                 verification_service=self.service,
+            )
+        )
+        await self.add_cog(
+            CardCog(
+                bot=self,
+                db=self.db,
+                card_service=self.card_service,
             )
         )
 

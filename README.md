@@ -59,9 +59,11 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 
 ## Usage
 
-### Students
+### Students & Members
 * `/verify` — Opens a private modal popup in the server to submit your student ID.
 * Or DM your student ID (e.g. `23WMD09867`) directly to the bot.
+* `/card [member] [public]` — Generate a modern digital student/guest campus card with faculty styling, verification badges, and secure tokens.
+* **Context Menu**: Right-click (or long-press) any member $\to$ **Apps** $\to$ **"View Campus Card"**.
 * `/referral generate [ttl_hours]` — Verified students generate a single-use guest referral code for friends.
 * `/referral list` — View your active and past generated referral codes.
 
