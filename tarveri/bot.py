@@ -18,6 +18,7 @@ from tarveri.config import Settings, setup_logger
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.guest_service import GuestService
+from tarveri.services.log_service import LogRotationService
 from tarveri.services.outage_service import OutageService
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
@@ -76,6 +77,15 @@ class TARVeriBot(commands.Bot):
             if settings.enable_outage_watchdog
             else None
         )
+        self.log_rotator = (
+            LogRotationService(
+                logs_dir=settings.logs_dir,
+                older_than_days=settings.log_archive_days,
+                tz_name=settings.timezone_name,
+            )
+            if settings.enable_log_rotator
+            else None
+        )
         self._is_ready_logged = False
         self._cmd_sync_task: asyncio.Task[None] | None = None
 
@@ -110,6 +120,7 @@ class TARVeriBot(commands.Bot):
                 rate_limiter=self.rate_limiter,
                 admin_role_name=self.settings.admin_role_name,
                 update_checker=self.update_checker,
+                log_rotator=self.log_rotator,
             )
         )
         await self.add_cog(
@@ -139,6 +150,9 @@ class TARVeriBot(commands.Bot):
 
         if self.outage_service:
             self.outage_service.start()
+
+        if self.log_rotator:
+            self.log_rotator.start()
 
     async def on_disconnect(self) -> None:
         logger.debug("Discord gateway connection lost (disconnect event).")
@@ -215,6 +229,9 @@ class TARVeriBot(commands.Bot):
         if self.outage_service:
             self.outage_service.stop()
 
+        if self.log_rotator:
+            self.log_rotator.stop()
+
         if self.update_checker:
             self.update_checker.stop()
 
@@ -242,10 +259,11 @@ async def run_bot(settings: Settings | None = None) -> None:
         settings = Settings.from_env()
 
     setup_logger(
-        settings.log_file,
-        settings.log_max_bytes,
-        settings.log_backup_count,
+        log_file=settings.log_file,
+        max_bytes=settings.log_max_bytes,
+        backup_count=settings.log_backup_count,
         tz_name=settings.timezone_name,
+        logs_dir=settings.logs_dir,
     )
     bot = TARVeriBot(settings)
 

@@ -11,6 +11,12 @@ from discord.ext import commands
 from tarveri.config import FACULTY_ROLE_NAMES, FACULTY_ROLES
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.services.log_service import (
+    LogRotationService,
+    archive_old_logs,
+    list_daily_logs,
+    list_log_archives,
+)
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
 from tarveri.utils import format_ticket_seq, schedule_ttl_delete
@@ -39,6 +45,7 @@ class AdminCog(commands.Cog, name="Admin"):
         rate_limiter: RateLimiter,
         admin_role_name: str,
         update_checker: UpdateCheckerService | None = None,
+        log_rotator: LogRotationService | None = None,
     ):
         self.bot = bot
         self.db = db
@@ -46,6 +53,7 @@ class AdminCog(commands.Cog, name="Admin"):
         self.rate_limiter = rate_limiter
         self.admin_role_name = admin_role_name
         self.update_checker = update_checker
+        self.log_rotator = log_rotator
 
     def _check_admin(self, interaction: discord.Interaction) -> bool:
         return is_admin_or_has_role(interaction, self.admin_role_name)
@@ -1049,6 +1057,145 @@ class AdminCog(commands.Cog, name="Admin"):
 
         await interaction.followup.send(embed=embed, ephemeral=True)
         schedule_ttl_delete(interaction, delay=90.0)
+
+    @app_commands.command(
+        name="logs",
+        description="Inspect daily log files, view compressed 10-day archives, or trigger log rotation.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        action="Log operation to perform (list: view files & archives, archive: trigger compression, recent: tail log)",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="List Daily Logs & 10-Day Archives", value="list"),
+            app_commands.Choice(name="Run 10-Day Log Archival (.tar.gz)", value="archive"),
+            app_commands.Choice(name="View Recent Active Log Lines", value="recent"),
+        ]
+    )
+    async def logs(
+        self,
+        interaction: discord.Interaction,
+        action: str = "list",
+    ) -> None:
+        """Inspects daily log files in logs/, compressed 10-day archives, or forces immediate rotation."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        action_val = action.value if hasattr(action, "value") else str(action)
+        logs_dir = getattr(self.bot, "settings", None) and self.bot.settings.logs_dir or "logs"
+        tz_name = getattr(self.bot, "settings", None) and self.bot.settings.timezone_name or "Asia/Kuala_Lumpur"
+
+        if action_val == "list":
+            daily_logs = list_daily_logs(logs_dir=logs_dir, tz_name=tz_name)
+            archives = list_log_archives(logs_dir=logs_dir)
+
+            embed = discord.Embed(
+                title=f"📁 TARVeri Logs & Historical Archives (`{logs_dir}/`)",
+                color=discord.Color.blue(),
+            )
+
+            if daily_logs:
+                daily_desc = []
+                for dl in daily_logs[:7]:
+                    size_kb = dl["size_bytes"] / 1024
+                    daily_desc.append(f"• 📄 `{dl['filename']}` — {size_kb:.1f} KB ({dl['lines']} lines)")
+                embed.add_field(
+                    name=f"📅 Active Daily Logs ({len(daily_logs)} total)",
+                    value="\n".join(daily_desc) if daily_desc else "None",
+                    inline=False,
+                )
+            else:
+                embed.add_field(name="📅 Active Daily Logs", value="No daily log files found.", inline=False)
+
+            if archives:
+                archive_desc = []
+                for ar in archives[:7]:
+                    size_kb = ar["size_bytes"] / 1024
+                    archive_desc.append(
+                        f"• 📦 `{ar['filename']}` — {size_kb:.1f} KB ({ar['file_count']} logs bundled)"
+                    )
+                embed.add_field(
+                    name=f"🗜️ 10-Day Compressed Archives ({len(archives)} total in `{logs_dir}/archives/`)",
+                    value="\n".join(archive_desc) if archive_desc else "None",
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name="🗜️ 10-Day Compressed Archives",
+                    value="No archives created yet (logs $>10$ days old are grouped and compressed).",
+                    inline=False,
+                )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=90.0)
+
+        elif action_val == "archive":
+            results = archive_old_logs(
+                logs_dir=logs_dir,
+                older_than_days=getattr(self.bot, "settings", None) and self.bot.settings.log_archive_days or 10,
+                tz_name=tz_name,
+            )
+
+            if not results:
+                await interaction.followup.send(
+                    "ℹ️ No uncompressed daily log files older than 10 days found to archive.",
+                    ephemeral=True,
+                )
+                schedule_ttl_delete(interaction, delay=60.0)
+                return
+
+            total_saved_kb = sum(r["space_saved_bytes"] for r in results) / 1024
+            total_files = sum(len(r["files_archived"]) for r in results)
+
+            embed = discord.Embed(
+                title="🗜️ Log Archival & Compression Completed",
+                description=(
+                    f"Successfully grouped and compressed **{total_files}** daily log file(s) "
+                    f"into **{len(results)}** 10-day `.tar.gz` archive(s).\n"
+                    f"💾 **Space Saved:** `{total_saved_kb:.1f} KB`"
+                ),
+                color=discord.Color.green(),
+            )
+            for r in results[:10]:
+                ar_size_kb = r["archive_bytes"] / 1024
+                embed.add_field(
+                    name=f"📦 `{r['archive_name']}`",
+                    value=f"• **Period:** `{r['period_tag']}`\n• **Files Bundled:** {len(r['files_archived'])}\n• **Archive Size:** `{ar_size_kb:.1f} KB`",
+                    inline=False,
+                )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=90.0)
+
+        elif action_val == "recent":
+            daily_logs = list_daily_logs(logs_dir=logs_dir, tz_name=tz_name)
+            if not daily_logs:
+                await interaction.followup.send("⚠️ No active log file found.", ephemeral=True)
+                schedule_ttl_delete(interaction, delay=60.0)
+                return
+
+            latest_log_path = daily_logs[0]["path"]
+            try:
+                with open(latest_log_path, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+                tail_lines = lines[-15:] if len(lines) > 15 else lines
+                content = "".join(tail_lines)
+                if len(content) > 1900:
+                    content = content[-1900:]
+
+                await interaction.followup.send(
+                    f"📄 **Latest Logs** (`{daily_logs[0]['filename']}`):\n```text\n{content}\n```",
+                    ephemeral=True,
+                )
+            except Exception as e:
+                await interaction.followup.send(f"❌ Failed to read log file: {e}", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=90.0)
 
 
 

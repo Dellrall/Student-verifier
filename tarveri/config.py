@@ -203,9 +203,12 @@ class Settings:
     id_hash_secret: str
     db_path: str = "tarveri.db"
     admin_role_name: str = "TARVeri Admin"
+    logs_dir: str = "logs"
     log_file: str = "tarveri.log"
     log_max_bytes: int = 2_000_000
     log_backup_count: int = 5
+    log_archive_days: int = 10
+    enable_log_rotator: bool = True
     rate_limit_max_attempts: int = 5
     rate_limit_window_seconds: int = 600
     hoster_discord_id: int | None = None
@@ -261,11 +264,31 @@ class Settings:
             or "TARVeri Admin"
         ).strip()
 
+        logs_dir = (
+            os.getenv("TARVERI_LOGS_DIR")
+            or os.getenv("LOGS_DIR")
+            or "logs"
+        ).strip()
+
         log_file = (
             os.getenv("TARVERI_LOG_FILE")
             or os.getenv("LOG_FILE")
             or "tarveri.log"
         ).strip()
+
+        archive_days_raw = (
+            os.getenv("TARVERI_LOG_ARCHIVE_DAYS")
+            or os.getenv("LOG_ARCHIVE_DAYS")
+            or "10"
+        ).strip()
+        log_archive_days = int(archive_days_raw) if archive_days_raw.isdigit() else 10
+
+        enable_rotator_raw = (
+            os.getenv("TARVERI_ENABLE_LOG_ROTATOR")
+            or os.getenv("ENABLE_LOG_ROTATOR")
+            or "true"
+        ).lower().strip()
+        enable_log_rotator = enable_rotator_raw in ("true", "1", "yes")
 
         hoster_id_raw = (
             os.getenv("TARVERI_HOSTER_DISCORD_ID")
@@ -376,7 +399,10 @@ class Settings:
             id_hash_secret=id_hash_secret,
             db_path=db_path,
             admin_role_name=admin_role_name,
+            logs_dir=logs_dir,
             log_file=log_file,
+            log_archive_days=log_archive_days,
+            enable_log_rotator=enable_log_rotator,
             hoster_discord_id=hoster_discord_id,
             enable_update_checker=enable_update_checker,
             update_check_interval_hours=update_check_interval_hours,
@@ -412,12 +438,98 @@ class TimezoneFormatter(logging.Formatter):
         return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
+class DailyRotatingFileHandler(logging.Handler):
+    """
+    Timezone-aware daily rotating file handler that writes log records to date-separated
+    files (e.g. logs/tarveri-YYYY-MM-DD.log) inside `logs_dir`.
+    Automatically rolls over to a new daily log file when the date advances in the configured timezone.
+    """
+
+    def __init__(
+        self,
+        logs_dir: str = "logs",
+        prefix: str = "tarveri",
+        tz_name: str | None = None,
+        encoding: str = "utf-8",
+    ) -> None:
+        super().__init__()
+        self.logs_dir = logs_dir
+        self.prefix = prefix
+        self.tz = get_configured_tz(tz_name)
+        self.encoding = encoding
+        self.current_date_str: str | None = None
+        self._stream: Any = None
+        self._current_file_path: str | None = None
+        os.makedirs(self.logs_dir, exist_ok=True)
+
+    @property
+    def current_file_path(self) -> str | None:
+        return self._current_file_path
+
+    def _get_date_str(self, record: logging.LogRecord) -> str:
+        dt = datetime.fromtimestamp(record.created, tz=self.tz)
+        return dt.strftime("%Y-%m-%d")
+
+    def _open_stream(self, date_str: str) -> None:
+        if self._stream is not None:
+            try:
+                self._stream.flush()
+                self._stream.close()
+            except Exception:
+                pass
+        self.current_date_str = date_str
+        self._current_file_path = os.path.join(self.logs_dir, f"{self.prefix}-{date_str}.log")
+        os.makedirs(self.logs_dir, exist_ok=True)
+        self._stream = open(self._current_file_path, "a", encoding=self.encoding)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.acquire()
+        try:
+            date_str = self._get_date_str(record)
+            if self._stream is None or date_str != self.current_date_str:
+                self._open_stream(date_str)
+            msg = self.format(record)
+            self._stream.write(msg + "\n")
+            self._stream.flush()
+        except Exception:
+            self.handleError(record)
+        finally:
+            self.release()
+
+    def flush(self) -> None:
+        self.acquire()
+        try:
+            if self._stream is not None and hasattr(self._stream, "flush"):
+                self._stream.flush()
+        finally:
+            self.release()
+
+    def close(self) -> None:
+        self.acquire()
+        try:
+            if self._stream is not None:
+                try:
+                    self._stream.flush()
+                    self._stream.close()
+                except Exception:
+                    pass
+                self._stream = None
+            super().close()
+        finally:
+            self.release()
+
+
 def setup_logger(
     log_file: str = "tarveri.log",
     max_bytes: int = 2_000_000,
     backup_count: int = 5,
     tz_name: str | None = None,
+    logs_dir: str = "logs",
 ) -> logging.Logger:
+    """
+    Sets up the application logger with daily file rotation in the logs folder
+    and formatted console output.
+    """
     logger = logging.getLogger("tarveri")
     if logger.handlers:
         return logger
@@ -429,8 +541,23 @@ def setup_logger(
         tz_name=tz_name,
     )
 
-    file_handler = RotatingFileHandler(
-        log_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+    # Determine effective logs directory and log file prefix
+    if os.path.dirname(log_file):
+        effective_logs_dir = os.path.dirname(log_file)
+        base = os.path.basename(log_file)
+        prefix = base.rsplit(".", 1)[0] if "." in base else base
+    else:
+        effective_logs_dir = logs_dir
+        base = log_file
+        prefix = base.rsplit(".", 1)[0] if "." in base else base
+        if not prefix:
+            prefix = "tarveri"
+
+    file_handler = DailyRotatingFileHandler(
+        logs_dir=effective_logs_dir,
+        prefix=prefix,
+        tz_name=tz_name,
+        encoding="utf-8",
     )
     file_handler.setFormatter(formatter)
 

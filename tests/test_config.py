@@ -68,6 +68,9 @@ def test_settings_from_env(monkeypatch):
     monkeypatch.setenv("TARVERI_UPDATE_STREAM", "refactor/modular-optimization")
     monkeypatch.setenv("TARVERI_HELP_CHANNEL_ID", "1122334455")
     monkeypatch.setenv("TARVERI_WELCOME_CHANNEL_ID", "6677889900")
+    monkeypatch.setenv("TARVERI_LOGS_DIR", "var_logs")
+    monkeypatch.setenv("TARVERI_LOG_ARCHIVE_DAYS", "14")
+    monkeypatch.setenv("TARVERI_ENABLE_LOG_ROTATOR", "true")
 
     settings = Settings.from_env()
     assert settings.bot_token == "mock_token"
@@ -75,6 +78,9 @@ def test_settings_from_env(monkeypatch):
     assert settings.update_stream == "refactor/modular-optimization"
     assert settings.help_channel_id == 1122334455
     assert settings.welcome_channel_id == 6677889900
+    assert settings.logs_dir == "var_logs"
+    assert settings.log_archive_days == 14
+    assert settings.enable_log_rotator is True
 
 
 def test_settings_legacy_env_fallbacks(monkeypatch):

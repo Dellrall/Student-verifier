@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from tarveri.bot import TARVeriBot, run_bot
 from tarveri.config import (
+    DailyRotatingFileHandler,
     FACULTY_ALIASES,
     FACULTY_ROLE_NAMES,
     FACULTY_ROLES,
@@ -22,19 +23,28 @@ from tarveri.config import (
 from tarveri.database import Database, list_backups, rotate_backups
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.guest_service import GuestService
+from tarveri.services.log_service import (
+    LogRotationService,
+    archive_old_logs,
+    get_10day_period,
+    list_daily_logs,
+    list_log_archives,
+)
 from tarveri.services.outage_service import OutageService
 from tarveri.services.verification_service import VerificationService
 
-__version__ = "2.4.4"
+__version__ = "2.5.0"
 
 __all__ = [
     "__version__",
+    "DailyRotatingFileHandler",
     "Database",
     "FACULTY_ALIASES",
     "FACULTY_ROLES",
     "FACULTY_ROLE_NAMES",
     "GUEST_ROLE_PATTERN",
     "GuestService",
+    "LogRotationService",
     "OutageService",
     "ROLE_QUALIFIER_PATTERN",
     "RateLimiter",
@@ -43,8 +53,12 @@ __all__ = [
     "Settings",
     "TARVeriBot",
     "VerificationService",
+    "archive_old_logs",
+    "get_10day_period",
     "hash_student_id",
     "list_backups",
+    "list_daily_logs",
+    "list_log_archives",
     "mask_student_id",
     "rotate_backups",
     "run_bot",

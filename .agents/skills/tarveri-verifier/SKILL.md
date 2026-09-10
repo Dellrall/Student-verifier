@@ -24,15 +24,17 @@ Student-verifier/
 │   ├── services/
 │   │   ├── verification_service.py # Student verification logic, role auto-creation, reconciliation
 │   │   ├── guest_service.py        # Referral codes, double verification, batch staff tagging, escalation
+│   │   ├── log_service.py          # Daily log rotation, 10-day period grouping & .tar.gz compression
+│   │   ├── outage_service.py       # Network probe watchdog, debounce & power outage signals
 │   │   └── update_checker.py       # Background git upstream check and DM notifications
 │   └── cogs/
 │       ├── verification_cog.py   # Student slash (/verify) and text commands, welcome/help auto-tips
 │       ├── guest_cog.py          # Guest gateway panel, private review thread views, vouchers
-│       └── admin_cog.py          # Admin tools (/stats, /diagnose, /audit, /unverify, /backup)
+│       └── admin_cog.py          # Admin tools (/stats, /diagnose, /audit, /unverify, /backup, /logs)
 ├── scripts/
 │   ├── update.sh                 # Safe upstream git updater with backup and test preflight
 │   └── show_servers.py           # CLI database inspector for server settings and metrics
-└── tests/                        # 95+ unit tests covering all modules with 0 warnings
+└── tests/                        # 130 unit tests covering all modules with 0 warnings
 ```
 
 ---
@@ -114,6 +116,15 @@ flowchart TD
 - **Auto-Recovery**: If internet or gateway connectivity restores within 5 minutes, automatically cancels the countdown and resumes normal operations.
 - **Emergency Graceful Shutdown**: If the outage persists continuously for 5 minutes, or if an OS power failure signal (`SIGPWR`) is received from UPS / systemd, initiates an emergency graceful shutdown, cleanly checkpointing SQLite WAL to protect against database corruption.
 
+### 10. Daily Log Rotation & 10-Day Period Tar.Gz Archiving (`LogRotationService`)
+- **Daily Log Partitioning**: All application logs are stored in `logs/` and partitioned by calendar day (`logs/tarveri-YYYY-MM-DD.log`) using the configured timezone (`Asia/Kuala_Lumpur`).
+- **10-Day Decade Grouping**: Daily logs older than 10 days are automatically discovered and grouped into 10-day decade bins by year and month:
+  - Part 1: Days 01–10 (`tarveri-logs-YYYY-MM-01_to_YYYY-MM-10.tar.gz`)
+  - Part 2: Days 11–20 (`tarveri-logs-YYYY-MM-11_to_YYYY-MM-20.tar.gz`)
+  - Part 3: Days 21–End (`tarveri-logs-YYYY-MM-21_to_YYYY-MM-(28..31).tar.gz`)
+- **Automated Tarball Compression & Cleanup**: Bundles old logs into gzip-compressed `.tar.gz` archives in `logs/archives/`, seamlessly merging with existing archives if needed, and safely deletes uncompressed log files to conserve disk space.
+- **On-Demand Admin Management**: Inspect daily logs, archives, and manually trigger compression anytime using `/logs`.
+
 ---
 
 ## 🎟️ Alphanumeric Ticket Sequencing & Smart Escalation
@@ -151,6 +162,7 @@ flowchart TD
 - `/unverify @user` — Unlink student ID and strip faculty roles.
 - `/audit [limit] [event_type]` — Inspect database audit logs.
 - `/backup [action] [backup_file]` — Create backups, list snapshots, or restore previous latest server settings / full database.
+- `/logs [action]` — Inspect active daily logs in `logs/`, list 10-day compressed archives, or trigger immediate `.tar.gz` rotation.
 - `/resync` — Re-synchronize roles across mutual servers.
 - `/check_updates [stream]` — Check git upstream for new commits.
 
