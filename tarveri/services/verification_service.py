@@ -17,6 +17,10 @@ import discord
 from tarveri.config import (
     ALUMNI_ROLE_COLOR,
     ALUMNI_ROLE_NAME,
+    CAMPUS_ALIASES,
+    CAMPUS_COLORS,
+    CAMPUS_ROLE_NAMES,
+    CAMPUS_ROLES,
     FACULTY_ALIASES,
     FACULTY_COLORS,
     FACULTY_ROLE_NAMES,
@@ -25,8 +29,14 @@ from tarveri.config import (
     ROLE_QUALIFIER_PATTERN,
     SRC_ROLE_NAMES,
     SRC_ROLES,
+    STUDY_LEVEL_ALIASES,
+    STUDY_LEVEL_COLORS,
+    STUDY_LEVEL_ROLE_NAMES,
+    STUDY_LEVEL_ROLES,
+    StudentIdInfo,
     hash_student_id,
     mask_student_id,
+    parse_student_id,
     validate_student_id,
 )
 from tarveri.database import Database
@@ -408,30 +418,239 @@ class VerificationService:
                 )
                 return None
 
+    @classmethod
+    def _match_campus_role_in_list(cls, roles: Sequence[discord.Role], target_name: str) -> discord.Role | None:
+        """Dynamic matcher to find an existing branch campus role in a list of roles."""
+        if not roles or not target_name:
+            return None
+
+        target_upper = target_name.strip().upper()
+        target_alnum = re.sub(r"[^A-Za-z0-9]", "", target_upper)
+        aliases = CAMPUS_ALIASES.get(target_name, [target_name])
+
+        for r in roles:
+            if getattr(r, "name", None) == target_name:
+                return r
+
+        for r in roles:
+            if getattr(r, "name", "").strip().upper() == target_upper:
+                return r
+
+        for alias in aliases:
+            alias_upper = alias.strip().upper()
+            for r in roles:
+                if getattr(r, "name", "").strip().upper() == alias_upper:
+                    return r
+
+        for r in roles:
+            r_alnum = re.sub(r"[^A-Za-z0-9]", "", getattr(r, "name", "").upper())
+            if r_alnum == target_alnum and r_alnum:
+                return r
+
+        return None
+
+    async def find_campus_role(self, guild: discord.Guild, campus_name: str) -> discord.Role | None:
+        """Finds existing campus role in guild cache or live API."""
+        if not guild or not campus_name:
+            return None
+        guild_roles = getattr(guild, "roles", [])
+        if isinstance(guild_roles, (list, tuple)):
+            found = self._match_campus_role_in_list(guild_roles, campus_name)
+            if found is not None:
+                return found
+        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
+            try:
+                live_roles = await guild.fetch_roles()
+                if isinstance(live_roles, (list, tuple)):
+                    found = self._match_campus_role_in_list(live_roles, campus_name)
+                    if found is not None:
+                        return found
+            except (discord.HTTPException, discord.Forbidden):
+                pass
+        return None
+
+    async def get_or_create_campus_role(self, guild: discord.Guild, campus_name: str) -> discord.Role | None:
+        """Finds or atomically creates a branch campus role."""
+        if not guild or not campus_name:
+            return None
+        existing = await self.find_campus_role(guild, campus_name)
+        if existing is not None:
+            return existing
+
+        lock = self._get_guild_role_lock(guild.id)
+        async with lock:
+            existing = await self.find_campus_role(guild, campus_name)
+            if existing is not None:
+                return existing
+
+            can_manage = (
+                getattr(guild.me.guild_permissions, "manage_roles", False)
+                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
+                else False
+            )
+            if not can_manage:
+                return None
+
+            try:
+                color_val = CAMPUS_COLORS.get(campus_name, 0x3498DB)
+                role = await guild.create_role(
+                    name=campus_name,
+                    colour=discord.Colour(color_val),
+                    mentionable=True,
+                    reason="TARVeri: auto-created campus branch role for student verification",
+                )
+                try:
+                    await self.db.record_bot_created_role(guild.id, role.id, campus_name)
+                except Exception as e:
+                    logger.debug(f"Could not record bot created campus role: {e}")
+                await self.db.log(
+                    "INFO",
+                    "ROLE_CREATED",
+                    f"Created campus role '{campus_name}' in '{guild.name}' (Guild ID: {guild.id})",
+                    guild=guild,
+                )
+                return role
+            except Exception as e:
+                await self.db.log(
+                    "ERROR",
+                    "ROLE_CREATE_FAILED",
+                    f"Failed to create campus role '{campus_name}' in '{guild.name}': {e}",
+                    guild=guild,
+                )
+                return None
+
+    @classmethod
+    def _match_study_level_role_in_list(cls, roles: Sequence[discord.Role], target_name: str) -> discord.Role | None:
+        """Dynamic matcher to find an existing study level role in a list of roles."""
+        if not roles or not target_name:
+            return None
+
+        target_upper = target_name.strip().upper()
+        target_alnum = re.sub(r"[^A-Za-z0-9]", "", target_upper)
+        aliases = STUDY_LEVEL_ALIASES.get(target_name, [target_name])
+
+        for r in roles:
+            if getattr(r, "name", None) == target_name:
+                return r
+
+        for r in roles:
+            if getattr(r, "name", "").strip().upper() == target_upper:
+                return r
+
+        for alias in aliases:
+            alias_upper = alias.strip().upper()
+            for r in roles:
+                if getattr(r, "name", "").strip().upper() == alias_upper:
+                    return r
+
+        for r in roles:
+            r_alnum = re.sub(r"[^A-Za-z0-9]", "", getattr(r, "name", "").upper())
+            if r_alnum == target_alnum and r_alnum:
+                return r
+
+        return None
+
+    async def find_study_level_role(self, guild: discord.Guild, level_name: str) -> discord.Role | None:
+        """Finds existing study level role in guild cache or live API."""
+        if not guild or not level_name:
+            return None
+        guild_roles = getattr(guild, "roles", [])
+        if isinstance(guild_roles, (list, tuple)):
+            found = self._match_study_level_role_in_list(guild_roles, level_name)
+            if found is not None:
+                return found
+        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
+            try:
+                live_roles = await guild.fetch_roles()
+                if isinstance(live_roles, (list, tuple)):
+                    found = self._match_study_level_role_in_list(live_roles, level_name)
+                    if found is not None:
+                        return found
+            except (discord.HTTPException, discord.Forbidden):
+                pass
+        return None
+
+    async def get_or_create_study_level_role(self, guild: discord.Guild, level_name: str) -> discord.Role | None:
+        """Finds or atomically creates a study level role."""
+        if not guild or not level_name:
+            return None
+        existing = await self.find_study_level_role(guild, level_name)
+        if existing is not None:
+            return existing
+
+        lock = self._get_guild_role_lock(guild.id)
+        async with lock:
+            existing = await self.find_study_level_role(guild, level_name)
+            if existing is not None:
+                return existing
+
+            can_manage = (
+                getattr(guild.me.guild_permissions, "manage_roles", False)
+                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
+                else False
+            )
+            if not can_manage:
+                return None
+
+            try:
+                color_val = STUDY_LEVEL_COLORS.get(level_name, 0x2980B9)
+                role = await guild.create_role(
+                    name=level_name,
+                    colour=discord.Colour(color_val),
+                    mentionable=True,
+                    reason="TARVeri: auto-created study level role for student verification",
+                )
+                try:
+                    await self.db.record_bot_created_role(guild.id, role.id, level_name)
+                except Exception as e:
+                    logger.debug(f"Could not record bot created study level role: {e}")
+                await self.db.log(
+                    "INFO",
+                    "ROLE_CREATED",
+                    f"Created study level role '{level_name}' in '{guild.name}' (Guild ID: {guild.id})",
+                    guild=guild,
+                )
+                return role
+            except Exception as e:
+                await self.db.log(
+                    "ERROR",
+                    "ROLE_CREATE_FAILED",
+                    f"Failed to create study level role '{level_name}' in '{guild.name}': {e}",
+                    guild=guild,
+                )
+                return None
+
     async def _assign_role_in_guild(
-        self, guild: discord.Guild, user_id: int, role_name: str, result: RoleSyncResult
+        self,
+        guild: discord.Guild,
+        user_id: int,
+        role_name: str,
+        result: RoleSyncResult,
+        campus_role_name: str | None = None,
+        level_role_name: str | None = None,
     ) -> None:
-        """Process role assignment in a single guild."""
+        """Process role assignment in a single guild (faculty role + campus role + study level role)."""
         member = await self.get_or_fetch_member(guild, user_id)
         if member is None:
             return
 
-        # Check if member already has any faculty role
         member_roles = getattr(member, "roles", [])
+        already_has_faculty = False
+        existing_faculty_name = None
         if isinstance(member_roles, (list, tuple)):
             for r in member_roles:
                 for fac in FACULTY_ROLE_NAMES:
                     if self._match_faculty_role_in_list([r], fac) is not None:
-                        result.already_had_role_in.append((guild.id, guild.name, getattr(r, "name", fac)))
-                        return
+                        already_has_faculty = True
+                        existing_faculty_name = getattr(r, "name", fac)
+                        break
+                if already_has_faculty:
+                    break
 
-        # Exhaustive search or create
-        role = await self.get_or_create_faculty_role(guild, role_name)
-        if not role:
-            result.missing_role_in.append(guild.name)
+        if already_has_faculty and not campus_role_name and not level_role_name:
+            result.already_had_role_in.append((guild.id, guild.name, existing_faculty_name or role_name))
             return
 
-        # Check hierarchy and permissions
         me = getattr(guild, "me", None)
         can_manage = (
             getattr(me.guild_permissions, "manage_roles", False)
@@ -440,36 +659,94 @@ class VerificationService:
         )
         bot_top_role = getattr(me, "top_role", None) if me else None
         bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
-        role_pos = getattr(role, "position", 0)
 
-        if not can_manage or (isinstance(bot_pos, int) and isinstance(role_pos, int) and role_pos >= bot_pos):
-            result.failed_in.append(guild.name)
-            return
+        roles_to_add: list[discord.Role] = []
+        assigned_names: list[str] = []
 
-        try:
-            await member.add_roles(role, reason="TARVeri: Student verification role assignment")
-            result.verified_in.append((guild.id, guild.name, getattr(role, "name", role_name)))
-        except discord.HTTPException as e:
-            result.failed_in.append(guild.name)
-            await self.db.log(
-                "ERROR",
-                "ROLE_ASSIGN_FAILED",
-                f"Failed to assign '{role.name}' to user {user_id} in '{guild.name}': {e}",
-                guild=guild,
-                user_id=user_id,
-            )
+        # 1. Primary faculty role
+        if not already_has_faculty:
+            fac_role = await self.get_or_create_faculty_role(guild, role_name)
+            if not fac_role:
+                result.missing_role_in.append(guild.name)
+                return
+            fac_pos = getattr(fac_role, "position", 0)
+            if not can_manage or (isinstance(bot_pos, int) and isinstance(fac_pos, int) and fac_pos >= bot_pos):
+                result.failed_in.append(guild.name)
+                return
+            roles_to_add.append(fac_role)
+            fac_name = getattr(fac_role, "name", None)
+            assigned_names.append(fac_name if isinstance(fac_name, str) and fac_name else role_name)
+        else:
+            assigned_names.append(existing_faculty_name if isinstance(existing_faculty_name, str) and existing_faculty_name else role_name)
+
+        # 2. Branch Campus role (if provided)
+        if campus_role_name:
+            has_campus = any(self._match_campus_role_in_list([r], campus_role_name) is not None for r in member_roles)
+            if not has_campus:
+                camp_role = await self.get_or_create_campus_role(guild, campus_role_name)
+                if camp_role:
+                    camp_pos = getattr(camp_role, "position", 0)
+                    if can_manage and not (isinstance(bot_pos, int) and isinstance(camp_pos, int) and camp_pos >= bot_pos):
+                        roles_to_add.append(camp_role)
+                        camp_name = getattr(camp_role, "name", None)
+                        assigned_names.append(camp_name if isinstance(camp_name, str) and camp_name else campus_role_name)
+
+        # 3. Study Level role (if provided)
+        if level_role_name:
+            has_level = any(self._match_study_level_role_in_list([r], level_role_name) is not None for r in member_roles)
+            if not has_level:
+                lvl_role = await self.get_or_create_study_level_role(guild, level_role_name)
+                if lvl_role:
+                    lvl_pos = getattr(lvl_role, "position", 0)
+                    if can_manage and not (isinstance(bot_pos, int) and isinstance(lvl_pos, int) and lvl_pos >= bot_pos):
+                        roles_to_add.append(lvl_role)
+                        lvl_name = getattr(lvl_role, "name", None)
+                        assigned_names.append(lvl_name if isinstance(lvl_name, str) and lvl_name else level_role_name)
+
+        # Perform role additions
+        if roles_to_add:
+            try:
+                await member.add_roles(*roles_to_add, reason="TARVeri: Student verification role assignment")
+                summary_label = ", ".join(assigned_names)
+                result.verified_in.append((guild.id, guild.name, summary_label))
+            except discord.HTTPException as e:
+                result.failed_in.append(guild.name)
+                await self.db.log(
+                    "ERROR",
+                    "ROLE_ASSIGN_FAILED",
+                    f"Failed to assign roles to user {user_id} in '{guild.name}': {e}",
+                    guild=guild,
+                    user_id=user_id,
+                )
+        elif already_has_faculty:
+            result.already_had_role_in.append((guild.id, guild.name, existing_faculty_name or role_name))
 
     async def assign_role_across_guilds(
-        self, user_id: int, role_name: str, guilds: Sequence[discord.Guild]
+        self,
+        user_id: int,
+        role_name: str,
+        guilds: Sequence[discord.Guild],
+        campus_role_name: str | None = None,
+        level_role_name: str | None = None,
     ) -> RoleSyncResult:
         """
-        Ensures the given user holds `role_name` in all specified guilds concurrently.
+        Ensures the given user holds `role_name` (and optional campus & level roles) in all specified guilds concurrently.
         """
         result = RoleSyncResult()
         if not guilds:
             return result
 
-        tasks = [self._assign_role_in_guild(g, user_id, role_name, result) for g in guilds]
+        tasks = [
+            self._assign_role_in_guild(
+                g,
+                user_id,
+                role_name,
+                result,
+                campus_role_name=campus_role_name,
+                level_role_name=level_role_name,
+            )
+            for g in guilds
+        ]
         await asyncio.gather(*tasks, return_exceptions=True)
         return result
 
@@ -501,7 +778,7 @@ class VerificationService:
         Core verification pipeline:
         1. Rate limit validation
         2. In-flight race condition check
-        3. Student ID format and faculty code extraction
+        3. Student ID format and faculty/campus/level code extraction
         4. Account / duplicate ID verification checks
         5. Role assignment across mutual guilds
         6. Atomic database recording with rollback on collision
@@ -528,13 +805,21 @@ class VerificationService:
         self.rate_limiter.record_attempt(user.id)
 
         try:
-            is_valid, student_id, faculty_code, role_name = validate_student_id(raw_student_id)
-            if not is_valid or not faculty_code or not role_name:
-                if not student_id:
+            info = parse_student_id(raw_student_id)
+            if not info.is_valid or not info.faculty_code or not info.faculty_role:
+                if not info.student_id:
                     return "❌ Please provide a valid student ID (e.g., `23WMD09867`)."
-                if faculty_code and faculty_code not in FACULTY_ROLES:
+                if info.faculty_code and info.faculty_code not in FACULTY_ROLES:
                     return "❌ Student ID does not match any known faculty. Please check and try again."
                 return "❌ Invalid student ID format. Please use the format like `23WMD09867`."
+
+            student_id = info.student_id
+            faculty_code = info.faculty_code
+            role_name = info.faculty_role
+            campus_code = info.campus_code
+            campus_role_name = info.campus_role
+            level_code = info.level_code
+            level_role_name = info.level_role
 
             id_hash = hash_student_id(student_id, self.secret)
 
@@ -550,7 +835,13 @@ class VerificationService:
 
                 mutual_guilds = await self.get_mutual_guilds_for_user(user.id)
                 assigned_faculty_role = FACULTY_ROLES.get(stored_faculty, role_name)
-                sync_result = await self.assign_role_across_guilds(user.id, assigned_faculty_role, mutual_guilds)
+                sync_result = await self.assign_role_across_guilds(
+                    user.id,
+                    assigned_faculty_role,
+                    mutual_guilds,
+                    campus_role_name=campus_role_name,
+                    level_role_name=level_role_name,
+                )
                 summary = self.format_role_summary(sync_result)
                 return summary or "ℹ️ You're already verified and up to date in every server I share with you."
 
@@ -574,17 +865,29 @@ class VerificationService:
             if not mutual_guilds:
                 return "⚠️ I couldn't find you in any server I'm in. Please join the server first, then try again."
 
-            sync_result = await self.assign_role_across_guilds(user.id, role_name, mutual_guilds)
+            sync_result = await self.assign_role_across_guilds(
+                user.id,
+                role_name,
+                mutual_guilds,
+                campus_role_name=campus_role_name,
+                level_role_name=level_role_name,
+            )
 
             # Only persist if role was successfully granted in at least one server
             if sync_result.verified_in:
                 try:
-                    await self.db.record_verification(user.id, id_hash, faculty_code)
+                    await self.db.record_verification(
+                        user.id,
+                        id_hash,
+                        faculty_code,
+                        campus_code=campus_code,
+                        level_code=level_code,
+                    )
                     await self.db.log(
                         "INFO",
                         "VERIFIED",
                         f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}) "
-                        f"→ role '{role_name}' in {[entry[1] if len(entry) == 3 else entry[0] for entry in sync_result.verified_in]}",
+                        f"→ roles in {[entry[1] if len(entry) == 3 else entry[0] for entry in sync_result.verified_in]}",
                         user_id=user.id,
                         guild=guild_ctx,
                     )
@@ -592,23 +895,24 @@ class VerificationService:
                     # Rollback assigned roles if database collision occurs
                     for entry in sync_result.verified_in:
                         if len(entry) == 3:
-                            g_id, _, r_name = entry
+                            g_id, _, r_names = entry
                             guild = self.bot.get_guild(g_id)
                         else:
-                            g_name, r_name = entry
+                            g_name, r_names = entry
                             guild = discord.utils.get(self.bot.guilds, name=g_name)
 
                         if guild:
                             member = await self.get_or_fetch_member(guild, user.id)
                             if member:
-                                r = discord.utils.get(guild.roles, name=r_name)
-                                if r and r in member.roles:
-                                    try:
-                                        await member.remove_roles(
-                                            r, reason="TARVeri: Rollback due to database collision"
-                                        )
-                                    except discord.HTTPException:
-                                        pass
+                                for single_r in r_names.split(", "):
+                                    r = discord.utils.get(guild.roles, name=single_r.strip())
+                                    if r and r in member.roles:
+                                        try:
+                                            await member.remove_roles(
+                                                r, reason="TARVeri: Rollback due to database collision"
+                                            )
+                                        except discord.HTTPException:
+                                            pass
                     await self.db.log(
                         "ERROR",
                         "INTEGRITY_CONFLICT",

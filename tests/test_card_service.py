@@ -19,7 +19,7 @@ async def test_card_data_generation_verified_student(tmp_path):
         service = CardService(db=db, admin_role_name="TARVeri Admin")
 
         user_id = 123456789
-        await db.record_verification(user_id, "abc123hash999", "M")  # M -> FOCS
+        await db.record_verification(user_id, "abc123hash999", "M", campus_code="W", level_code="D")  # M -> FOCS, W -> KL Main Campus, D -> Diploma
 
         guild = MagicMock(spec=discord.Guild)
         guild.id = 998877
@@ -45,8 +45,48 @@ async def test_card_data_generation_verified_student(tmp_path):
         assert "Faculty of Computing" in data["faculty_full"]
         assert "✦ FOCS" in data["badges"]
         assert "✓ VERIFIED" in data["badges"]
+        assert data["cohort_str"] == "KL Main Campus • Diploma"
         assert data["hash_preview"].startswith("TRV-ABC1-")
         assert data["joined_at"] == "10 May 2024"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_card_data_generation_branch_campus_and_level_from_roles(tmp_path):
+    db = Database(str(tmp_path / "card_test_branch.db"))
+    await db.connect()
+    try:
+        service = CardService(db=db, admin_role_name="TARVeri Admin")
+
+        user_id = 987654321
+        # DB only has faculty code without campus/level
+        await db.record_verification(user_id, "penang_hash_111", "M")
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 112233
+        guild.name = "TARUMT Penang Campus"
+
+        member = MagicMock(spec=discord.Member)
+        member.id = user_id
+        member.display_name = "Penang Student"
+        member.name = "penang_student"
+        member.guild_permissions.administrator = False
+
+        r_focs = MagicMock(spec=discord.Role)
+        r_focs.name = "FOCS"
+        r_penang = MagicMock(spec=discord.Role)
+        r_penang.name = "Penang Branch"
+        r_degree = MagicMock(spec=discord.Role)
+        r_degree.name = "Degree"
+        member.roles = [r_focs, r_penang, r_degree]
+        member.premium_since = None
+        member.joined_at = datetime(2023, 9, 1, tzinfo=timezone.utc)
+
+        data = await service.get_user_card_data(guild, member)
+
+        assert data["is_student"] is True
+        assert data["cohort_str"] == "Penang Branch • Degree"
     finally:
         await db.close()
 

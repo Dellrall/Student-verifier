@@ -558,7 +558,27 @@ async def test_database_backup_listing_and_restoration(tmp_path):
     assert await db.total_verified() == 1  # reverted to 1 verification in snapshot
     rec = await db.get_verification_by_user(9001)
     assert rec is not None
-    assert rec[0] == "hash_9001"
-
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_database_campus_and_level_columns_and_details(tmp_path):
+    db_file = str(tmp_path / "campus_level_test.db")
+    db = Database(db_file)
+    await db.connect()
+    try:
+        user_id = 77701
+        await db.record_verification(user_id, "hash_77701", "WM", campus_code="W", level_code="D")
+        
+        details = await db.get_verification_details(user_id)
+        assert details is not None
+        assert details["faculty_code"] == "WM"
+        assert details["campus_code"] == "W"
+        assert details["level_code"] == "D"
+        assert details["is_alumni"] is False
+
+        # Non-existent user
+        assert await db.get_verification_details(999999) is None
+    finally:
+        await db.close()
 

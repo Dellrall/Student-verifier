@@ -83,32 +83,37 @@ async def test_perform_verification_already_verified_resync(tmp_path):
 
     db = Database(str(tmp_path / "resync_test.db"))
     await db.connect()
-    rate_limiter = RateLimiter()
-    secret = "secret_123"
-    service = VerificationService(bot, db, secret, rate_limiter)
+    try:
+        rate_limiter = RateLimiter()
+        secret = "secret_123"
+        service = VerificationService(bot, db, secret, rate_limiter)
 
-    student_id = "23WMD09867"
-    hashed = hash_student_id(student_id, secret)
-    user_id = 33333
+        student_id = "23WMD09867"
+        hashed = hash_student_id(student_id, secret)
+        user_id = 33333
 
-    # User already verified
-    await db.record_verification(user_id, hashed, "M")
+        # User already verified
+        await db.record_verification(user_id, hashed, "WM", campus_code="W", level_code="D")
 
-    user = MagicMock()
-    user.id = user_id
-    user.__str__.return_value = "User#3333"
+        user = MagicMock()
+        user.id = user_id
+        user.__str__.return_value = "User#3333"
 
-    # Mock member with existing role
-    member = MagicMock(spec=discord.Member)
-    role = MagicMock(spec=discord.Role)
-    role.name = "FOCS"
-    member.roles = [role]
-    guild.get_member.return_value = member
+        # Mock member with all existing roles (faculty + campus + study level)
+        member = MagicMock(spec=discord.Member)
+        role = MagicMock(spec=discord.Role)
+        role.name = "FOCS"
+        camp_role = MagicMock(spec=discord.Role)
+        camp_role.name = "KL Main Campus"
+        lvl_role = MagicMock(spec=discord.Role)
+        lvl_role.name = "Diploma"
+        member.roles = [role, camp_role, lvl_role]
+        guild.get_member.return_value = member
 
-    response = await service.perform_verification(user, student_id)
-    assert "already had a faculty role" in response or "already verified" in response
-
-    await db.close()
+        response = await service.perform_verification(user, student_id)
+        assert "already had a faculty role" in response or "already verified" in response
+    finally:
+        await db.close()
 
 
 @pytest.mark.asyncio
@@ -206,11 +211,35 @@ async def test_perform_verification_role_creation_and_assignment_success(tmp_pat
     guild.me.guild_permissions.manage_roles = True
     guild.me.top_role = MagicMock()
 
-    created_role = MagicMock(spec=discord.Role)
-    created_role.name = "FOCS"
-    # Created role is lower than bot top role
-    created_role.__ge__.return_value = False
-    guild.create_role = AsyncMock(return_value=created_role)
+    fac_role = MagicMock(spec=discord.Role)
+    fac_role.name = "FOCS"
+    fac_role.position = 10
+    fac_role.__ge__.return_value = False
+
+    campus_role = MagicMock(spec=discord.Role)
+    campus_role.name = "KL Main Campus"
+    campus_role.position = 9
+    campus_role.__ge__.return_value = False
+
+    level_role = MagicMock(spec=discord.Role)
+    level_role.name = "Diploma"
+    level_role.position = 8
+    level_role.__ge__.return_value = False
+
+    def _create_role_side_effect(**kwargs):
+        name = kwargs.get("name")
+        if name == "FOCS":
+            return fac_role
+        elif name == "KL Main Campus":
+            return campus_role
+        elif name == "Diploma":
+            return level_role
+        r = MagicMock(spec=discord.Role)
+        r.name = name
+        r.__ge__.return_value = False
+        return r
+
+    guild.create_role = AsyncMock(side_effect=_create_role_side_effect)
 
     member = MagicMock(spec=discord.Member)
     member.roles = []
@@ -232,14 +261,21 @@ async def test_perform_verification_role_creation_and_assignment_success(tmp_pat
     assert "You've been given the following role(s)" in response
     assert "Campus Alpha" in response
     assert "FOCS" in response
+    assert "KL Main Campus" in response
+    assert "Diploma" in response
 
-    guild.create_role.assert_called_once()
-    member.add_roles.assert_called_once_with(created_role, reason="TARVeri: Student verification role assignment")
+    assert guild.create_role.call_count == 3
+    member.add_roles.assert_called_once_with(fac_role, campus_role, level_role, reason="TARVeri: Student verification role assignment")
 
-    # Verification recorded in DB
+    # Verification recorded in DB with campus and level codes
     record = await db.get_verification_by_user(88888)
     assert record is not None
     assert record[1] == "M"
+
+    details = await db.get_verification_details(88888)
+    assert details is not None
+    assert details["campus_code"] == "W"
+    assert details["level_code"] == "D"
 
     await db.close()
 
@@ -294,12 +330,14 @@ async def test_perform_verification_database_collision_rollback(tmp_path):
     guild.me = MagicMock()
     guild.me.guild_permissions.manage_roles = True
     guild.me.top_role = MagicMock()
+    guild.create_role = AsyncMock()
 
     member = MagicMock(spec=discord.Member)
     member.roles = []
 
-    async def _mock_add_roles(r, **kwargs):
-        member.roles.append(r)
+    async def _mock_add_roles(*roles, **kwargs):
+        for r in roles:
+            member.roles.append(r)
 
     member.add_roles = AsyncMock(side_effect=_mock_add_roles)
     member.remove_roles = AsyncMock()
@@ -322,7 +360,7 @@ async def test_perform_verification_database_collision_rollback(tmp_path):
             response = await service.perform_verification(user, "23WMD09867")
             assert "Verification failed due to a collision" in response
             # Rollback should remove the assigned role
-            member.remove_roles.assert_called_once()
+            assert member.remove_roles.called
     finally:
         await db.close()
 
@@ -508,12 +546,23 @@ async def test_perform_verification_never_duplicates_existing_fuzzy_or_cached_ro
     guild.id = 998811
     guild.name = "Banana Hub"
 
-    # Server already has an existing role (e.g. named "FOCS" or "focs")
+    # Server already has existing roles (FOCS, KL Main Campus, Diploma)
     existing_role = MagicMock(spec=discord.Role)
     existing_role.name = "FOCS"
     existing_role.position = 5
     existing_role.__ge__.return_value = False
-    guild.roles = [existing_role]
+
+    existing_campus = MagicMock(spec=discord.Role)
+    existing_campus.name = "KL Main Campus"
+    existing_campus.position = 4
+    existing_campus.__ge__.return_value = False
+
+    existing_level = MagicMock(spec=discord.Role)
+    existing_level.name = "Diploma"
+    existing_level.position = 3
+    existing_level.__ge__.return_value = False
+
+    guild.roles = [existing_role, existing_campus, existing_level]
 
     guild.me = MagicMock()
     guild.me.guild_permissions.manage_roles = True
@@ -541,11 +590,14 @@ async def test_perform_verification_never_duplicates_existing_fuzzy_or_cached_ro
 
         response = await service.perform_verification(user, "23WMD09867")
         assert "You've been given the following role(s)" in response
+        assert "FOCS" in response
+        assert "KL Main Campus" in response
+        assert "Diploma" in response
 
-        # create_role must NEVER be called because the role already exists
+        # create_role must NEVER be called because the roles already exist
         guild.create_role.assert_not_called()
-        # existing role was assigned to member
-        member.add_roles.assert_called_once_with(existing_role, reason="TARVeri: Student verification role assignment")
+        # existing roles were assigned to member
+        member.add_roles.assert_called_once_with(existing_role, existing_campus, existing_level, reason="TARVeri: Student verification role assignment")
     finally:
         await db.close()
 

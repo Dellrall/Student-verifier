@@ -77,6 +77,8 @@ class UnverifyModal(ui.Modal, title="❌ Unverify Student"):
                 r
                 for r in getattr(member, "roles", [])
                 if self.cog.service._match_faculty_role_in_list([r], r.name) is not None
+                or self.cog.service._match_campus_role_in_list([r], r.name) is not None
+                or self.cog.service._match_study_level_role_in_list([r], r.name) is not None
                 or r.name.strip().lower() in ("tarumt alumni", "alumni")
             ]
 

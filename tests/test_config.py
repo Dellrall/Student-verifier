@@ -1,7 +1,10 @@
 from tarveri.config import (
+    CAMPUS_ROLES,
     FACULTY_ROLES,
+    STUDY_LEVEL_ROLES,
     hash_student_id,
     mask_student_id,
+    parse_student_id,
     validate_student_id,
 )
 
@@ -47,6 +50,58 @@ def test_validate_student_id_valid():
     assert f_code == "P"
     assert role == "CPUS"
 
+
+def test_parse_student_id_branches_and_levels():
+    # Penang Campus (P), FOCS (M), Diploma (D)
+    info_penang = parse_student_id("23PMD01234")
+    assert info_penang.is_valid is True
+    assert info_penang.student_id == "23PMD01234"
+    assert info_penang.campus_code == "P"
+    assert info_penang.campus_role == "Penang Branch"
+    assert info_penang.faculty_code == "M"
+    assert info_penang.faculty_role == "FOCS"
+    assert info_penang.level_code == "D"
+    assert info_penang.level_role == "Diploma"
+
+    # Perak Campus (A), FAFB (B), Degree (R)
+    info_perak = parse_student_id("22ABR05678")
+    assert info_perak.is_valid is True
+    assert info_perak.campus_code == "A"
+    assert info_perak.campus_role == "Perak Branch"
+    assert info_perak.faculty_code == "B"
+    assert info_perak.faculty_role == "FAFB"
+    assert info_perak.level_code == "R"
+    assert info_perak.level_role == "Degree"
+
+    # Johor Campus (J), FOAS (L), Foundation (F)
+    info_johor = parse_student_id("24JLF99999")
+    assert info_johor.is_valid is True
+    assert info_johor.campus_code == "J"
+    assert info_johor.campus_role == "Johor Branch"
+    assert info_johor.faculty_code == "L"
+    assert info_johor.faculty_role == "FOAS"
+    assert info_johor.level_code == "F"
+    assert info_johor.level_role == "Foundation"
+
+    # Sabah Campus (S), FSSH (J), Postgraduate (P)
+    info_sabah = parse_student_id("21SJP11111")
+    assert info_sabah.is_valid is True
+    assert info_sabah.campus_code == "S"
+    assert info_sabah.campus_role == "Sabah Branch"
+    assert info_sabah.faculty_code == "J"
+    assert info_sabah.faculty_role == "FSSH"
+    assert info_sabah.level_code == "P"
+    assert info_sabah.level_role == "Postgraduate"
+
+    # KL Main Campus (W), FOBE (V), Degree (R)
+    info_kl = parse_student_id("23WVR22222")
+    assert info_kl.is_valid is True
+    assert info_kl.campus_code == "W"
+    assert info_kl.campus_role == "KL Main Campus"
+    assert info_kl.faculty_code == "V"
+    assert info_kl.faculty_role == "FOBE"
+    assert info_kl.level_code == "R"
+    assert info_kl.level_role == "Degree"
 
 
 def test_validate_student_id_invalid():

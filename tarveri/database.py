@@ -252,7 +252,7 @@ class Database:
             if col not in existing_ticket_cols:
                 await self._conn.execute(f"ALTER TABLE guest_tickets ADD COLUMN {col} {col_def};")
 
-        # 4. verifications (Alumni fields)
+        # 4. verifications (Alumni fields + Campus & Study Level fields)
         cursor = await self._conn.execute("PRAGMA table_info(verifications);")
         existing_veri_cols = {row[1] for row in await cursor.fetchall()}
         for col, col_def in [
@@ -260,6 +260,8 @@ class Database:
             ("graduated_year", "INTEGER"),
             ("programme", "TEXT"),
             ("graduated_at", "TEXT"),
+            ("campus_code", "TEXT"),
+            ("level_code", "TEXT"),
         ]:
             if col not in existing_veri_cols:
                 await self._conn.execute(f"ALTER TABLE verifications ADD COLUMN {col} {col_def};")
@@ -436,6 +438,12 @@ class Database:
         """Records a role created by the bot so it can be distinguished from admin-created roles."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
+        try:
+            g_id = int(guild_id)
+            r_id = int(role_id)
+            r_name = str(role_name)
+        except (ValueError, TypeError):
+            return
         ts = now_formatted()
         await self._conn.execute(
             """
@@ -445,7 +453,7 @@ class Database:
                 role_name = excluded.role_name,
                 created_at = excluded.created_at;
             """,
-            (guild_id, role_id, role_name, ts),
+            (g_id, r_id, r_name, ts),
         )
         await self._conn.commit()
 
@@ -453,9 +461,13 @@ class Database:
         """Returns set of role IDs in a guild that were created by the bot."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
+        try:
+            g_id = int(guild_id)
+        except (ValueError, TypeError):
+            return set()
         cursor = await self._conn.execute(
             "SELECT role_id FROM bot_created_roles WHERE guild_id = ?",
-            (guild_id,),
+            (g_id,),
         )
         rows = await cursor.fetchall()
         return {r[0] for r in rows}
@@ -464,9 +476,13 @@ class Database:
         """Deletes a role tracking entry after the role is deleted."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
+        try:
+            r_id = int(role_id)
+        except (ValueError, TypeError):
+            return
         await self._conn.execute(
             "DELETE FROM bot_created_roles WHERE role_id = ?",
-            (role_id,),
+            (r_id,),
         )
         await self._conn.commit()
 
@@ -544,17 +560,46 @@ class Database:
         return await cursor.fetchone()
 
     async def record_verification(
-        self, discord_user_id: int, student_id_hash: str, faculty_code: str
+        self,
+        discord_user_id: int,
+        student_id_hash: str,
+        faculty_code: str,
+        campus_code: str | None = None,
+        level_code: str | None = None,
     ) -> None:
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
         await self._conn.execute(
-            """INSERT INTO verifications (discord_user_id, student_id_hash, faculty_code, verified_at)
-               VALUES (?, ?, ?, ?)""",
-            (discord_user_id, student_id_hash, faculty_code, ts),
+            """INSERT INTO verifications (discord_user_id, student_id_hash, faculty_code, verified_at, campus_code, level_code)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (discord_user_id, student_id_hash, faculty_code, ts, campus_code, level_code),
         )
         await self._conn.commit()
+
+    async def get_verification_details(self, discord_user_id: int) -> dict[str, Any] | None:
+        """Retrieves complete verification details (faculty, campus, level, alumni status) for a user."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT student_id_hash, faculty_code, verified_at, is_alumni, graduated_year, programme, graduated_at, campus_code, level_code
+               FROM verifications WHERE discord_user_id = ?""",
+            (discord_user_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "student_id_hash": row[0],
+            "faculty_code": row[1],
+            "verified_at": row[2],
+            "is_alumni": bool(row[3]) if row[3] is not None else False,
+            "graduated_year": row[4],
+            "programme": row[5],
+            "graduated_at": row[6],
+            "campus_code": row[7],
+            "level_code": row[8],
+        }
 
     async def record_alumni_claim(
         self,

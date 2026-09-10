@@ -6,6 +6,14 @@ from __future__ import annotations
 
 from tarveri.bot import TARVeriBot, run_bot
 from tarveri.config import (
+    CAMPUS_ALIASES,
+    CAMPUS_COLORS,
+    CAMPUS_ROLE_NAMES,
+    CAMPUS_ROLES,
+    STUDY_LEVEL_ALIASES,
+    STUDY_LEVEL_COLORS,
+    STUDY_LEVEL_ROLE_NAMES,
+    STUDY_LEVEL_ROLES,
     DailyRotatingFileHandler,
     FACULTY_ALIASES,
     FACULTY_ROLE_NAMES,
@@ -15,8 +23,10 @@ from tarveri.config import (
     SRC_ROLE_NAMES,
     SRC_ROLES,
     Settings,
+    StudentIdInfo,
     hash_student_id,
     mask_student_id,
+    parse_student_id,
     setup_logger,
     validate_student_id,
 )
@@ -37,6 +47,10 @@ __version__ = "2.5.0"
 
 __all__ = [
     "__version__",
+    "CAMPUS_ALIASES",
+    "CAMPUS_COLORS",
+    "CAMPUS_ROLE_NAMES",
+    "CAMPUS_ROLES",
     "DailyRotatingFileHandler",
     "Database",
     "FACULTY_ALIASES",
@@ -50,7 +64,12 @@ __all__ = [
     "RateLimiter",
     "SRC_ROLES",
     "SRC_ROLE_NAMES",
+    "STUDY_LEVEL_ALIASES",
+    "STUDY_LEVEL_COLORS",
+    "STUDY_LEVEL_ROLE_NAMES",
+    "STUDY_LEVEL_ROLES",
     "Settings",
+    "StudentIdInfo",
     "TARVeriBot",
     "VerificationService",
     "archive_old_logs",
@@ -60,6 +79,7 @@ __all__ = [
     "list_daily_logs",
     "list_log_archives",
     "mask_student_id",
+    "parse_student_id",
     "rotate_backups",
     "run_bot",
     "setup_logger",

@@ -17,10 +17,14 @@ import discord
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from tarveri.config import (
+    CAMPUS_ROLE_NAMES,
+    CAMPUS_ROLES,
     FACULTY_ALIASES,
     FACULTY_COLORS,
     FACULTY_ROLES,
     GUEST_ROLE_COLOR,
+    STUDY_LEVEL_ROLE_NAMES,
+    STUDY_LEVEL_ROLES,
     get_configured_tz,
 )
 from tarveri.database import Database
@@ -235,11 +239,45 @@ class CardService:
             else:
                 verified_date_str = verified_at_str.split(" ")[0]
 
-        # Campus cohort string
+        # Campus cohort string and dynamic branch/level detection
+        campus_name = None
+        level_name = None
+        if is_verified_student:
+            details = await self.db.get_verification_details(user_id)
+            if details:
+                c_code = details.get("campus_code")
+                l_code = details.get("level_code")
+                if c_code:
+                    campus_name = CAMPUS_ROLES.get(c_code)
+                if l_code:
+                    level_name = STUDY_LEVEL_ROLES.get(l_code)
+
+        # Fallback to scanning member roles if not recorded in DB
+        if not campus_name and isinstance(member, discord.Member):
+            for r in getattr(member, "roles", []):
+                for c_target in CAMPUS_ROLE_NAMES:
+                    if r.name.strip().lower() == c_target.lower():
+                        campus_name = c_target
+                        break
+                if campus_name:
+                    break
+
+        if not level_name and isinstance(member, discord.Member):
+            for r in getattr(member, "roles", []):
+                for l_target in STUDY_LEVEL_ROLE_NAMES:
+                    if r.name.strip().lower() == l_target.lower():
+                        level_name = l_target
+                        break
+                if level_name:
+                    break
+
         if is_alumni:
             cohort_str = f"Class of {graduated_year} • {faculty_name} Alumni" if graduated_year else f"{faculty_name} Alumni"
         elif is_verified_student:
-            cohort_str = "TARUMT Main Campus"
+            parts = [campus_name or "TARUMT Main Campus"]
+            if level_name:
+                parts.append(level_name)
+            cohort_str = " • ".join(parts)
         elif faculty_code == "GUEST":
             cohort_str = "Verified Affiliate"
         else:

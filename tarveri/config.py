@@ -164,6 +164,128 @@ ALUMNI_ROLE_PATTERN: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# Branch campus code mapping (index 2 of student ID) -> Role Name
+CAMPUS_ROLES: Final[dict[str, str]] = {
+    "W": "KL Main Campus",
+    "P": "Penang Branch",
+    "A": "Perak Branch",
+    "J": "Johor Branch",
+    "C": "Pahang Branch",
+    "K": "Pahang Branch",
+    "S": "Sabah Branch",
+}
+CAMPUS_ROLE_NAMES: Final[set[str]] = set(CAMPUS_ROLES.values())
+
+CAMPUS_ALIASES: Final[dict[str, list[str]]] = {
+    "KL Main Campus": [
+        "KL Main Campus",
+        "KL Campus",
+        "Kuala Lumpur Campus",
+        "Kuala Lumpur Main Campus",
+        "Main Campus",
+        "KL",
+        "Setapak Campus",
+    ],
+    "Penang Branch": [
+        "Penang Branch",
+        "Penang Campus",
+        "Penang Branch Campus",
+        "Pulau Pinang Campus",
+        "Pulau Pinang Branch",
+        "Penang",
+    ],
+    "Perak Branch": [
+        "Perak Branch",
+        "Perak Campus",
+        "Perak Branch Campus",
+        "Kampar Campus",
+        "Kampar Branch",
+        "Perak",
+    ],
+    "Johor Branch": [
+        "Johor Branch",
+        "Johor Campus",
+        "Johor Branch Campus",
+        "Segamat Campus",
+        "Segamat Branch",
+        "Johor",
+    ],
+    "Pahang Branch": [
+        "Pahang Branch",
+        "Pahang Campus",
+        "Pahang Branch Campus",
+        "Kuantan Campus",
+        "Kuantan Branch",
+        "Pahang",
+    ],
+    "Sabah Branch": [
+        "Sabah Branch",
+        "Sabah Campus",
+        "Sabah Branch Campus",
+        "Kota Kinabalu Campus",
+        "Kota Kinabalu Branch",
+        "Sabah",
+    ],
+}
+
+CAMPUS_COLORS: Final[dict[str, int]] = {
+    "KL Main Campus": 0x3498DB,  # Sky Blue (#3498DB)
+    "Penang Branch": 0x1ABC9C,   # Turquoise (#1ABC9C)
+    "Perak Branch": 0xE67E22,    # Orange (#E67E22)
+    "Johor Branch": 0x9B59B6,    # Amethyst (#9B59B6)
+    "Pahang Branch": 0x27AE60,   # Green (#27AE60)
+    "Sabah Branch": 0xF39C12,    # Sun Yellow (#F39C12)
+}
+
+# Study level code mapping (index 4 of student ID) -> Role Name
+STUDY_LEVEL_ROLES: Final[dict[str, str]] = {
+    "D": "Diploma",
+    "R": "Degree",
+    "F": "Foundation",
+    "P": "Postgraduate",
+}
+STUDY_LEVEL_ROLE_NAMES: Final[set[str]] = set(STUDY_LEVEL_ROLES.values())
+
+STUDY_LEVEL_ALIASES: Final[dict[str, list[str]]] = {
+    "Diploma": [
+        "Diploma",
+        "Diploma Student",
+        "Diploma Students",
+        "Dip",
+    ],
+    "Degree": [
+        "Degree",
+        "Degree Student",
+        "Degree Students",
+        "Bachelor",
+        "Bachelor's Degree",
+        "Bachelors Degree",
+        "Undergraduate",
+    ],
+    "Foundation": [
+        "Foundation",
+        "Foundation Student",
+        "Pre-U",
+        "Pre-University",
+    ],
+    "Postgraduate": [
+        "Postgraduate",
+        "Postgrad",
+        "Master",
+        "Masters",
+        "Master's",
+        "PhD",
+        "Doctorate",
+    ],
+}
+
+STUDY_LEVEL_COLORS: Final[dict[str, int]] = {
+    "Degree": 0x2980B9,        # Belize Blue (#2980B9)
+    "Diploma": 0x16A085,       # Green Sea (#16A085)
+    "Foundation": 0x8E44AD,    # Wisteria (#8E44AD)
+    "Postgraduate": 0xD35400,  # Pumpkin (#D35400)
+}
+
 # Pattern: 2 digits + 3 uppercase letters + 2 digits + 3 digits (e.g. 23WMD09867)
 STUDENT_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{2}[A-Z]{3}\d{2}\d{3}$")
 
@@ -592,20 +714,76 @@ def mask_student_id(student_id: str) -> str:
     return "***"
 
 
-def validate_student_id(raw_id: str) -> tuple[bool, str, str | None, str | None]:
+@dataclass(frozen=True, slots=True)
+class StudentIdInfo:
+    """Detailed parsed components of a TARUMT student ID."""
+    is_valid: bool
+    student_id: str
+    faculty_code: str | None
+    faculty_role: str | None
+    campus_code: str | None = None
+    campus_role: str | None = None
+    level_code: str | None = None
+    level_role: str | None = None
+
+
+def parse_student_id(raw_id: str) -> StudentIdInfo:
     """
-    Validates and parses a student ID.
-    Returns (is_valid, normalized_id, faculty_code, faculty_role_name).
+    Parses a student ID into detailed components:
+    - Intake year (digits 0..1)
+    - Branch Campus (character 2 -> CAMPUS_ROLES)
+    - Faculty Code (character 3 -> FACULTY_ROLES)
+    - Study Level (character 4 -> STUDY_LEVEL_ROLES)
+    - Registration Sequence (digits 5..9)
     """
     normalized = raw_id.strip().upper().replace("-", "").replace(" ", "")
     if not STUDENT_ID_PATTERN.match(normalized):
-        return False, normalized, None, None
+        return StudentIdInfo(
+            is_valid=False,
+            student_id=normalized,
+            faculty_code=None,
+            faculty_role=None,
+        )
 
-    faculty_code = normalized[3]
-    faculty_role = FACULTY_ROLES.get(faculty_code)
+    campus_code = normalized[2] if len(normalized) > 2 else None
+    faculty_code = normalized[3] if len(normalized) > 3 else None
+    level_code = normalized[4] if len(normalized) > 4 else None
+
+    campus_role = CAMPUS_ROLES.get(campus_code) if campus_code else None
+    faculty_role = FACULTY_ROLES.get(faculty_code) if faculty_code else None
+    level_role = STUDY_LEVEL_ROLES.get(level_code) if level_code else None
+
     if not faculty_role:
-        return False, normalized, faculty_code, None
+        return StudentIdInfo(
+            is_valid=False,
+            student_id=normalized,
+            faculty_code=faculty_code,
+            faculty_role=None,
+            campus_code=campus_code,
+            campus_role=campus_role,
+            level_code=level_code,
+            level_role=level_role,
+        )
 
-    return True, normalized, faculty_code, faculty_role
+    return StudentIdInfo(
+        is_valid=True,
+        student_id=normalized,
+        faculty_code=faculty_code,
+        faculty_role=faculty_role,
+        campus_code=campus_code,
+        campus_role=campus_role,
+        level_code=level_code,
+        level_role=level_role,
+    )
+
+
+def validate_student_id(raw_id: str) -> tuple[bool, str, str | None, str | None]:
+    """
+    Validates and parses a student ID.
+    Returns (is_valid, normalized_id, faculty_code, faculty_role_name) for 100% backwards compatibility.
+    """
+    info = parse_student_id(raw_id)
+    return info.is_valid, info.student_id, info.faculty_code, info.faculty_role
+
 
 

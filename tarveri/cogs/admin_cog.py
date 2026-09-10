@@ -342,6 +342,8 @@ class AdminCog(commands.Cog, name="Admin"):
                 r
                 for r in getattr(member, "roles", [])
                 if self.service._match_faculty_role_in_list([r], r.name) is not None
+                or self.service._match_campus_role_in_list([r], r.name) is not None
+                or self.service._match_study_level_role_in_list([r], r.name) is not None
                 or r.name.strip().lower() in ("tarumt alumni", "alumni")
             ]
 
