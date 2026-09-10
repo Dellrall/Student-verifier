@@ -64,12 +64,14 @@ class CardCog(commands.Cog, name="CampusCard"):
             avatar_bytes = None
 
         try:
-            buf = await self.card_service.render_card(guild, target_member, avatar_bytes)
+            card_data = await self.card_service.get_user_card_data(guild, target_member)
+            buf = await self.card_service.render_card_from_data(card_data, avatar_bytes)
             file = discord.File(fp=buf, filename=f"tarveri_card_{target_member.id}.png")
 
+            embed_color = self.card_service.get_card_color(card_data)
             embed = discord.Embed(
                 title=f"🪪 TARUMT Campus ID • {target_member.display_name}",
-                color=discord.Color.blue(),
+                color=embed_color,
             )
             embed.set_image(url=f"attachment://tarveri_card_{target_member.id}.png")
             embed.set_footer(text="TARVeri Digital Student & Guest Passport • Official Verification")

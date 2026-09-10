@@ -244,6 +244,21 @@ class CardService:
             "badges": badges[:6],  # Allow up to 6 badges
         }
 
+    def get_card_color(self, card_data: dict[str, Any]) -> discord.Color:
+        """Returns the discord.Color corresponding to the card's faculty theme."""
+        theme_key = card_data.get("faculty_name", "UNVERIFIED")
+        theme = FACULTY_THEMES.get(theme_key, FACULTY_THEMES.get(card_data.get("faculty_code", "UNVERIFIED"), FACULTY_THEMES["UNVERIFIED"]))
+        r, g, b = theme["primary"]
+        return discord.Color.from_rgb(r, g, b)
+
+    async def render_card_from_data(
+        self,
+        card_data: dict[str, Any],
+        avatar_bytes: bytes | None = None,
+    ) -> io.BytesIO:
+        """Renders card directly from pre-fetched card data dictionary."""
+        return await asyncio.to_thread(_draw_card_image, card_data, avatar_bytes)
+
     async def render_card(
         self,
         guild: discord.Guild,
@@ -252,10 +267,7 @@ class CardService:
     ) -> io.BytesIO:
         """Asynchronously renders a digital student card image, returning a BytesIO PNG buffer."""
         card_data = await self.get_user_card_data(guild, member)
-
-        # Offload Pillow CPU rendering to worker thread to prevent event loop lag
-        buf = await asyncio.to_thread(_draw_card_image, card_data, avatar_bytes)
-        return buf
+        return await self.render_card_from_data(card_data, avatar_bytes)
 
 
 def _draw_card_image(data: dict[str, Any], avatar_bytes: bytes | None) -> io.BytesIO:
@@ -388,8 +400,8 @@ def _draw_card_image(data: dict[str, Any], avatar_bytes: bytes | None) -> io.Byt
     # Faculty Banner / Tag Box
     fac_name = data["faculty_name"]
     fac_full = data["faculty_full"]
-    if len(fac_full) > 46:
-        fac_full = fac_full[:44] + "..."
+    if len(fac_full) > 65:
+        fac_full = fac_full[:62] + "..."
 
     box_y = 178
     font_fac_bold = _load_font(18, bold=True)
