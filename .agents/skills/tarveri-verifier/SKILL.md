@@ -89,9 +89,9 @@ flowchart TD
   - Updates referral code to `USED`.
   - Sends a notice in the review thread and archives/locks it.
 
-### 5. Returning Verified Member Role Auto-Restoration
-- `VerificationService.reconcile_verified_members(guild)` checks all verified students in the database against present guild members.
-- If a verified student rejoined during maintenance or had their role stripped, the bot automatically re-assigns their faculty role.
+### 5. Returning Verified Member & Alumni Role Auto-Restoration
+- `VerificationService.reconcile_verified_members(guild)` checks all verified students in the database against present guild members and restores missing faculty roles.
+- `VerificationService.reconcile_alumni_members(guild)` checks all claimed alumni in the database and restores the `TARUMT Alumni` role across mutual servers during bot startup and `/diagnose`.
 
 ### 6. Duplicate Role Reconciliation & Cleanup Engine
 - `VerificationService.reconcile_duplicate_roles(guild)` automatically scans guilds for duplicate faculty or guest roles (e.g. `FOCS` vs `focs` or newly spawned bottom duplicates).
@@ -101,7 +101,7 @@ flowchart TD
 - Automatically invoked during bot startup self-healing and via the `/diagnose` slash command.
 
 ### 7. Role Hierarchy & Permission Diagnostics (`/diagnose`)
-- Compares `guild.me.top_role.position` against managed roles (`Guest(Approved)`, `TARUMT Verified`, faculty roles).
+- Compares `guild.me.top_role.position` against managed roles (`Guest(Approved)`, `TARUMT Verified`, `TARUMT Alumni`, faculty roles).
 - Detects duplicate roles and logs alerts if the bot lacks `Manage Roles` or if a managed role is higher than the bot's top role.
 - Administrators can trigger this anytime via `/diagnose`.
 
@@ -110,13 +110,19 @@ flowchart TD
 - `VerificationService.restore_src_roles(guild)` checks for all 8 faculty SRC roles (`FAFB SRC`, `CPUS SRC`, `FOCS SRC`, `FCCI SRC`, `FOAS SRC`, `FOBE SRC`, `FSSH SRC`, `FOET SRC`).
 - Recreates missing SRC roles using their corresponding official faculty palette colors and mentionable flag on bot startup and during `/diagnose`.
 
-### 9. Network & Power Outage Watchdog (`OutageService`)
+### 9. Alumni & Graduation Transition System
+- Verified students self-claim alumni status via `/graduate [year] [programme]` (or an interactive modal popup).
+- Auto-creates/assigns the `TARUMT Alumni` role (`#D4AF37` Academic Gold) across mutual guilds.
+- Updates the Digital Campus Card (`/card` and user context menu) to display `GRADUATED ALUMNI` status pill, `❖ ALUMNI` achievement badge, and `Class of [Year] • [Faculty] Alumni` cohort subtitle.
+- Admins can revoke alumni status via `/alumni_revoke @user [reason]`.
+
+### 10. Network & Power Outage Watchdog (`OutageService`)
 - Continuously monitors Discord gateway status, socket reachability (raw DNS IPs `1.1.1.1:53`, `8.8.8.8:53`, and `discord.com:443`), and OS signals (`SIGPWR`, `SIGTERM`, `SIGINT`, `SIGHUP`).
 - **5-Minute Grace Period**: When a network outage or gateway disconnect is detected, starts a 5-minute (300-second) watchdog countdown.
 - **Auto-Recovery**: If internet or gateway connectivity restores within 5 minutes, automatically cancels the countdown and resumes normal operations.
 - **Emergency Graceful Shutdown**: If the outage persists continuously for 5 minutes, or if an OS power failure signal (`SIGPWR`) is received from UPS / systemd, initiates an emergency graceful shutdown, cleanly checkpointing SQLite WAL to protect against database corruption.
 
-### 10. Daily Log Rotation & 10-Day Period Tar.Gz Archiving (`LogRotationService`)
+### 11. Daily Log Rotation & 10-Day Period Tar.Gz Archiving (`LogRotationService`)
 - **Daily Log Partitioning**: All application logs are stored in `logs/` and partitioned by calendar day (`logs/tarveri-YYYY-MM-DD.log`) using the configured timezone (`Asia/Kuala_Lumpur`).
 - **10-Day Decade Grouping**: Daily logs older than 10 days are automatically discovered and grouped into 10-day decade bins by year and month:
   - Part 1: Days 01–10 (`tarveri-logs-YYYY-MM-01_to_YYYY-MM-10.tar.gz`)
@@ -146,22 +152,24 @@ flowchart TD
 
 ### Student & Member Commands
 - `/verify [student_id]` — Submit student ID via private modal or direct argument.
-- `/card [member] [hidden]` — Generate and render high-DPI digital student/guest ID card with glassmorphism design and achievement badges (public by default, or `hidden: True`).
+- `/graduate [year] [programme]` — Instant graduation claim for verified students to receive `TARUMT Alumni` role and card badge.
+- `/card [member] [hidden]` — Generate and render high-DPI digital student/guest/alumni ID card with glassmorphism design and achievement badges (public by default, or `hidden: True`).
 - `View Campus Card` (User Context Menu) — Inspect and share member's campus card via Discord user menu.
 - `/referral generate [ttl_hours]` — Generate single-use guest referral code (max 3 active).
 - `/referral list` — View active and past referral codes.
 
 ### Admin Commands
 - `/send_gateway_panel [channel]` — Post 3-button verification gateway panel.
-- `/diagnose` — Run self-healing diagnostics, check role hierarchy, restore SRC roles, and reconcile missing member roles.
+- `/diagnose` — Run self-healing diagnostics, check role hierarchy, restore SRC roles, and reconcile missing member/alumni roles.
 - `/setadminrole [role]` — Set server's reviewer/admin role.
 - `/setguestrole [role_name]` — Set custom guest role name (default: `Guest`).
 - `/setreviewchannel [channel]` — Set parent channel for guest review threads.
 - `/setwelcomec [channel]` — Set welcome channel for new joiner verification tags.
 - `/sethelpc [channel]` — Set help channel for automated role tips.
 - `/guest_tickets [status] [limit]` — Query guest tickets with links to threads.
-- `/stats` — View verification numbers and faculty breakdown.
+- `/stats` — View verification numbers, alumni metrics, and faculty breakdown.
 - `/unverify @user` — Unlink student ID and strip faculty roles.
+- `/alumni_revoke @user [reason]` — Revoke Alumni status and strip `TARUMT Alumni` role across mutual servers.
 - `/audit [limit] [event_type]` — Inspect database audit logs.
 - `/backup [action] [backup_file]` — Create backups, list snapshots, or restore previous latest server settings / full database.
 - `/logs [action]` — Inspect active daily logs in `logs/`, list 10-day compressed archives, or trigger immediate `.tar.gz` rotation.

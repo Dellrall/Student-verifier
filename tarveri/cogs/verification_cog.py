@@ -48,6 +48,66 @@ class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
         schedule_ttl_delete(interaction, delay=60.0)
 
 
+class AlumniClaimModal(discord.ui.Modal, title="TARUMT Alumni Transition"):
+    grad_year = discord.ui.TextInput(
+        label="Graduation Year",
+        placeholder="e.g. 2025",
+        min_length=4,
+        max_length=4,
+        required=True,
+    )
+    programme = discord.ui.TextInput(
+        label="Completed Programme (Optional)",
+        placeholder="e.g. Bachelor of Software Engineering (Honours)",
+        min_length=2,
+        max_length=80,
+        required=False,
+    )
+
+    def __init__(self, service: VerificationService):
+        super().__init__()
+        self.service = service
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=False, thinking=True)
+        raw_year = self.grad_year.value.strip()
+        try:
+            year_int = int(raw_year)
+        except ValueError:
+            await interaction.followup.send(
+                "❌ Please enter a valid 4-digit graduation year (e.g. 2025).",
+                ephemeral=True,
+            )
+            return
+
+        result = await self.service.claim_alumni_status(
+            user_id=interaction.user.id,
+            user_display_name=interaction.user.display_name,
+            graduated_year=year_int,
+            programme=self.programme.value if self.programme.value else None,
+            current_guild=interaction.guild,
+        )
+
+        if not result["success"]:
+            await interaction.followup.send(result["message"], ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=f"🎓 Congratulations on Graduating, {interaction.user.display_name}!",
+            description=(
+                f"🎉 **{interaction.user.mention}** has successfully registered their **TARUMT Alumni** status!\n\n"
+                f"• **Class Cohort**: Class of {result['graduated_year']}\n"
+                f"• **Faculty**: {result['faculty_name']}\n"
+                + (f"• **Programme**: {result['programme']}\n" if result['programme'] else "")
+                + f"\n🏷️ **`TARUMT Alumni`** role assigned in {result['guilds_updated']} server(s).\n"
+                f"🪪 **`❖ ALUMNI`** badge unlocked on your Digital Campus Card (`/card`)."
+            ),
+            color=discord.Color.from_rgb(212, 175, 55),
+        )
+        embed.set_footer(text="TARVeri Alumni Verification • Instant & Tamper-Proof")
+        await interaction.followup.send(embed=embed, ephemeral=False)
+
+
 class VerificationCog(commands.Cog, name="Verification"):
     def __init__(
         self,
@@ -102,6 +162,66 @@ class VerificationCog(commands.Cog, name="Verification"):
 
         # Open the interactive modal dialog
         await interaction.response.send_modal(VerificationModal(self.service))
+
+    @app_commands.command(
+        name="graduate",
+        description="Claim your official TARUMT Alumni status and unlock the Alumni role & card badge.",
+    )
+    @app_commands.describe(
+        year="Your graduation year (e.g. 2025). Leave blank to open input form.",
+        programme="Your completed programme / degree (optional, e.g. Bachelor of Software Engineering)",
+    )
+    async def graduate_slash(
+        self,
+        interaction: discord.Interaction,
+        year: int | None = None,
+        programme: str | None = None,
+    ) -> None:
+        """Slash command to transition from student to verified alumni."""
+        # 1. Preflight check: user must be verified in database first
+        existing = await self.db.get_verification_by_user(interaction.user.id)
+        if not existing:
+            await interaction.response.send_message(
+                "❌ You must be a verified TARUMT student before claiming Alumni status. "
+                "Please run `/verify` first to verify your student account.",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        # 2. If year not provided, open modal form
+        if year is None:
+            await interaction.response.send_modal(AlumniClaimModal(self.service))
+            return
+
+        # 3. Direct argument submission
+        await interaction.response.defer(ephemeral=False, thinking=True)
+        result = await self.service.claim_alumni_status(
+            user_id=interaction.user.id,
+            user_display_name=interaction.user.display_name,
+            graduated_year=year,
+            programme=programme,
+            current_guild=interaction.guild,
+        )
+
+        if not result["success"]:
+            await interaction.followup.send(result["message"], ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=f"🎓 Congratulations on Graduating, {interaction.user.display_name}!",
+            description=(
+                f"🎉 **{interaction.user.mention}** has successfully registered their **TARUMT Alumni** status!\n\n"
+                f"• **Class Cohort**: Class of {result['graduated_year']}\n"
+                f"• **Faculty**: {result['faculty_name']}\n"
+                + (f"• **Programme**: {result['programme']}\n" if result['programme'] else "")
+                + f"\n🏷️ **`TARUMT Alumni`** role assigned in {result['guilds_updated']} server(s).\n"
+                f"🪪 **`❖ ALUMNI`** badge unlocked on your Digital Campus Card (`/card`)."
+            ),
+            color=discord.Color.from_rgb(212, 175, 55),
+        )
+        embed.set_footer(text="TARVeri Alumni Verification • Instant & Tamper-Proof")
+        await interaction.followup.send(embed=embed, ephemeral=False)
 
     def invalidate_guild_cache(self, guild_id: int | None = None) -> None:
         """Clears cached channel settings for a guild or all guilds."""

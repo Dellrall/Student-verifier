@@ -252,6 +252,22 @@ class Database:
             if col not in existing_ticket_cols:
                 await self._conn.execute(f"ALTER TABLE guest_tickets ADD COLUMN {col} {col_def};")
 
+        # 4. verifications (Alumni fields)
+        cursor = await self._conn.execute("PRAGMA table_info(verifications);")
+        existing_veri_cols = {row[1] for row in await cursor.fetchall()}
+        for col, col_def in [
+            ("is_alumni", "INTEGER DEFAULT 0"),
+            ("graduated_year", "INTEGER"),
+            ("programme", "TEXT"),
+            ("graduated_at", "TEXT"),
+        ]:
+            if col not in existing_veri_cols:
+                await self._conn.execute(f"ALTER TABLE verifications ADD COLUMN {col} {col_def};")
+
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_verifications_alumni ON verifications(is_alumni);"
+        )
+
         cursor = await self._conn.execute("PRAGMA user_version;")
         row = await cursor.fetchone()
         current_version = row[0] if row else 0
@@ -539,6 +555,77 @@ class Database:
             (discord_user_id, student_id_hash, faculty_code, ts),
         )
         await self._conn.commit()
+
+    async def record_alumni_claim(
+        self,
+        discord_user_id: int,
+        graduated_year: int,
+        programme: str | None = None,
+    ) -> bool:
+        """Records a verified student's transition to alumni status."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = now_formatted()
+        cursor = await self._conn.execute(
+            """UPDATE verifications
+               SET is_alumni = 1, graduated_year = ?, programme = ?, graduated_at = ?
+               WHERE discord_user_id = ?""",
+            (graduated_year, programme, ts, discord_user_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def revoke_alumni_status(self, discord_user_id: int) -> bool:
+        """Revokes alumni status from a student in the database."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """UPDATE verifications
+               SET is_alumni = 0, graduated_year = NULL, programme = NULL, graduated_at = NULL
+               WHERE discord_user_id = ?""",
+            (discord_user_id,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_alumni_info_by_user(self, discord_user_id: int) -> dict[str, Any] | None:
+        """Retrieves alumni details for a user if they have claimed alumni status."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT is_alumni, graduated_year, programme, graduated_at, faculty_code, verified_at
+               FROM verifications WHERE discord_user_id = ?""",
+            (discord_user_id,),
+        )
+        row = await cursor.fetchone()
+        if not row or not row[0]:
+            return None
+        return {
+            "is_alumni": bool(row[0]),
+            "graduated_year": row[1],
+            "programme": row[2],
+            "graduated_at": row[3],
+            "faculty_code": row[4],
+            "verified_at": row[5],
+        }
+
+    async def get_all_alumni_user_ids(self) -> list[int]:
+        """Returns a list of all user IDs with active alumni status."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            "SELECT discord_user_id FROM verifications WHERE is_alumni = 1"
+        )
+        rows = await cursor.fetchall()
+        return [r[0] for r in rows]
+
+    async def count_alumni(self) -> int:
+        """Returns total count of registered alumni students."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute("SELECT COUNT(*) FROM verifications WHERE is_alumni = 1")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
     async def delete_verification(self, discord_user_id: int) -> bool:
         """Unlinks a Discord account from its student ID. Returns True if record existed."""

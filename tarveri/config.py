@@ -156,6 +156,14 @@ FACULTY_COLORS: Final[dict[str, int]] = {
 }
 GUEST_ROLE_COLOR: Final[int] = 0x2ECC71  # Green / Emerald (#2ECC71)
 
+# Alumni role configurations
+ALUMNI_ROLE_NAME: Final[str] = "TARUMT Alumni"
+ALUMNI_ROLE_COLOR: Final[int] = 0xD4AF37  # Academic Gold (#D4AF37)
+ALUMNI_ROLE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(alumni|graduates?|alumnus|alumna)\b",
+    re.IGNORECASE,
+)
+
 # Pattern: 2 digits + 3 uppercase letters + 2 digits + 3 digits (e.g. 23WMD09867)
 STUDENT_ID_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{2}[A-Z]{3}\d{2}\d{3}$")
 

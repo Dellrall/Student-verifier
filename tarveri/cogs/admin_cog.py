@@ -72,6 +72,7 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.response.defer(ephemeral=True)
 
         total = await self.db.total_verified()
+        total_alumni = await self.db.count_alumni()
         faculty_counts = await self.db.counts_by_faculty()
         last_24h = await self.db.verified_in_last(24)
         last_7d = await self.db.verified_in_last(24 * 7)
@@ -81,6 +82,7 @@ class AdminCog(commands.Cog, name="Admin"):
             color=discord.Color.blue(),
         )
         embed.add_field(name="Total Verified", value=f"**{total}** students", inline=True)
+        embed.add_field(name="Graduated Alumni", value=f"**{total_alumni}** alumni", inline=True)
         embed.add_field(name="Past 24 Hours", value=f"**{last_24h}** new", inline=True)
         embed.add_field(name="Past 7 Days", value=f"**{last_7d}** new", inline=True)
 
@@ -161,6 +163,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
         # 4. Trigger member role reconciliation for this guild
         reconcile_stats = await self.service.reconcile_verified_members(guild)
+        alumni_stats = await self.service.reconcile_alumni_members(guild)
 
         # Check channel configurations
         settings = await self.db.get_guild_settings(guild.id)
@@ -236,8 +239,11 @@ class AdminCog(commands.Cog, name="Admin"):
             )
 
         embed.add_field(
-            name="🔄 Self-Healing Member Reconciliation",
-            value=f"• Checked **{reconcile_stats['checked']}** verified student(s)\n• Restored **{reconcile_stats['restored']}** missing role(s)\n• Failed **{reconcile_stats['failed']}** role(s)",
+            name="🔄 Self-Healing Member & Alumni Reconciliation",
+            value=(
+                f"• Verified students: checked **{reconcile_stats['checked']}**, restored **{reconcile_stats['restored']}**, failed **{reconcile_stats['failed']}**\n"
+                f"• Graduated alumni: checked **{alumni_stats['checked']}**, restored **{alumni_stats['restored']}**, failed **{alumni_stats['failed']}**"
+            ),
             inline=False,
         )
 
@@ -311,6 +317,49 @@ class AdminCog(commands.Cog, name="Admin"):
         removed_summary = ", ".join(removed_from) if removed_from else "No active roles removed"
         await interaction.followup.send(
             f"✅ Successfully unverified {user.mention}.\nRoles removed: {removed_summary}",
+            ephemeral=True,
+        )
+        schedule_ttl_delete(interaction, delay=60.0)
+
+    @app_commands.command(
+        name="alumni_revoke",
+        description="Revoke a member's Alumni status and remove their TARUMT Alumni role.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        user="The Discord user whose alumni status to revoke",
+        reason="Optional reason for revocation",
+    )
+    async def alumni_revoke(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User,
+        reason: str = "Admin revocation",
+    ) -> None:
+        """Revokes alumni status and strips the TARUMT Alumni role."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        result = await self.service.revoke_alumni_status(
+            target_user=user,
+            admin=interaction.user,
+            current_guild=interaction.guild,
+            reason=reason,
+        )
+
+        if not result["success"]:
+            await interaction.followup.send(result["message"], ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.followup.send(
+            f"✅ Successfully revoked Alumni status for {user.mention}.\n"
+            f"Removed **`TARUMT Alumni`** role across {result.get('roles_removed_count', 0)} server(s).",
             ephemeral=True,
         )
         schedule_ttl_delete(interaction, delay=60.0)

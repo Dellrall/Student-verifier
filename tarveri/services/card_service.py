@@ -177,10 +177,18 @@ class CardService:
                 faculty_name = "Unverified"
                 hash_preview = f"UNV-{user_id % 10000:04d}"
 
+        # Alumni check
+        alumni_info = await self.db.get_alumni_info_by_user(user_id) if is_verified_student else None
+        is_alumni = bool(alumni_info and alumni_info.get("is_alumni"))
+        graduated_year = alumni_info.get("graduated_year") if alumni_info else None
+        programme = alumni_info.get("programme") if alumni_info else None
+
         # Badges extraction
         badges: list[str] = []
         if is_verified_student:
             badges.append(f"✦ {faculty_name}")
+            if is_alumni:
+                badges.append("❖ ALUMNI")
             badges.append("✓ VERIFIED")
         elif faculty_code == "GUEST":
             badges.append("◈ GUEST")
@@ -227,6 +235,16 @@ class CardService:
             else:
                 verified_date_str = verified_at_str.split(" ")[0]
 
+        # Campus cohort string
+        if is_alumni:
+            cohort_str = f"Class of {graduated_year} • {faculty_name} Alumni" if graduated_year else f"{faculty_name} Alumni"
+        elif is_verified_student:
+            cohort_str = "TARUMT Main Campus"
+        elif faculty_code == "GUEST":
+            cohort_str = "Verified Affiliate"
+        else:
+            cohort_str = "Public Guest"
+
         return {
             "user_id": user_id,
             "display_name": getattr(member, "display_name", str(member)),
@@ -234,12 +252,16 @@ class CardService:
             "is_verified": is_verified_student or faculty_code == "GUEST",
             "is_student": is_verified_student,
             "is_guest": faculty_code == "GUEST",
+            "is_alumni": is_alumni,
+            "graduated_year": graduated_year,
+            "programme": programme,
             "faculty_code": faculty_code,
             "faculty_name": faculty_name,
             "faculty_full": FACULTY_FULL_NAMES.get(faculty_name, "TARUMT Student Community"),
             "hash_preview": hash_preview,
             "verified_at": verified_date_str,
             "joined_at": joined_str,
+            "cohort_str": cohort_str,
             "guild_name": guild.name if guild else "TARUMT Community",
             "badges": badges[:6],  # Allow up to 6 badges
         }
@@ -370,9 +392,17 @@ def _draw_card_image(data: dict[str, Any], avatar_bytes: bytes | None) -> io.Byt
 
     # Status Pill underneath Avatar (with dynamic high-contrast font color)
     status_y = avatar_box[3] + 14
-    status_text = "VERIFIED STUDENT" if data["is_student"] else ("APPROVED GUEST" if data["is_guest"] else "UNVERIFIED")
+    if data.get("is_alumni"):
+        status_text = "GRADUATED ALUMNI"
+    elif data.get("is_student"):
+        status_text = "VERIFIED STUDENT"
+    elif data.get("is_guest"):
+        status_text = "APPROVED GUEST"
+    else:
+        status_text = "UNVERIFIED"
+
     status_bg = (*primary_color, 255) if data["is_verified"] else (60, 70, 90, 255)
-    font_status = _load_font(14, bold=True)
+    font_status = _load_font(13, bold=True)
 
     # Calculate luminance of background color to choose black or white text for maximum readability
     lum = 0.299 * status_bg[0] + 0.587 * status_bg[1] + 0.114 * status_bg[2]
@@ -431,7 +461,9 @@ def _draw_card_image(data: dict[str, Any], avatar_bytes: bytes | None) -> io.Byt
     draw.text((col1_x, row2_y + 19), data["hash_preview"], fill=(*accent_color, 255), font=_load_font(20, bold=True))
 
     draw.text((col2_x, row2_y), "CAMPUS COHORT", fill=(145, 160, 190, 255), font=font_label)
-    cohort_str = "TARUMT Main Campus" if data["is_student"] else ("Verified Affiliate" if data["is_guest"] else "Public Guest")
+    cohort_str = data.get("cohort_str") or ("TARUMT Main Campus" if data["is_student"] else ("Verified Affiliate" if data["is_guest"] else "Public Guest"))
+    if len(cohort_str) > 34:
+        cohort_str = cohort_str[:32] + "..."
     draw.text((col2_x, row2_y + 19), cohort_str, fill=(255, 255, 255, 255), font=font_value)
 
     # 6. Badges Ribbon (Bottom Left to Center)

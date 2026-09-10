@@ -419,6 +419,7 @@ async def test_admin_diagnose_command(tmp_path):
     )
     service.diagnose_guild_permissions.return_value = ["⚠️ Role hierarchy conflict: Role FOCS is higher than bot role."]
     service.reconcile_verified_members = AsyncMock(return_value={"checked": 5, "restored": 2, "failed": 0})
+    service.reconcile_alumni_members = AsyncMock(return_value={"checked": 0, "restored": 0, "failed": 0})
 
     cog = AdminCog(MagicMock(), db, service, MagicMock(), admin_role_name="TARVeri Admin")
 

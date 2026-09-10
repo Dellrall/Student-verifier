@@ -220,9 +220,10 @@ class TARVeriBot(commands.Bot):
                                     "WARNING", "HIERARCHY_DIAGNOSTIC", f"[{guild.name}] {w}", guild=guild
                                 )
 
-                        # 4. Reconcile verified member roles
+                        # 4. Reconcile verified member roles and graduated alumni roles
                         if self.service:
                             await self.service.reconcile_verified_members(guild)
+                            await self.service.reconcile_alumni_members(guild)
 
                     # 5. Reconcile guest tickets and downtime events
                     if self.guest_service:

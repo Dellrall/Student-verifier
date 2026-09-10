@@ -15,6 +15,8 @@ import aiosqlite
 import discord
 
 from tarveri.config import (
+    ALUMNI_ROLE_COLOR,
+    ALUMNI_ROLE_NAME,
     FACULTY_ALIASES,
     FACULTY_COLORS,
     FACULTY_ROLE_NAMES,
@@ -339,6 +341,73 @@ class VerificationService:
                 )
                 return None
 
+    async def find_alumni_role(self, guild: discord.Guild) -> discord.Role | None:
+        """Finds existing alumni role in guild cache or live API."""
+        guild_roles = getattr(guild, "roles", [])
+        if isinstance(guild_roles, (list, tuple)):
+            for r in guild_roles:
+                name = getattr(r, "name", "").strip().lower()
+                if name in ("tarumt alumni", "alumni"):
+                    return r
+        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
+            try:
+                live_roles = await guild.fetch_roles()
+                if isinstance(live_roles, (list, tuple)):
+                    for r in live_roles:
+                        name = getattr(r, "name", "").strip().lower()
+                        if name in ("tarumt alumni", "alumni"):
+                            return r
+            except (discord.HTTPException, discord.Forbidden):
+                pass
+        return None
+
+    async def get_or_create_alumni_role(self, guild: discord.Guild) -> discord.Role | None:
+        """Finds or atomically creates the TARUMT Alumni role."""
+        existing = await self.find_alumni_role(guild)
+        if existing is not None:
+            return existing
+
+        lock = self._get_guild_role_lock(guild.id)
+        async with lock:
+            existing = await self.find_alumni_role(guild)
+            if existing is not None:
+                return existing
+
+            can_manage = (
+                getattr(guild.me.guild_permissions, "manage_roles", False)
+                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
+                else False
+            )
+            if not can_manage:
+                return None
+
+            try:
+                role = await guild.create_role(
+                    name=ALUMNI_ROLE_NAME,
+                    colour=discord.Colour(ALUMNI_ROLE_COLOR),
+                    mentionable=True,
+                    reason="TARVeri: auto-created missing TARUMT Alumni role",
+                )
+                try:
+                    await self.db.record_bot_created_role(guild.id, role.id, ALUMNI_ROLE_NAME)
+                except Exception as e:
+                    logger.debug(f"Could not record bot created alumni role: {e}")
+                await self.db.log(
+                    "INFO",
+                    "ROLE_CREATED",
+                    f"Created alumni role '{ALUMNI_ROLE_NAME}' in '{guild.name}' (Guild ID: {guild.id})",
+                    guild=guild,
+                )
+                return role
+            except discord.HTTPException as e:
+                await self.db.log(
+                    "ERROR",
+                    "ROLE_CREATE_FAILED",
+                    f"Failed to create role '{ALUMNI_ROLE_NAME}' in '{guild.name}': {e}",
+                    guild=guild,
+                )
+                return None
+
     async def _assign_role_in_guild(
         self, guild: discord.Guild, user_id: int, role_name: str, result: RoleSyncResult
     ) -> None:
@@ -647,6 +716,210 @@ class VerificationService:
         if summary["restored"] > 0:
             logger.info(
                 f"[{guild.name}] Self-healing verified member reconciliation: "
+                f"Checked {summary['checked']}, Restored {summary['restored']}, Failed {summary['failed']}"
+            )
+
+        return summary
+
+    async def claim_alumni_status(
+        self,
+        user_id: int,
+        user_display_name: str,
+        graduated_year: int,
+        programme: str | None = None,
+        current_guild: discord.Guild | None = None,
+    ) -> dict[str, Any]:
+        """Processes instant alumni transition for an already-verified student."""
+        verif = await self.db.get_verification_by_user(user_id)
+        if not verif:
+            return {
+                "success": False,
+                "error": "NOT_VERIFIED",
+                "message": "You must be a verified TARUMT student before claiming Alumni status. Please run `/verify` first.",
+            }
+
+        # Validate year (from 1969 TAR College founding to realistic graduation window)
+        current_year = 2026
+        if graduated_year < 1969 or graduated_year > current_year + 5:
+            return {
+                "success": False,
+                "error": "INVALID_YEAR",
+                "message": f"Please provide a valid graduation year (1969–{current_year + 5}).",
+            }
+
+        # Record in database
+        clean_prog = programme.strip() if programme and programme.strip() else None
+        await self.db.record_alumni_claim(user_id, graduated_year, clean_prog)
+
+        # Assign role across mutual guilds
+        mutual_guilds = await self.get_mutual_guilds_for_user(user_id)
+        roles_assigned: list[str] = []
+
+        for guild in mutual_guilds:
+            member = await self.get_or_fetch_member(guild, user_id)
+            if not member:
+                continue
+
+            alumni_role = await self.get_or_create_alumni_role(guild)
+            if not alumni_role:
+                continue
+
+            if alumni_role not in getattr(member, "roles", []):
+                me = getattr(guild, "me", None)
+                can_manage = (
+                    getattr(me.guild_permissions, "manage_roles", False)
+                    if me and hasattr(me, "guild_permissions")
+                    else False
+                )
+                bot_top = getattr(me, "top_role", None)
+                bot_pos = getattr(bot_top, "position", 0) if bot_top else 0
+                role_pos = getattr(alumni_role, "position", 0)
+                if can_manage and role_pos < bot_pos:
+                    try:
+                        await member.add_roles(
+                            alumni_role,
+                            reason=f"TARVeri: Claimed Alumni status (Class of {graduated_year})",
+                        )
+                        roles_assigned.append(guild.name)
+                    except discord.HTTPException as e:
+                        logger.warning(f"Could not assign alumni role to {member} in {guild.name}: {e}")
+
+        stored_faculty = verif[1]
+        faculty_name = FACULTY_ROLES.get(stored_faculty, stored_faculty)
+
+        await self.db.log(
+            "INFO",
+            "ALUMNI_CLAIMED",
+            f"Student {user_display_name} (ID: {user_id}) claimed Alumni status: Class of {graduated_year} • {clean_prog or 'N/A'} (Assigned in {len(roles_assigned)} servers)",
+            guild=current_guild,
+            user_id=user_id,
+        )
+
+        return {
+            "success": True,
+            "graduated_year": graduated_year,
+            "programme": clean_prog,
+            "faculty_code": stored_faculty,
+            "faculty_name": faculty_name,
+            "guilds_updated": len(roles_assigned),
+        }
+
+    async def revoke_alumni_status(
+        self,
+        target_user: discord.User | discord.Member,
+        admin: discord.User | discord.Member,
+        current_guild: discord.Guild | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Revokes alumni status from a user and removes alumni roles."""
+        alumni_info = await self.db.get_alumni_info_by_user(target_user.id)
+        if not alumni_info or not alumni_info.get("is_alumni"):
+            return {
+                "success": False,
+                "error": "NOT_ALUMNI",
+                "message": f"{target_user.mention} is not currently registered as an Alumni.",
+            }
+
+        # Remove role in mutual guilds
+        mutual_guilds = await self.get_mutual_guilds_for_user(target_user.id)
+        roles_removed: list[str] = []
+
+        for guild in mutual_guilds:
+            member = await self.get_or_fetch_member(guild, target_user.id)
+            if not member:
+                continue
+
+            alumni_role = await self.find_alumni_role(guild)
+            if alumni_role and alumni_role in getattr(member, "roles", []):
+                me = getattr(guild, "me", None)
+                can_manage = (
+                    getattr(me.guild_permissions, "manage_roles", False)
+                    if me and hasattr(me, "guild_permissions")
+                    else False
+                )
+                bot_top = getattr(me, "top_role", None)
+                bot_pos = getattr(bot_top, "position", 0) if bot_top else 0
+                role_pos = getattr(alumni_role, "position", 0)
+                if can_manage and role_pos < bot_pos:
+                    try:
+                        await member.remove_roles(
+                            alumni_role,
+                            reason=f"TARVeri: Alumni status revoked by {admin}. Reason: {reason or 'None'}",
+                        )
+                        roles_removed.append(guild.name)
+                    except discord.HTTPException as e:
+                        logger.warning(f"Could not remove alumni role from {member} in {guild.name}: {e}")
+
+        await self.db.revoke_alumni_status(target_user.id)
+        await self.db.log(
+            "WARNING",
+            "ALUMNI_REVOKED",
+            f"Alumni status for {target_user} (ID: {target_user.id}) revoked by {admin}. Reason: {reason or 'No reason provided'}",
+            guild=current_guild,
+            user_id=target_user.id,
+        )
+
+        return {
+            "success": True,
+            "target_id": target_user.id,
+            "roles_removed_count": len(roles_removed),
+        }
+
+    async def reconcile_alumni_members(self, guild: discord.Guild) -> dict[str, int]:
+        """Self-healing: Ensures all registered alumni in the guild have the TARUMT Alumni role."""
+        summary = {"checked": 0, "restored": 0, "failed": 0}
+        if not guild:
+            return summary
+
+        alumni_ids = await self.db.get_all_alumni_user_ids()
+        if not alumni_ids:
+            return summary
+
+        alumni_role = await self.get_or_create_alumni_role(guild)
+        if not alumni_role:
+            summary["failed"] = len(alumni_ids)
+            return summary
+
+        me = getattr(guild, "me", None)
+        can_manage = (
+            getattr(me.guild_permissions, "manage_roles", False)
+            if me and hasattr(me, "guild_permissions")
+            else False
+        )
+        bot_top = getattr(me, "top_role", None)
+        bot_pos = getattr(bot_top, "position", 0) if bot_top else 0
+        role_pos = getattr(alumni_role, "position", 0)
+        if not can_manage or (isinstance(bot_pos, int) and isinstance(role_pos, int) and role_pos >= bot_pos):
+            summary["failed"] = len(alumni_ids)
+            return summary
+
+        for user_id in alumni_ids:
+            member = await self.get_or_fetch_member(guild, user_id)
+            if not member:
+                continue
+
+            summary["checked"] += 1
+            if alumni_role not in getattr(member, "roles", []):
+                try:
+                    await member.add_roles(
+                        alumni_role,
+                        reason="TARVeri: Self-healing automatic Alumni role restoration",
+                    )
+                    summary["restored"] += 1
+                    await self.db.log(
+                        "INFO",
+                        "ROLE_RESTORED",
+                        f"Self-healing: Restored missing Alumni role to {member} (ID: {user_id}) in '{guild.name}'",
+                        guild=guild,
+                        user_id=user_id,
+                    )
+                except discord.HTTPException as e:
+                    summary["failed"] += 1
+                    logger.warning(f"Could not restore alumni role for {member} in {guild.name}: {e}")
+
+        if summary["restored"] > 0:
+            logger.info(
+                f"[{guild.name}] Self-healing alumni member reconciliation: "
                 f"Checked {summary['checked']}, Restored {summary['restored']}, Failed {summary['failed']}"
             )
 

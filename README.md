@@ -62,7 +62,8 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 ### Students & Members
 * `/verify` — Opens a private modal popup in the server to submit your student ID.
 * Or DM your student ID (e.g. `23WMD09867`) directly to the bot.
-* `/card [member] [hidden]` — Generate and share your modern digital student/guest campus card in the channel (public by default, or set `hidden: True` for private view).
+* `/graduate [year] [programme]` — Instant graduation claim for verified students. Assigns the `TARUMT Alumni` role across mutual servers and updates the digital campus card to Alumni status.
+* `/card [member] [hidden]` — Generate and share your modern digital student/guest/alumni campus card in the channel (public by default, or set `hidden: True` for private view).
 * **Context Menu**: Right-click (or long-press) any member $\to$ **Apps** $\to$ **"View Campus Card"**.
 * `/referral generate [ttl_hours]` — Verified students generate a single-use guest referral code for friends.
 * `/referral list` — View your active and past generated referral codes.
@@ -100,8 +101,9 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 * `/setwelcomec [channel]` — Configure or reset the server's welcome channel for new member verification tags.
 * `/sethelpc [channel]` — Configure or reset the server's specific help channel for automated role tips.
 * `/guest_tickets [status] [limit]` — List recent guest review tickets with clickable links to archived/active threads and verdict notes.
-* `/stats` — View verification numbers, faculty breakdown, and configured channels/roles.
+* `/stats` — View verification numbers, alumni metrics, faculty breakdown, and configured channels/roles.
 * `/unverify @user` — Unlink a student ID and remove their roles.
+* `/alumni_revoke @user [reason]` — Revoke Alumni status and remove `TARUMT Alumni` role across mutual servers.
 * `/audit` — View recent audit log entries.
 * `/backup` — Create an immediate database snapshot in `backups/` (auto-rotated to 10 recent files).
 * `/resync` — Re-check and update roles across mutual servers.
