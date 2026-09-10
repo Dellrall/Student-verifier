@@ -582,3 +582,52 @@ async def test_database_campus_and_level_columns_and_details(tmp_path):
     finally:
         await db.close()
 
+
+@pytest.mark.asyncio
+async def test_database_backfill_legacy_verifications(tmp_path):
+    db_file = str(tmp_path / "backfill_test.db")
+    
+    # 1. Manually create legacy database with NULL campus_code
+    async with aiosqlite.connect(db_file) as conn:
+        await conn.execute(
+            """CREATE TABLE verifications (
+                discord_user_id INTEGER PRIMARY KEY,
+                student_id_hash TEXT UNIQUE NOT NULL,
+                faculty_code TEXT NOT NULL,
+                verified_at TEXT NOT NULL
+            );"""
+        )
+        await conn.execute(
+            "INSERT INTO verifications VALUES (101, 'hash101', 'M', '2024-01-01 10:00:00');"
+        )
+        await conn.execute(
+            "INSERT INTO verifications VALUES (102, 'hash102', 'B', '2024-01-02 11:00:00');"
+        )
+        await conn.commit()
+
+    # 2. Connect Database (triggers automatic migration and backfill)
+    db = Database(db_file)
+    await db.connect()
+    try:
+        # Check that legacy rows were backfilled with 'W' (KL Main Campus)
+        det101 = await db.get_verification_details(101)
+        assert det101 is not None
+        assert det101["campus_code"] == "W"
+
+        det102 = await db.get_verification_details(102)
+        assert det102 is not None
+        assert det102["campus_code"] == "W"
+
+        # Test manual update_verification_details
+        res = await db.update_verification_details(101, campus_code="P", level_code="R")
+        assert res is True
+        updated101 = await db.get_verification_details(101)
+        assert updated101["campus_code"] == "P"
+        assert updated101["level_code"] == "R"
+
+        # Update non-existent returns False
+        assert await db.update_verification_details(99999, campus_code="A") is False
+    finally:
+        await db.close()
+
+

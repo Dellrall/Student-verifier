@@ -952,20 +952,28 @@ class VerificationService:
         if not all_verifications:
             return summary
 
+        me = getattr(guild, "me", None)
+        can_manage = (
+            getattr(me.guild_permissions, "manage_roles", False)
+            if me and hasattr(me, "guild_permissions")
+            else False
+        )
+        bot_top_role = getattr(me, "top_role", None) if me else None
+        bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
+
         for discord_user_id, _, faculty_code, _ in all_verifications:
             member = await self.get_or_fetch_member(guild, discord_user_id)
             if not member:
                 continue
 
             summary["checked"] += 1
-            target_role_name = FACULTY_ROLES.get(faculty_code)
-            if not target_role_name:
-                continue
-
-            # Check if member already has any faculty role
             member_roles = getattr(member, "roles", [])
+            roles_to_add: list[discord.Role] = []
+
+            # 1. Primary faculty role
+            target_role_name = FACULTY_ROLES.get(faculty_code)
             has_faculty_role = False
-            if isinstance(member_roles, (list, tuple)):
+            if target_role_name and isinstance(member_roles, (list, tuple)):
                 for r in member_roles:
                     for fac in FACULTY_ROLE_NAMES:
                         if self._match_faculty_role_in_list([r], fac) is not None:
@@ -974,48 +982,79 @@ class VerificationService:
                     if has_faculty_role:
                         break
 
-            if has_faculty_role:
-                continue
+            if not has_faculty_role and target_role_name:
+                target_role = await self.get_or_create_faculty_role(guild, target_role_name)
+                if target_role:
+                    role_pos = getattr(target_role, "position", 0)
+                    if can_manage and not (isinstance(bot_pos, int) and isinstance(role_pos, int) and role_pos >= bot_pos):
+                        roles_to_add.append(target_role)
+                    else:
+                        summary["failed"] += 1
+                else:
+                    summary["failed"] += 1
 
-            # Member is verified in DB but missing faculty role in this guild -> find or create
-            target_role = await self.get_or_create_faculty_role(guild, target_role_name)
-            if not target_role:
-                summary["failed"] += 1
-                continue
+            # 2. Campus branch role
+            details = await self.db.get_verification_details(discord_user_id)
+            c_code = details.get("campus_code") if details else None
+            if not c_code:
+                c_code = "W"  # Default legacy records to KL Main Campus
 
-            # Check role hierarchy and permissions
-            me = getattr(guild, "me", None)
-            can_manage = (
-                getattr(me.guild_permissions, "manage_roles", False)
-                if me and hasattr(me, "guild_permissions")
-                else False
-            )
-            bot_top_role = getattr(me, "top_role", None) if me else None
+            target_campus_name = CAMPUS_ROLES.get(c_code, "KL Main Campus")
+            has_campus_role = False
+            if isinstance(member_roles, (list, tuple)):
+                for r in member_roles:
+                    for camp in CAMPUS_ROLE_NAMES:
+                        if self._match_campus_role_in_list([r], camp) is not None:
+                            has_campus_role = True
+                            break
+                    if has_campus_role:
+                        break
 
-            bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
-            role_pos = getattr(target_role, "position", 0)
-            if not can_manage or (isinstance(bot_pos, int) and isinstance(role_pos, int) and role_pos >= bot_pos):
-                summary["failed"] += 1
-                continue
+            if not has_campus_role and target_campus_name:
+                target_camp = await self.get_or_create_campus_role(guild, target_campus_name)
+                if target_camp:
+                    camp_pos = getattr(target_camp, "position", 0)
+                    if can_manage and not (isinstance(bot_pos, int) and isinstance(camp_pos, int) and camp_pos >= bot_pos):
+                        roles_to_add.append(target_camp)
 
-            try:
-                await member.add_roles(
-                    target_role,
-                    reason="TARVeri: Self-healing automatic role restoration for verified student",
-                )
-                summary["restored"] += 1
-                await self.db.log(
-                    "INFO",
-                    "ROLE_RESTORED",
-                    f"Self-healing: Restored missing faculty role '{target_role.name}' to verified student {member} (ID: {discord_user_id})",
-                    guild=guild,
-                    user_id=discord_user_id,
-                )
-            except discord.HTTPException as e:
-                summary["failed"] += 1
-                logger.warning(
-                    f"Failed to restore role '{target_role.name}' for {member} in '{guild.name}': {e}"
-                )
+            # 3. Study level role (if recorded in DB)
+            l_code = details.get("level_code") if details else None
+            if l_code:
+                target_level_name = STUDY_LEVEL_ROLES.get(l_code)
+                if target_level_name:
+                    has_level_role = any(
+                        self._match_study_level_role_in_list([r], target_level_name) is not None
+                        for r in member_roles
+                    )
+                    if not has_level_role:
+                        target_lvl = await self.get_or_create_study_level_role(guild, target_level_name)
+                        if target_lvl:
+                            lvl_pos = getattr(target_lvl, "position", 0)
+                            if can_manage and not (isinstance(bot_pos, int) and isinstance(lvl_pos, int) and lvl_pos >= bot_pos):
+                                roles_to_add.append(target_lvl)
+
+            if roles_to_add:
+                try:
+                    await member.add_roles(
+                        *roles_to_add,
+                        reason="TARVeri: Self-healing automatic role restoration for verified student",
+                    )
+                    summary["restored"] += len(roles_to_add)
+                    assigned_labels = ", ".join(
+                        [getattr(r, "name", "Role") for r in roles_to_add if isinstance(getattr(r, "name", None), str)]
+                    ) or "roles"
+                    await self.db.log(
+                        "INFO",
+                        "ROLE_RESTORED",
+                        f"Self-healing: Restored missing role(s) [{assigned_labels}] to verified student {member} (ID: {discord_user_id})",
+                        guild=guild,
+                        user_id=discord_user_id,
+                    )
+                except discord.HTTPException as e:
+                    summary["failed"] += len(roles_to_add)
+                    logger.warning(
+                        f"Failed to restore roles for {member} in '{guild.name}': {e}"
+                    )
 
         if summary["restored"] > 0:
             logger.info(
@@ -1024,6 +1063,38 @@ class VerificationService:
             )
 
         return summary
+
+    async def backfill_branch_roles(
+        self,
+        guild: discord.Guild | None = None,
+        default_campus_code: str = "W",
+    ) -> dict[str, int]:
+        """
+        One-time migration helper:
+        1. Backfills legacy DB records where campus_code is NULL to default_campus_code.
+        2. Iterates over specified guild (or all shared guilds) and assigns missing branch campus
+           (and study level) roles to verified students.
+        """
+        stats = {
+            "guilds_scanned": 0,
+            "members_checked": 0,
+            "roles_assigned": 0,
+            "db_migrated": 0,
+            "failed": 0,
+        }
+        stats["db_migrated"] = await self.db.backfill_legacy_verifications(default_campus=default_campus_code)
+
+        target_guilds = [guild] if guild else list(self.bot.guilds)
+        for g in target_guilds:
+            if not g:
+                continue
+            stats["guilds_scanned"] += 1
+            g_summary = await self.reconcile_verified_members(g)
+            stats["members_checked"] += g_summary.get("checked", 0)
+            stats["roles_assigned"] += g_summary.get("restored", 0)
+            stats["failed"] += g_summary.get("failed", 0)
+
+        return stats
 
     async def claim_alumni_status(
         self,

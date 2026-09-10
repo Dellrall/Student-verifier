@@ -384,10 +384,15 @@ async def test_reconcile_verified_members_restores_missing_faculty_role(tmp_path
     bot_top_role.position = 50
     guild.me.top_role = bot_top_role
 
-    # Student 55555 is verified in DB as FOCS ("M"), but missing role in Discord
+    # Student 55555 is verified in DB as FOCS ("M"), has campus role, but missing faculty role in Discord
+    camp_role = MagicMock(spec=discord.Role)
+    camp_role.name = "KL Main Campus"
+    camp_role.position = 8
+    guild.roles = [focs_role, camp_role]
+
     member = MagicMock(spec=discord.Member)
     member.id = 55555
-    member.roles = []
+    member.roles = [camp_role]
     member.add_roles = AsyncMock()
 
     guild.get_member.side_effect = lambda uid: member if uid == 55555 else None
@@ -395,7 +400,7 @@ async def test_reconcile_verified_members_restores_missing_faculty_role(tmp_path
 
     db = Database(str(tmp_path / "reconcile_roles_test.db"))
     await db.connect()
-    await db.record_verification(55555, "hash_55555", "M")
+    await db.record_verification(55555, "hash_55555", "M", campus_code="W")
 
     rate_limiter = RateLimiter()
     service = VerificationService(bot, db, "secret_123", rate_limiter)
@@ -409,6 +414,65 @@ async def test_reconcile_verified_members_restores_missing_faculty_role(tmp_path
     member.add_roles.assert_awaited_once_with(
         focs_role, reason="TARVeri: Self-healing automatic role restoration for verified student"
     )
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_backfill_branch_roles_migration(tmp_path):
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 888999
+    guild.name = "Migration Guild"
+
+    focs_role = MagicMock(spec=discord.Role)
+    focs_role.name = "FOCS"
+    focs_role.position = 10
+
+    penang_role = MagicMock(spec=discord.Role)
+    penang_role.name = "Penang Branch"
+    penang_role.position = 8
+
+    degree_role = MagicMock(spec=discord.Role)
+    degree_role.name = "Degree"
+    degree_role.position = 6
+
+    guild.roles = [focs_role, penang_role, degree_role]
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    bot_top = MagicMock(spec=discord.Role)
+    bot_top.position = 50
+    guild.me.top_role = bot_top
+
+    # Member 66666 only has FOCS role currently
+    member = MagicMock(spec=discord.Member)
+    member.id = 66666
+    member.roles = [focs_role]
+    member.add_roles = AsyncMock()
+
+    guild.get_member.return_value = member
+    bot.guilds = [guild]
+
+    db_path = str(tmp_path / "backfill_srv_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    # User verified as Penang Degree student in DB
+    await db.record_verification(66666, "hash_66666", "M", campus_code="P", level_code="R")
+
+    rate_limiter = RateLimiter()
+    service = VerificationService(bot, db, "secret_123", rate_limiter)
+
+    stats = await service.backfill_branch_roles(guild=guild, default_campus_code="P")
+    assert stats["guilds_scanned"] == 1
+    assert stats["members_checked"] == 1
+    assert stats["roles_assigned"] == 2  # Penang Branch + Degree roles assigned
+    assert stats["failed"] == 0
+
+    assert member.add_roles.called
+    added_roles = member.add_roles.call_args[0]
+    assert penang_role in added_roles
+    assert degree_role in added_roles
 
     await db.close()
 

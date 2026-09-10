@@ -12,7 +12,14 @@ from discord import app_commands
 from discord.ext import commands
 
 from tarveri.cogs.admin_dashboard import AdminDashboardView
-from tarveri.config import FACULTY_ROLE_NAMES, FACULTY_ROLES
+from tarveri.config import (
+    CAMPUS_ROLE_NAMES,
+    CAMPUS_ROLES,
+    FACULTY_ROLE_NAMES,
+    FACULTY_ROLES,
+    STUDY_LEVEL_ROLE_NAMES,
+    STUDY_LEVEL_ROLES,
+)
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.log_service import (
@@ -584,6 +591,78 @@ class AdminCog(commands.Cog, name="Admin"):
 
     async def setadminrole(self, interaction: discord.Interaction, role: discord.Role | None = None) -> None:
         await self.set_role(interaction, role_type="admin", role=role)
+
+    @admin_group.command(
+        name="backfill_roles",
+        description="One-time migration: backfill branch campus & study level roles to previously verified students.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        default_campus="Default branch campus for legacy students without a branch tag (default: KL Main Campus)",
+        all_servers="Whether to run the backfill across all mutual servers (default: True)",
+    )
+    @app_commands.choices(
+        default_campus=[
+            app_commands.Choice(name="KL Main Campus", value="W"),
+            app_commands.Choice(name="Penang Branch", value="P"),
+            app_commands.Choice(name="Perak Branch", value="A"),
+            app_commands.Choice(name="Johor Branch", value="J"),
+            app_commands.Choice(name="Pahang Branch", value="C"),
+            app_commands.Choice(name="Sabah Branch", value="S"),
+        ]
+    )
+    async def backfill_roles(
+        self,
+        interaction: discord.Interaction,
+        default_campus: app_commands.Choice[str] | None = None,
+        all_servers: bool = True,
+    ) -> None:
+        """Backfills missing branch campus and study level roles for existing verified students."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        campus_code = default_campus.value if default_campus else "W"
+        target_guild = None if all_servers else interaction.guild
+
+        stats = await self.service.backfill_branch_roles(
+            guild=target_guild,
+            default_campus_code=campus_code,
+        )
+
+        embed = discord.Embed(
+            title="🔄 Branch Campus & Study Level Role Backfill",
+            color=discord.Color.brand_green(),
+        )
+        embed.add_field(
+            name="📊 Migration Summary",
+            value=(
+                f"• Shared Servers Scanned: **{stats['guilds_scanned']}**\n"
+                f"• Verified Members Checked: **{stats['members_checked']}**\n"
+                f"• Roles Backfilled / Restored: **{stats['roles_assigned']}**\n"
+                f"• Database Records Migrated: **{stats['db_migrated']}**\n"
+                f"• Failed / Blocked: **{stats['failed']}**"
+            ),
+            inline=False,
+        )
+        campus_label = CAMPUS_ROLES.get(campus_code, "KL Main Campus")
+        embed.set_footer(text=f"Default Branch Applied: {campus_label}")
+
+        await self.db.log(
+            "INFO",
+            "BRANCH_ROLES_BACKFILLED",
+            f"Admin {interaction.user} triggered branch role backfill: {stats}",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=90.0)
 
     # ==========================================
     # 🚀 6. Verification Gateway Panel Deployer

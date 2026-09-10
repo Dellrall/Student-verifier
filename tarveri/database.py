@@ -270,6 +270,20 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_verifications_alumni ON verifications(is_alumni);"
         )
 
+        # 5. One-time data migration: Backfill legacy verifications missing campus_code to 'W' (KL Main Campus)
+        try:
+            cursor = await self._conn.execute(
+                """UPDATE verifications
+                   SET campus_code = 'W'
+                   WHERE campus_code IS NULL"""
+            )
+            if cursor.rowcount > 0:
+                logger.info(
+                    f"Migrated {cursor.rowcount} legacy student verification record(s) with default campus_code='W' (KL Main Campus)."
+                )
+        except Exception as e:
+            logger.debug(f"Legacy campus_code migration notice: {e}")
+
         cursor = await self._conn.execute("PRAGMA user_version;")
         row = await cursor.fetchone()
         current_version = row[0] if row else 0
@@ -600,6 +614,44 @@ class Database:
             "campus_code": row[7],
             "level_code": row[8],
         }
+
+    async def backfill_legacy_verifications(self, default_campus: str = "W") -> int:
+        """Backfills legacy verifications missing campus_code to the specified campus code."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """UPDATE verifications
+               SET campus_code = ?
+               WHERE campus_code IS NULL""",
+            (default_campus,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount
+
+    async def update_verification_details(
+        self,
+        discord_user_id: int,
+        campus_code: str | None = None,
+        level_code: str | None = None,
+    ) -> bool:
+        """Updates campus_code or level_code for an existing verified student."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        updates: list[str] = []
+        params: list[Any] = []
+        if campus_code is not None:
+            updates.append("campus_code = ?")
+            params.append(campus_code)
+        if level_code is not None:
+            updates.append("level_code = ?")
+            params.append(level_code)
+        if not updates:
+            return False
+        params.append(discord_user_id)
+        sql = f"UPDATE verifications SET {', '.join(updates)} WHERE discord_user_id = ?"
+        cursor = await self._conn.execute(sql, tuple(params))
+        await self._conn.commit()
+        return cursor.rowcount > 0
 
     async def record_alumni_claim(
         self,

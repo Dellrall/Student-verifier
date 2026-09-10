@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 import discord
+from discord import app_commands
 from tarveri.cogs.admin_cog import AdminCog, is_admin_or_has_role
 from tarveri.cogs.admin_dashboard import (
     AdminCategorySelect,
@@ -549,3 +550,49 @@ async def test_admin_dashboard_launcher_and_components(tmp_path):
     assert guest_role_modal.title == "⚙️ Configure Guest Role Name"
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_backfill_roles_command(tmp_path):
+    db_path = str(tmp_path / "admin_backfill_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = MagicMock()
+    service.backfill_branch_roles = AsyncMock(
+        return_value={
+            "guilds_scanned": 1,
+            "members_checked": 5,
+            "roles_assigned": 3,
+            "db_migrated": 2,
+            "failed": 0,
+        }
+    )
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 12345
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+    admin_user.__str__.return_value = "Admin#0001"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    choice = app_commands.Choice(name="Penang Branch", value="P")
+    await cog.backfill_roles.callback(cog, interaction, default_campus=choice, all_servers=False)
+
+    service.backfill_branch_roles.assert_called_once_with(guild=guild, default_campus_code="P")
+    interaction.followup.send.assert_called_once()
+    kwargs = interaction.followup.send.call_args[1]
+    assert "embed" in kwargs
+    assert "Role Backfill" in kwargs["embed"].title
+    assert "Penang Branch" in kwargs["embed"].footer.text
+
+    await db.close()
+
