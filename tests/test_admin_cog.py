@@ -584,15 +584,21 @@ async def test_admin_backfill_roles_command(tmp_path):
     interaction.response.defer = AsyncMock()
     interaction.followup.send = AsyncMock()
 
-    choice = app_commands.Choice(name="Penang Branch", value="P")
-    await cog.backfill_roles.callback(cog, interaction, default_campus=choice, all_servers=False)
+    campus_choice = app_commands.Choice(name="Penang Branch", value="P")
+    level_choice = app_commands.Choice(name="Degree", value="R")
+    await cog.backfill_roles.callback(
+        cog, interaction, default_campus=campus_choice, default_level=level_choice, all_servers=False
+    )
 
-    service.backfill_branch_roles.assert_called_once_with(guild=guild, default_campus_code="P")
+    service.backfill_branch_roles.assert_called_once_with(
+        guild=guild, default_campus_code="P", default_level_code="R"
+    )
     interaction.followup.send.assert_called_once()
     kwargs = interaction.followup.send.call_args[1]
     assert "embed" in kwargs
     assert "Role Backfill" in kwargs["embed"].title
     assert "Penang Branch" in kwargs["embed"].footer.text
+    assert "Degree" in kwargs["embed"].footer.text
 
     await db.close()
 

@@ -599,6 +599,7 @@ class AdminCog(commands.Cog, name="Admin"):
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         default_campus="Default branch campus for legacy students without a branch tag (default: KL Main Campus)",
+        default_level="Optional default study level for legacy students without a study level tag",
         all_servers="Whether to run the backfill across all mutual servers (default: True)",
     )
     @app_commands.choices(
@@ -609,12 +610,19 @@ class AdminCog(commands.Cog, name="Admin"):
             app_commands.Choice(name="Johor Branch", value="J"),
             app_commands.Choice(name="Pahang Branch", value="C"),
             app_commands.Choice(name="Sabah Branch", value="S"),
-        ]
+        ],
+        default_level=[
+            app_commands.Choice(name="Diploma", value="D"),
+            app_commands.Choice(name="Degree", value="R"),
+            app_commands.Choice(name="Foundation", value="F"),
+            app_commands.Choice(name="Postgraduate", value="P"),
+        ],
     )
     async def backfill_roles(
         self,
         interaction: discord.Interaction,
         default_campus: app_commands.Choice[str] | None = None,
+        default_level: app_commands.Choice[str] | None = None,
         all_servers: bool = True,
     ) -> None:
         """Backfills missing branch campus and study level roles for existing verified students."""
@@ -628,11 +636,13 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.response.defer(ephemeral=True)
 
         campus_code = default_campus.value if default_campus else "W"
+        level_code = default_level.value if default_level else None
         target_guild = None if all_servers else interaction.guild
 
         stats = await self.service.backfill_branch_roles(
             guild=target_guild,
             default_campus_code=campus_code,
+            default_level_code=level_code,
         )
 
         embed = discord.Embed(
@@ -651,7 +661,8 @@ class AdminCog(commands.Cog, name="Admin"):
             inline=False,
         )
         campus_label = CAMPUS_ROLES.get(campus_code, "KL Main Campus")
-        embed.set_footer(text=f"Default Branch Applied: {campus_label}")
+        level_label = STUDY_LEVEL_ROLES.get(level_code) if level_code else "Auto-detected from Discord / Kept as is"
+        embed.set_footer(text=f"Default Branch: {campus_label} | Default Level: {level_label}")
 
         await self.db.log(
             "INFO",

@@ -842,6 +842,14 @@ class VerificationService:
                     campus_role_name=campus_role_name,
                     level_role_name=level_role_name,
                 )
+                try:
+                    await self.db.update_verification_details(
+                        user.id,
+                        campus_code=campus_code,
+                        level_code=level_code,
+                    )
+                except Exception:
+                    pass
                 summary = self.format_role_summary(sync_result)
                 return summary or "ℹ️ You're already verified and up to date in every server I share with you."
 
@@ -931,11 +939,16 @@ class VerificationService:
             async with self._lock:
                 self._in_flight_users.discard(user.id)
 
-    async def reconcile_verified_members(self, guild: discord.Guild) -> dict[str, int]:
+    async def reconcile_verified_members(
+        self,
+        guild: discord.Guild,
+        default_campus: str = "W",
+        default_level: str | None = None,
+    ) -> dict[str, int]:
         """
         Self-healing: cross-references current guild members against the verifications table.
-        If a student verified in the database is missing their faculty role in this guild
-        (e.g., rejoined during maintenance, role was deleted/recreated), automatically restores it.
+        If a student verified in the database is missing their faculty, campus, or study level
+        roles in this guild, automatically restores and synchronizes them.
         """
         summary = {"checked": 0, "restored": 0, "failed": 0}
         if not guild:
@@ -996,20 +1009,31 @@ class VerificationService:
             # 2. Campus branch role
             details = await self.db.get_verification_details(discord_user_id)
             c_code = details.get("campus_code") if details else None
-            if not c_code:
-                c_code = "W"  # Default legacy records to KL Main Campus
 
-            target_campus_name = CAMPUS_ROLES.get(c_code, "KL Main Campus")
+            # Detect if member already holds a campus role in Discord
+            existing_campus_code = None
             has_campus_role = False
             if isinstance(member_roles, (list, tuple)):
                 for r in member_roles:
-                    for camp in CAMPUS_ROLE_NAMES:
-                        if self._match_campus_role_in_list([r], camp) is not None:
+                    for code_k, name_v in CAMPUS_ROLES.items():
+                        if self._match_campus_role_in_list([r], name_v) is not None:
                             has_campus_role = True
+                            existing_campus_code = code_k
                             break
                     if has_campus_role:
                         break
 
+            if has_campus_role and existing_campus_code and (not c_code or c_code != existing_campus_code):
+                try:
+                    await self.db.update_verification_details(discord_user_id, campus_code=existing_campus_code)
+                    c_code = existing_campus_code
+                except Exception:
+                    pass
+
+            if not c_code:
+                c_code = default_campus
+
+            target_campus_name = CAMPUS_ROLES.get(c_code, "KL Main Campus")
             if not has_campus_role and target_campus_name:
                 target_camp = await self.get_or_create_campus_role(guild, target_campus_name)
                 if target_camp:
@@ -1017,21 +1041,40 @@ class VerificationService:
                     if can_manage and not (isinstance(bot_pos, int) and isinstance(camp_pos, int) and camp_pos >= bot_pos):
                         roles_to_add.append(target_camp)
 
-            # 3. Study level role (if recorded in DB)
+            # 3. Study level role
             l_code = details.get("level_code") if details else None
+
+            # Detect if member already holds a study level role in Discord
+            existing_level_code = None
+            has_level_role = False
+            if isinstance(member_roles, (list, tuple)):
+                for r in member_roles:
+                    for code_k, name_v in STUDY_LEVEL_ROLES.items():
+                        if self._match_study_level_role_in_list([r], name_v) is not None:
+                            has_level_role = True
+                            existing_level_code = code_k
+                            break
+                    if has_level_role:
+                        break
+
+            if has_level_role and existing_level_code and (not l_code or l_code != existing_level_code):
+                try:
+                    await self.db.update_verification_details(discord_user_id, level_code=existing_level_code)
+                    l_code = existing_level_code
+                except Exception:
+                    pass
+
+            if not l_code and default_level:
+                l_code = default_level
+
             if l_code:
                 target_level_name = STUDY_LEVEL_ROLES.get(l_code)
-                if target_level_name:
-                    has_level_role = any(
-                        self._match_study_level_role_in_list([r], target_level_name) is not None
-                        for r in member_roles
-                    )
-                    if not has_level_role:
-                        target_lvl = await self.get_or_create_study_level_role(guild, target_level_name)
-                        if target_lvl:
-                            lvl_pos = getattr(target_lvl, "position", 0)
-                            if can_manage and not (isinstance(bot_pos, int) and isinstance(lvl_pos, int) and lvl_pos >= bot_pos):
-                                roles_to_add.append(target_lvl)
+                if target_level_name and not has_level_role:
+                    target_lvl = await self.get_or_create_study_level_role(guild, target_level_name)
+                    if target_lvl:
+                        lvl_pos = getattr(target_lvl, "position", 0)
+                        if can_manage and not (isinstance(bot_pos, int) and isinstance(lvl_pos, int) and lvl_pos >= bot_pos):
+                            roles_to_add.append(target_lvl)
 
             if roles_to_add:
                 try:
@@ -1068,12 +1111,14 @@ class VerificationService:
         self,
         guild: discord.Guild | None = None,
         default_campus_code: str = "W",
+        default_level_code: str | None = None,
     ) -> dict[str, int]:
         """
         One-time migration helper:
         1. Backfills legacy DB records where campus_code is NULL to default_campus_code.
-        2. Iterates over specified guild (or all shared guilds) and assigns missing branch campus
-           (and study level) roles to verified students.
+        2. If default_level_code is given, backfills DB records where level_code is NULL.
+        3. Iterates over specified guild (or all shared guilds) and assigns missing branch campus
+           and study level roles to verified students.
         """
         stats = {
             "guilds_scanned": 0,
@@ -1083,13 +1128,24 @@ class VerificationService:
             "failed": 0,
         }
         stats["db_migrated"] = await self.db.backfill_legacy_verifications(default_campus=default_campus_code)
+        if default_level_code and self.db._conn:
+            cursor = await self.db._conn.execute(
+                "UPDATE verifications SET level_code = ? WHERE level_code IS NULL",
+                (default_level_code,),
+            )
+            await self.db._conn.commit()
+            stats["db_migrated"] += cursor.rowcount
 
         target_guilds = [guild] if guild else list(self.bot.guilds)
         for g in target_guilds:
             if not g:
                 continue
             stats["guilds_scanned"] += 1
-            g_summary = await self.reconcile_verified_members(g)
+            g_summary = await self.reconcile_verified_members(
+                g,
+                default_campus=default_campus_code,
+                default_level=default_level_code,
+            )
             stats["members_checked"] += g_summary.get("checked", 0)
             stats["roles_assigned"] += g_summary.get("restored", 0)
             stats["failed"] += g_summary.get("failed", 0)
