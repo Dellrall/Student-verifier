@@ -270,7 +270,6 @@ def _draw_card_image(data: dict[str, Any], avatar_bytes: bytes | None) -> io.Byt
 
     # Base background (Dark high-tech glassmorphism canvas)
     base = Image.new("RGBA", (width, height), (15, 17, 26, 255))
-    draw = ImageDraw.Draw(base)
 
     # 1. Background geometric gradient ribbons
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -278,7 +277,7 @@ def _draw_card_image(data: dict[str, Any], avatar_bytes: bytes | None) -> io.Byt
 
     # Glowing decorative curves & mesh gradients in faculty theme color
     overlay_draw.ellipse(
-        (-100, -100, 450, 450),
+        (-100, -100, 480, 480),
         fill=(primary_color[0], primary_color[1], primary_color[2], 40),
     )
     overlay_draw.ellipse(
@@ -296,35 +295,35 @@ def _draw_card_image(data: dict[str, Any], avatar_bytes: bytes | None) -> io.Byt
     draw = ImageDraw.Draw(base)
 
     # 2. Outer Card Frame & Rounded Border
-    card_rect = [(20, 20), (width - 20, height - 20)]
-    draw.rounded_rectangle(card_rect, radius=24, outline=(40, 46, 68, 255), width=2)
+    card_rect = [(18, 18), (width - 18, height - 18)]
+    draw.rounded_rectangle(card_rect, radius=24, outline=(45, 52, 75, 255), width=2)
     # Inner accent top bar
-    draw.rounded_rectangle([(22, 22), (width - 22, 30)], radius=4, fill=(*primary_color, 255))
+    draw.rounded_rectangle([(20, 20), (width - 20, 29)], radius=4, fill=(*primary_color, 255))
 
     # 3. Header Section
-    font_header_sub = _load_font(12, bold=True)
-    font_header_main = _load_font(18, bold=True)
+    font_header_sub = _load_font(13, bold=True)
+    font_header_main = _load_font(22, bold=True)
 
-    draw.text((45, 42), "TUNKU ABDUL RAHMAN UNIVERSITY OF MANAGEMENT AND TECHNOLOGY", fill=(180, 190, 215, 255), font=font_header_sub)
-    draw.text((45, 60), "TARUMT DIGITAL CAMPUS PASSPORT", fill=(255, 255, 255, 255), font=font_header_main)
+    draw.text((45, 38), "TUNKU ABDUL RAHMAN UNIVERSITY OF MANAGEMENT AND TECHNOLOGY", fill=(195, 205, 230, 255), font=font_header_sub)
+    draw.text((45, 58), "TARUMT DIGITAL CAMPUS PASSPORT", fill=(255, 255, 255, 255), font=font_header_main)
 
     # Watermark / Server tag on top right
     guild_tag = data["guild_name"]
-    if len(guild_tag) > 28:
-        guild_tag = guild_tag[:25] + "..."
-    draw.text((width - 45, 60), guild_tag, fill=(*accent_color, 255), font=font_header_sub, anchor="ra")
+    if len(guild_tag) > 26:
+        guild_tag = guild_tag[:23] + "..."
+    draw.text((width - 45, 58), guild_tag, fill=(*accent_color, 255), font=_load_font(14, bold=True), anchor="ra")
 
     # Header separator line with glowing gradient
-    draw.line([(45, 92), (width - 45, 92)], fill=(50, 58, 85, 255), width=1)
-    draw.line([(45, 92), (280, 92)], fill=(*glow_color, 255), width=2)
+    draw.line([(45, 92), (width - 45, 92)], fill=(55, 65, 95, 255), width=1)
+    draw.line([(45, 92), (320, 92)], fill=(*glow_color, 255), width=2)
 
     # 4. Avatar Portrait Area (Left Side)
-    avatar_size = 180
-    avatar_box = (50, 115, 50 + avatar_size, 115 + avatar_size)
+    avatar_size = 170
+    avatar_box = (45, 110, 45 + avatar_size, 110 + avatar_size)
 
     # Background frame behind avatar
     draw.rounded_rectangle(
-        (avatar_box[0] - 6, avatar_box[1] - 6, avatar_box[2] + 6, avatar_box[3] + 6),
+        (avatar_box[0] - 5, avatar_box[1] - 5, avatar_box[2] + 5, avatar_box[3] + 5),
         radius=20,
         fill=(25, 29, 44, 255),
         outline=(*primary_color, 220),
@@ -354,108 +353,114 @@ def _draw_card_image(data: dict[str, Any], avatar_bytes: bytes | None) -> io.Byt
         # Default placeholder avatar with initial
         draw.rounded_rectangle(avatar_box, radius=16, fill=(*primary_color, 120))
         initial = (data["display_name"][:1] or "?").upper()
-        font_initial = _load_font(72, bold=True)
+        font_initial = _load_font(80, bold=True)
         draw.text((avatar_box[0] + avatar_size // 2, avatar_box[1] + avatar_size // 2), initial, fill=(255, 255, 255, 255), font=font_initial, anchor="mm")
 
-    # Status Pill underneath Avatar
-    status_y = avatar_box[3] + 16
+    # Status Pill underneath Avatar (with dynamic high-contrast font color)
+    status_y = avatar_box[3] + 14
     status_text = "VERIFIED STUDENT" if data["is_student"] else ("APPROVED GUEST" if data["is_guest"] else "UNVERIFIED")
     status_bg = (*primary_color, 255) if data["is_verified"] else (60, 70, 90, 255)
-    font_status = _load_font(13, bold=True)
+    font_status = _load_font(14, bold=True)
 
-    draw.rounded_rectangle((50, status_y, 50 + avatar_size, status_y + 32), radius=10, fill=status_bg)
-    draw.text((50 + avatar_size // 2, status_y + 16), status_text, fill=(255, 255, 255, 255), font=font_status, anchor="mm")
+    # Calculate luminance of background color to choose black or white text for maximum readability
+    lum = 0.299 * status_bg[0] + 0.587 * status_bg[1] + 0.114 * status_bg[2]
+    status_fg = (20, 20, 20, 255) if (lum > 145 and data["is_verified"]) else (255, 255, 255, 255)
+
+    draw.rounded_rectangle((45, status_y, 45 + avatar_size, status_y + 36), radius=10, fill=status_bg)
+    draw.text((45 + avatar_size // 2, status_y + 18), status_text, fill=status_fg, font=font_status, anchor="mm")
 
     # 5. User Information Section (Center/Right Grid)
-    info_x = 270
-    font_name = _load_font(26, bold=True)
-    font_username = _load_font(14, bold=False)
-    font_label = _load_font(12, bold=True)
-    font_value = _load_font(16, bold=False)
-    font_val_bold = _load_font(16, bold=True)
+    info_x = 245
+    font_name = _load_font(30, bold=True)
+    font_username = _load_font(16, bold=False)
+    font_label = _load_font(13, bold=True)
+    font_value = _load_font(18, bold=True)
 
     # Display Name
     name_str = data["display_name"]
     if len(name_str) > 22:
         name_str = name_str[:20] + "..."
-    draw.text((info_x, 115), name_str, fill=(255, 255, 255, 255), font=font_name)
+    draw.text((info_x, 108), name_str, fill=(255, 255, 255, 255), font=font_name)
 
     # Username Tag
-    draw.text((info_x, 150), f"@{data['username']}", fill=(140, 155, 185, 255), font=font_username)
+    draw.text((info_x, 148), f"@{data['username']}", fill=(155, 170, 200, 255), font=font_username)
 
     # Faculty Banner / Tag Box
     fac_name = data["faculty_name"]
     fac_full = data["faculty_full"]
-    if len(fac_full) > 42:
-        fac_full = fac_full[:40] + "..."
+    if len(fac_full) > 46:
+        fac_full = fac_full[:44] + "..."
 
-    box_y = 180
-    font_fac_bold = _load_font(16, bold=True)
-    font_fac_sub = _load_font(13, bold=False)
+    box_y = 178
+    font_fac_bold = _load_font(18, bold=True)
+    font_fac_sub = _load_font(15, bold=False)
     fac_bbox = draw.textbbox((0, 0), fac_name, font=font_fac_bold)
     fac_w = fac_bbox[2] - fac_bbox[0]
 
-    draw.rounded_rectangle((info_x, box_y, width - 50, box_y + 44), radius=10, fill=(22, 26, 40, 255), outline=(*primary_color, 160), width=1)
-    draw.text((info_x + 14, box_y + 12), fac_name, fill=(*glow_color, 255), font=font_fac_bold)
-    draw.text((info_x + 14 + fac_w + 12, box_y + 14), f"•  {fac_full}", fill=(200, 210, 230, 255), font=font_fac_sub)
+    draw.rounded_rectangle((info_x, box_y, width - 45, box_y + 46), radius=10, fill=(22, 26, 40, 255), outline=(*primary_color, 160), width=1)
+    draw.text((info_x + 14, box_y + 13), fac_name, fill=(*glow_color, 255), font=font_fac_bold)
+    draw.text((info_x + 14 + fac_w + 12, box_y + 14), f"•  {fac_full}", fill=(215, 225, 245, 255), font=font_fac_sub)
 
     # Details Grid (Two columns)
     col1_x = info_x
-    col2_x = info_x + 280
-    row1_y = 245
-    row2_y = 300
+    col2_x = info_x + 320
+    row1_y = 242
+    row2_y = 302
 
     # Row 1: Verified Since & Server Member Since
-    draw.text((col1_x, row1_y), "STATUS ISSUED", fill=(120, 135, 165, 255), font=font_label)
-    draw.text((col1_x, row1_y + 18), data["verified_at"], fill=(240, 245, 255, 255), font=font_value)
+    draw.text((col1_x, row1_y), "STATUS ISSUED", fill=(145, 160, 190, 255), font=font_label)
+    draw.text((col1_x, row1_y + 19), data["verified_at"], fill=(255, 255, 255, 255), font=font_value)
 
-    draw.text((col2_x, row1_y), "JOINED SERVER", fill=(120, 135, 165, 255), font=font_label)
-    draw.text((col2_x, row1_y + 18), data["joined_at"], fill=(240, 245, 255, 255), font=font_value)
+    draw.text((col2_x, row1_y), "JOINED SERVER", fill=(145, 160, 190, 255), font=font_label)
+    draw.text((col2_x, row1_y + 19), data["joined_at"], fill=(255, 255, 255, 255), font=font_value)
 
     # Row 2: Security ID & Campus Affiliation
-    draw.text((col1_x, row2_y), "SECURITY TOKEN", fill=(120, 135, 165, 255), font=font_label)
-    draw.text((col1_x, row2_y + 18), data["hash_preview"], fill=(*accent_color, 255), font=_load_font(16, bold=True))
+    draw.text((col1_x, row2_y), "SECURITY TOKEN", fill=(145, 160, 190, 255), font=font_label)
+    draw.text((col1_x, row2_y + 19), data["hash_preview"], fill=(*accent_color, 255), font=_load_font(20, bold=True))
 
-    draw.text((col2_x, row2_y), "CAMPUS COHORT", fill=(120, 135, 165, 255), font=font_label)
+    draw.text((col2_x, row2_y), "CAMPUS COHORT", fill=(145, 160, 190, 255), font=font_label)
     cohort_str = "TARUMT Main Campus" if data["is_student"] else ("Verified Affiliate" if data["is_guest"] else "Public Guest")
-    draw.text((col2_x, row2_y + 18), cohort_str, fill=(240, 245, 255, 255), font=font_value)
+    draw.text((col2_x, row2_y + 19), cohort_str, fill=(255, 255, 255, 255), font=font_value)
 
     # 6. Badges Ribbon (Bottom Left to Center)
-    badges_y = 380
-    draw.text((50, badges_y), "ACHIEVEMENTS & BADGES", fill=(120, 135, 165, 255), font=font_label)
+    badges_y = 378
+    draw.text((45, badges_y), "ACHIEVEMENTS & BADGES", fill=(145, 160, 190, 255), font=font_label)
 
-    bx = 50
-    by = badges_y + 20
-    font_badge = _load_font(12, bold=True)
+    bx = 45
+    by = badges_y + 22
+    font_b = _load_font(13, bold=True)
+    chip_x = width - 170
 
     for badge in data["badges"]:
-        t_bbox = draw.textbbox((0, 0), badge, font=font_badge)
+        t_bbox = draw.textbbox((0, 0), badge, font=font_b)
         t_width = t_bbox[2] - t_bbox[0]
         b_width = max(t_width + 20, 70)
-        draw.rounded_rectangle((bx, by, bx + b_width, by + 28), radius=8, fill=(28, 34, 52, 255), outline=(50, 60, 90, 255), width=1)
-        draw.text((bx + b_width // 2, by + 14), badge, fill=(225, 235, 255, 255), font=font_badge, anchor="mm")
-        bx += b_width + 10
+        # Prevent overlapping the chip
+        if bx + b_width > chip_x - 12:
+            break
+        draw.rounded_rectangle((bx, by, bx + b_width, by + 34), radius=9, fill=(28, 34, 52, 255), outline=(60, 72, 105, 255), width=1)
+        draw.text((bx + b_width // 2, by + 17), badge, fill=(235, 245, 255, 255), font=font_b, anchor="mm")
+        bx += b_width + 8
 
     # 7. Holographic Chip & Barcode Simulation (Bottom Right)
-    chip_x = width - 160
-    chip_y = 385
+    chip_y = 380
 
     # Gold Security Smart Chip
-    draw.rounded_rectangle((chip_x, chip_y, chip_x + 65, chip_y + 48), radius=6, fill=(212, 175, 55, 240), outline=(180, 140, 30, 255), width=1)
+    draw.rounded_rectangle((chip_x, chip_y, chip_x + 70, chip_y + 52), radius=6, fill=(218, 180, 60, 250), outline=(190, 150, 35, 255), width=1)
     # Chip circuit patterns
-    draw.line([(chip_x + 10, chip_y + 24), (chip_x + 55, chip_y + 24)], fill=(150, 115, 20, 255), width=1)
-    draw.line([(chip_x + 32, chip_y + 8), (chip_x + 32, chip_y + 40)], fill=(150, 115, 20, 255), width=1)
-    draw.rounded_rectangle((chip_x + 22, chip_y + 16, chip_x + 43, chip_y + 32), radius=3, outline=(150, 115, 20, 255), width=1)
+    draw.line([(chip_x + 10, chip_y + 26), (chip_x + 60, chip_y + 26)], fill=(160, 125, 25, 255), width=2)
+    draw.line([(chip_x + 35, chip_y + 8), (chip_x + 35, chip_y + 44)], fill=(160, 125, 25, 255), width=2)
+    draw.rounded_rectangle((chip_x + 24, chip_y + 17, chip_x + 46, chip_y + 35), radius=4, outline=(160, 125, 25, 255), width=1)
 
     # Barcode lines next to chip
-    barcode_x = chip_x + 76
+    barcode_x = chip_x + 82
     for i in range(12):
         bx_line = barcode_x + i * 4
         bar_w = 2 if i % 3 == 0 else 1
-        draw.line([(bx_line, chip_y + 4), (bx_line, chip_y + 44)], fill=(140, 155, 185, 200), width=bar_w)
+        draw.line([(bx_line, chip_y + 4), (bx_line, chip_y + 48)], fill=(160, 175, 205, 220), width=bar_w)
 
     # Footer verification watermark
-    draw.text((width - 45, height - 36), "TARVeri Verified • Instant & Tamper-Proof", fill=(90, 105, 135, 255), font=_load_font(11, bold=False), anchor="ra")
+    draw.text((width - 45, height - 32), "TARVeri Verified • Instant & Tamper-Proof", fill=(110, 125, 155, 255), font=_load_font(12, bold=False), anchor="ra")
 
     # Output to BytesIO PNG
     buffer = io.BytesIO()
