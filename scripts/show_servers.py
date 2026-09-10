@@ -52,10 +52,9 @@ def main() -> None:
     if not rows:
         print("\nNo servers configured yet in 'guild_settings' table.")
         print("Servers will use auto-detection until an admin configures channels using:")
-        print("  /setwelcomec #channel")
-        print("  /sethelpc #channel")
-        print("  /setguestrole [role_name]")
-        print("  /setreviewchannel #channel\n")
+        print("  /admin dashboard (interactive UI)")
+        print("  /admin set_channel welcome|help|review #channel")
+        print("  /admin set_role guest|admin [role]\n")
     else:
         print(f"\nConfigured Servers ({len(rows)} server(s) in SQLite 'guild_settings'):")
         print("-" * 105)

@@ -1,7 +1,18 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 import discord
-from tarveri.cogs.admin_cog import is_admin_or_has_role
+from tarveri.cogs.admin_cog import AdminCog, is_admin_or_has_role
+from tarveri.cogs.admin_dashboard import (
+    AdminCategorySelect,
+    AdminDashboardView,
+    AlumniRevokeModal,
+    GuestRoleModal,
+    UnverifyModal,
+    _extract_user_id,
+)
+from tarveri.database import Database
+from tarveri.rate_limiter import RateLimiter
+from tarveri.services.verification_service import VerificationService
 
 
 def test_is_admin_or_has_role():
@@ -39,12 +50,15 @@ def test_is_admin_or_has_role():
     assert is_admin_or_has_role(interaction, admin_role_name) is False
 
 
-@pytest.mark.asyncio
-async def test_setwelcomec_and_sethelpc(tmp_path):
-    from unittest.mock import AsyncMock
-    from tarveri.cogs.admin_cog import AdminCog
-    from tarveri.database import Database
+def test_extract_user_id():
+    assert _extract_user_id("123456789012345678") == 123456789012345678
+    assert _extract_user_id("<@123456789012345678>") == 123456789012345678
+    assert _extract_user_id("<@!123456789012345678>") == 123456789012345678
+    assert _extract_user_id("invalid") is None
 
+
+@pytest.mark.asyncio
+async def test_set_channel_and_set_role(tmp_path):
     db_path = str(tmp_path / "admin_test.db")
     db = Database(db_path)
     await db.connect()
@@ -74,7 +88,7 @@ async def test_setwelcomec_and_sethelpc(tmp_path):
     interaction.followup.send = AsyncMock()
 
     # 1. Set welcome channel
-    await cog.setwelcomec.callback(cog, interaction, channel=channel)
+    await cog.set_channel.callback(cog, interaction, channel_type="welcome", channel=channel)
     interaction.followup.send.assert_called_once()
     assert "<#98765>" in interaction.followup.send.call_args[0][0]
     settings = await db.get_guild_settings(12345)
@@ -82,7 +96,7 @@ async def test_setwelcomec_and_sethelpc(tmp_path):
 
     # 2. Reset welcome channel
     interaction.followup.send.reset_mock()
-    await cog.setwelcomec.callback(cog, interaction, channel=None)
+    await cog.set_channel.callback(cog, interaction, channel_type="welcome", channel=None)
     assert "auto-detect" in interaction.followup.send.call_args[0][0]
     settings = await db.get_guild_settings(12345)
     assert settings[0] is None
@@ -94,20 +108,53 @@ async def test_setwelcomec_and_sethelpc(tmp_path):
     help_channel.mention = "<#54321>"
 
     interaction.followup.send.reset_mock()
-    await cog.sethelpc.callback(cog, interaction, channel=help_channel)
+    await cog.set_channel.callback(cog, interaction, channel_type="help", channel=help_channel)
     assert "<#54321>" in interaction.followup.send.call_args[0][0]
     settings = await db.get_guild_settings(12345)
     assert settings[1] == 54321
+
+    # 4. Set guest role
+    interaction.followup.send.reset_mock()
+    await cog.set_role.callback(cog, interaction, role_type="guest", role_name="Guest (Approved)")
+    assert "Guest (Approved)" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(12345)
+    assert settings[2] == "Guest (Approved)"
+
+    # 5. Set review channel
+    review_channel = MagicMock(spec=discord.TextChannel)
+    review_channel.id = 776655
+    review_channel.name = "review-tickets"
+    review_channel.mention = "<#776655>"
+
+    interaction.followup.send.reset_mock()
+    await cog.set_channel.callback(cog, interaction, channel_type="review", channel=review_channel)
+    assert "<#776655>" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(12345)
+    assert settings[3] == 776655
+
+    # 6. Set custom admin role
+    admin_custom_role = MagicMock(spec=discord.Role)
+    admin_custom_role.name = "Review Moderators"
+    admin_custom_role.mention = "<@&334455>"
+
+    interaction.followup.send.reset_mock()
+    await cog.set_role.callback(cog, interaction, role_type="admin", role=admin_custom_role)
+    assert "<@&334455>" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(12345)
+    assert settings[4] == "Review Moderators"
+
+    # 7. Reset custom admin role
+    interaction.followup.send.reset_mock()
+    await cog.set_role.callback(cog, interaction, role_type="admin", role=None)
+    assert "auto-detect" in interaction.followup.send.call_args[0][0]
+    settings = await db.get_guild_settings(12345)
+    assert settings[4] is None
 
     await db.close()
 
 
 @pytest.mark.asyncio
 async def test_sync_commands_slash(tmp_path):
-    from unittest.mock import AsyncMock
-    from tarveri.cogs.admin_cog import AdminCog
-    from tarveri.database import Database
-
     db_path = str(tmp_path / "sync_test.db")
     db = Database(db_path)
     await db.connect()
@@ -153,81 +200,7 @@ async def test_sync_commands_slash(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_setguestrole_and_setreviewchannel(tmp_path):
-    from unittest.mock import AsyncMock
-    from tarveri.cogs.admin_cog import AdminCog
-    from tarveri.database import Database
-
-    db_path = str(tmp_path / "admin_guest_test.db")
-    db = Database(db_path)
-    await db.connect()
-
-    bot = MagicMock()
-    service = MagicMock()
-    rate_limiter = MagicMock()
-    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
-
-    guild = MagicMock(spec=discord.Guild)
-    guild.id = 998877
-    guild.name = "Guest Test Guild"
-
-    admin_user = MagicMock(spec=discord.Member)
-    admin_user.guild_permissions.administrator = True
-
-    channel = MagicMock(spec=discord.TextChannel)
-    channel.id = 776655
-    channel.name = "guest-tickets"
-    channel.mention = "<#776655>"
-
-    interaction = MagicMock(spec=discord.Interaction)
-    interaction.guild = guild
-    interaction.user = admin_user
-    interaction.response.defer = AsyncMock()
-    interaction.followup.send = AsyncMock()
-
-    # 1. Set guest role
-    await cog.setguestrole.callback(cog, interaction, role_name="Guest (Approved)")
-    interaction.followup.send.assert_called_once()
-    assert "Guest (Approved)" in interaction.followup.send.call_args[0][0]
-    settings = await db.get_guild_settings(998877)
-    assert settings[2] == "Guest (Approved)"
-
-    # 2. Set review channel
-    interaction.followup.send.reset_mock()
-    await cog.setreviewchannel.callback(cog, interaction, channel=channel)
-    interaction.followup.send.assert_called_once()
-    assert "<#776655>" in interaction.followup.send.call_args[0][0]
-    settings = await db.get_guild_settings(998877)
-    assert settings[3] == 776655
-
-    # 3. Set custom admin role
-    admin_custom_role = MagicMock(spec=discord.Role)
-    admin_custom_role.name = "Review Moderators"
-    admin_custom_role.mention = "<@&334455>"
-    interaction.followup.send.reset_mock()
-    await cog.setadminrole.callback(cog, interaction, role=admin_custom_role)
-    interaction.followup.send.assert_called_once()
-    assert "<@&334455>" in interaction.followup.send.call_args[0][0]
-    settings = await db.get_guild_settings(998877)
-    assert settings[4] == "Review Moderators"
-
-    # 4. Reset custom admin role
-    interaction.followup.send.reset_mock()
-    await cog.setadminrole.callback(cog, interaction, role=None)
-    interaction.followup.send.assert_called_once()
-    assert "auto-detect" in interaction.followup.send.call_args[0][0]
-    settings = await db.get_guild_settings(998877)
-    assert settings[4] is None
-
-    await db.close()
-
-
-@pytest.mark.asyncio
 async def test_admin_commands_permission_denied(tmp_path):
-    from unittest.mock import AsyncMock
-    from tarveri.cogs.admin_cog import AdminCog
-    from tarveri.database import Database
-
     db = Database(str(tmp_path / "perm_test.db"))
     await db.connect()
     cog = AdminCog(MagicMock(), db, MagicMock(), MagicMock(), admin_role_name="TARVeri Admin")
@@ -270,10 +243,6 @@ async def test_admin_commands_permission_denied(tmp_path):
 
 @pytest.mark.asyncio
 async def test_admin_unverify_lifecycle(tmp_path):
-    from unittest.mock import AsyncMock
-    from tarveri.cogs.admin_cog import AdminCog
-    from tarveri.database import Database
-
     db = Database(str(tmp_path / "unverify_test.db"))
     await db.connect()
 
@@ -281,11 +250,19 @@ async def test_admin_unverify_lifecycle(tmp_path):
     service = MagicMock()
     service.get_mutual_guilds_for_user = AsyncMock(return_value=[])
     service.get_or_fetch_member = AsyncMock(return_value=None)
+    service._match_faculty_role_in_list = MagicMock(return_value=None)
     rate_limiter = MagicMock()
     cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
 
     guild = MagicMock(spec=discord.Guild)
     guild.name = "Campus Guild"
+    bot_top = MagicMock(spec=discord.Role)
+    bot_top.position = 10
+    bot_member = MagicMock(spec=discord.Member)
+    bot_member.guild_permissions.manage_roles = True
+    bot_member.top_role = bot_top
+    guild.me = bot_member
+
     admin_user = MagicMock(spec=discord.Member)
     admin_user.guild_permissions.administrator = True
     admin_user.__str__.return_value = "Admin#0001"
@@ -311,11 +288,13 @@ async def test_admin_unverify_lifecycle(tmp_path):
     member = MagicMock(spec=discord.Member)
     faculty_role = MagicMock(spec=discord.Role)
     faculty_role.name = "FOCS"
+    faculty_role.position = 5
     member.roles = [faculty_role]
     member.remove_roles = AsyncMock()
 
     service.get_mutual_guilds_for_user = AsyncMock(return_value=[guild])
     service.get_or_fetch_member = AsyncMock(return_value=member)
+    service._match_faculty_role_in_list = MagicMock(return_value=faculty_role)
 
     interaction.followup.send.reset_mock()
     await cog.unverify.callback(cog, interaction, user=target_user, reason="Graduated")
@@ -333,10 +312,6 @@ async def test_admin_unverify_lifecycle(tmp_path):
 
 @pytest.mark.asyncio
 async def test_admin_stats_and_audit(tmp_path):
-    from unittest.mock import AsyncMock
-    from tarveri.cogs.admin_cog import AdminCog
-    from tarveri.database import Database
-
     db = Database(str(tmp_path / "stats_audit_test.db"))
     await db.connect()
 
@@ -393,7 +368,7 @@ async def test_admin_stats_and_audit(tmp_path):
         reason="Attending workshop",
     )
     interaction.followup.send.reset_mock()
-    await cog.guest_tickets.callback(cog, interaction, status=None, limit=5)
+    await cog.tickets.callback(cog, interaction, status=None, limit=5)
     interaction.followup.send.assert_called_once()
     gt_embed = interaction.followup.send.call_args[1]["embed"]
     assert "Guest Review Tickets" in gt_embed.title
@@ -405,10 +380,6 @@ async def test_admin_stats_and_audit(tmp_path):
 
 @pytest.mark.asyncio
 async def test_admin_diagnose_command(tmp_path):
-    from unittest.mock import AsyncMock, MagicMock
-    from tarveri.cogs.admin_cog import AdminCog
-    from tarveri.database import Database
-
     db = Database(str(tmp_path / "diagnose_test.db"))
     await db.connect()
 
@@ -427,15 +398,13 @@ async def test_admin_diagnose_command(tmp_path):
     guild.id = 8877
     guild.name = "Diagnose Guild"
 
-    # Set up channels
     welcome_ch = MagicMock(spec=discord.TextChannel)
     welcome_ch.id = 1111
     welcome_ch.mention = "<#1111>"
 
-    # Set up settings with valid welcome, but stale help and review channels
     await db.set_guild_welcome_channel(guild.id, 1111)
-    await db.set_guild_help_channel(guild.id, 2222)  # Stale (get_channel returns None)
-    await db.set_guild_review_channel(guild.id, 3333)  # Stale
+    await db.set_guild_help_channel(guild.id, 2222)
+    await db.set_guild_review_channel(guild.id, 3333)
 
     guild.get_channel.side_effect = lambda cid: welcome_ch if cid == 1111 else None
 
@@ -457,23 +426,17 @@ async def test_admin_diagnose_command(tmp_path):
     assert any("Duplicate Role Cleanup" in f.name for f in embed.fields)
     assert any("SRC Roles Self-Healing" in f.name for f in embed.fields)
 
-    # Verify stale channels were cleaned in DB
     settings = await db.get_guild_settings(guild.id)
-    assert settings[0] == 1111  # Kept
-    assert settings[1] is None  # Stale cleared
-    assert settings[3] is None  # Stale cleared
+    assert settings[0] == 1111
+    assert settings[1] is None
+    assert settings[3] is None
 
     await db.close()
 
 
 @pytest.mark.asyncio
 async def test_admin_backup_command_actions(tmp_path):
-    from unittest.mock import AsyncMock, MagicMock
-    from tarveri.cogs.admin_cog import AdminCog
-    from tarveri.database import Database
-
     db_path = str(tmp_path / "admin_backup_test.db")
-    backup_dir = str(tmp_path / "backups")
     db = Database(db_path)
     await db.connect()
 
@@ -500,15 +463,89 @@ async def test_admin_backup_command_actions(tmp_path):
     assert "Database backup created successfully" in interaction.followup.send.call_args[0][0]
 
     # 2. Action: list backups
-    # Mock list_backups to return entries
     interaction.followup.send.reset_mock()
     await cog.backup.callback(cog, interaction, action="list")
     interaction.followup.send.assert_called_once()
 
-    # 3. Action: restore_settings (no previous backup in default dir, handled gracefully)
+    # 3. Action: restore_settings
     interaction.followup.send.reset_mock()
     await cog.backup.callback(cog, interaction, action="restore_settings")
     interaction.followup.send.assert_called_once()
 
     await db.close()
 
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_launcher_and_components(tmp_path):
+    db_path = str(tmp_path / "dashboard_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    bot.guilds = []
+    service = MagicMock(spec=VerificationService)
+    service.restore_src_roles = AsyncMock(return_value={"created": 0})
+    service.reconcile_duplicate_roles = AsyncMock(return_value={"deleted_roles": 0, "migrated_members": 0, "failed": 0})
+    service.diagnose_guild_permissions = MagicMock(return_value=[])
+    service.reconcile_verified_members = AsyncMock(return_value={"checked": 0, "restored": 0})
+    service.reconcile_alumni_members = AsyncMock(return_value={"checked": 0, "restored": 0})
+
+    rate_limiter = RateLimiter(max_attempts=5, window_seconds=60)
+    update_checker = MagicMock()
+    update_checker.check_for_updates = AsyncMock(return_value=(False, 0, "hash111", "hash222", "main"))
+    cog = AdminCog(
+        bot,
+        db,
+        service,
+        rate_limiter,
+        admin_role_name="TARVeri Admin",
+        update_checker=update_checker,
+    )
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 554433
+    guild.name = "Dashboard Server"
+    guild.get_channel.return_value = None
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.id = 998811
+    admin_user.guild_permissions.administrator = True
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # 1. Test /admin dashboard launcher
+    await cog.dashboard.callback(cog, interaction)
+    interaction.response.defer.assert_called_once_with(ephemeral=True)
+    interaction.followup.send.assert_called_once()
+    kwargs = interaction.followup.send.call_args[1]
+    assert "embed" in kwargs
+    assert isinstance(kwargs["view"], AdminDashboardView)
+
+    view: AdminDashboardView = kwargs["view"]
+
+    # 2. Test category switching
+    for cat in ["overview", "config", "diagnose", "moderation", "tickets", "backup", "logs", "panel", "updates"]:
+        view.current_category = cat
+        embed = await view.build_current_embed(guild)
+        assert embed.title is not None
+
+    # 3. Test Modals
+    unverify_modal = UnverifyModal(cog, view)
+    unverify_modal.user_input._value = "123456789012345678"
+    unverify_modal.reason_input._value = "Test unverify"
+    assert unverify_modal.title == "❌ Unverify Student"
+
+    alumni_modal = AlumniRevokeModal(cog, view)
+    alumni_modal.user_input._value = "123456789012345678"
+    alumni_modal.reason_input._value = "Test revoke"
+    assert alumni_modal.title == "🎓 Revoke Alumni Status"
+
+    guest_role_modal = GuestRoleModal(cog, view)
+    guest_role_modal.role_name_input._value = "Guest (Approved)"
+    assert guest_role_modal.title == "⚙️ Configure Guest Role Name"
+
+    await db.close()

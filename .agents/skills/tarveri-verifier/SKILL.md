@@ -158,23 +158,22 @@ flowchart TD
 - `/referral generate [ttl_hours]` — Generate single-use guest referral code (max 3 active).
 - `/referral list` — View active and past referral codes.
 
-### Admin Commands
-- `/send_gateway_panel [channel]` — Post 3-button verification gateway panel.
-- `/diagnose` — Run self-healing diagnostics, check role hierarchy, restore SRC roles, and reconcile missing member/alumni roles.
-- `/setadminrole [role]` — Set server's reviewer/admin role.
-- `/setguestrole [role_name]` — Set custom guest role name (default: `Guest`).
-- `/setreviewchannel [channel]` — Set parent channel for guest review threads.
-- `/setwelcomec [channel]` — Set welcome channel for new joiner verification tags.
-- `/sethelpc [channel]` — Set help channel for automated role tips.
-- `/guest_tickets [status] [limit]` — Query guest tickets with links to threads.
-- `/stats` — View verification numbers, alumni metrics, and faculty breakdown.
-- `/unverify @user` — Unlink student ID and strip faculty roles.
-- `/alumni_revoke @user [reason]` — Revoke Alumni status and strip `TARUMT Alumni` role across mutual servers.
-- `/audit [limit] [event_type]` — Inspect database audit logs.
-- `/backup [action] [backup_file]` — Create backups, list snapshots, or restore previous latest server settings / full database.
-- `/logs [action]` — Inspect active daily logs in `logs/`, list 10-day compressed archives, or trigger immediate `.tar.gz` rotation.
-- `/resync` — Re-synchronize roles across mutual servers.
-- `/check_updates [stream]` — Check git upstream for new commits.
+### 🛡️ Administrator Control Center (`/admin`)
+- `/admin dashboard` — Launches the rich interactive **TARVeri Administrator Control Center** UI with live category navigation, quick diagnostics, channel/role pickers, unverify/revoke modals, and backup triggers.
+- `/admin stats` — View student verification numbers, alumni metrics, and faculty distribution.
+- `/admin diagnose` — Run self-healing diagnostics, check role hierarchy, restore SRC roles, and reconcile missing member/alumni roles.
+- `/admin unverify @user [reason]` — Unlink student ID and strip faculty roles across mutual servers.
+- `/admin alumni_revoke @user [reason]` — Revoke Alumni status and strip `TARUMT Alumni` role across mutual servers.
+- `/admin set_channel [type] [channel]` — Configure or reset welcome, help, or guest review channels in one command.
+- `/admin set_role [type] [role/name]` — Configure or reset custom guest role name or reviewer/admin role.
+- `/admin panel [channel]` — Deploy the persistent 3-button verification gateway panel.
+- `/admin tickets [status] [limit]` — Query guest review tickets with links to threads and resolution notes.
+- `/admin backup [action] [backup_file]` — Create backups, list snapshots, or restore previous latest server settings.
+- `/admin logs [action]` — Inspect active daily logs in `logs/`, list 10-day compressed archives, or trigger immediate `.tar.gz` rotation.
+- `/admin audit [limit] [event_type]` — Inspect database audit logs with event type filtering.
+- `/admin resync` — Re-synchronize roles across mutual servers.
+- `/admin updates [stream]` — Check git upstream for new commits.
+- `/admin sync_commands` — Force sync application commands with Discord and clear duplicates.
 
 ---
 

@@ -92,22 +92,22 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 * **New Member Onboarding**: When a new unverified student joins the server, the bot tags them in the welcome channel with permanent verification instructions.
 * **Smart Role Help Tips**: When an unverified user asks questions like *"How to get role"* or *"nak verify"* in support channels, the bot replies with permanent tips explaining how to verify.
 
-### Admins
-* `/send_gateway_panel [channel]` — Post the persistent 3-button verification gateway panel (Student Verify / Referral Code / Guest Apply).
-* `/diagnose` — Run self-healing diagnostics, check permissions/role hierarchy, and trigger student role reconciliation.
-* `/setadminrole [role]` — Configure or reset the server's reviewer/admin role for private guest review threads (auto-invites all role members).
-* `/setguestrole [role_name]` — Configure the server's guest role name (default: `Guest`).
-* `/setreviewchannel [channel]` — Configure the parent channel for private guest review threads.
-* `/setwelcomec [channel]` — Configure or reset the server's welcome channel for new member verification tags.
-* `/sethelpc [channel]` — Configure or reset the server's specific help channel for automated role tips.
-* `/guest_tickets [status] [limit]` — List recent guest review tickets with clickable links to archived/active threads and verdict notes.
-* `/stats` — View verification numbers, alumni metrics, faculty breakdown, and configured channels/roles.
-* `/unverify @user` — Unlink a student ID and remove their roles.
-* `/alumni_revoke @user [reason]` — Revoke Alumni status and remove `TARUMT Alumni` role across mutual servers.
-* `/audit` — View recent audit log entries.
-* `/backup` — Create an immediate database snapshot in `backups/` (auto-rotated to 10 recent files).
-* `/resync` — Re-check and update roles across mutual servers.
-* `/check_updates [stream]` — Check for new git updates on a specific or default stream directly from Discord.
+### 🛡️ Administrator Control Center (`/admin`)
+* **`/admin dashboard`** — Opens the rich interactive **TARVeri Administrator Control Center** UI (with category navigation dropdowns, diagnostics execution, channel/role pickers, unverify/revoke modals, and one-click backups).
+* **`/admin stats`** — View student verification numbers, alumni metrics, faculty distribution percentages, and server health.
+* **`/admin diagnose`** — Run role hierarchy diagnostics, duplicate role reconciliation, and auto-heal missing faculty/alumni/SRC roles.
+* **`/admin unverify @user [reason]`** — Unlink a student ID and remove their faculty/alumni roles across mutual servers.
+* **`/admin alumni_revoke @user [reason]`** — Revoke Alumni status and remove the `TARUMT Alumni` role across mutual servers.
+* **`/admin set_channel [type] [channel]`** — Configure or reset the server's `welcome`, `help`, or guest `review` channels in a single command.
+* **`/admin set_role [type] [role/name]`** — Configure or reset the server's `guest` or `admin` reviewer roles.
+* **`/admin panel [channel]`** — Post the persistent 3-button verification gateway panel (Student Verify / Referral Code / Guest Apply).
+* **`/admin tickets [status] [limit]`** — Query guest review tickets with clickable links to threads and verdict notes.
+* **`/admin backup [action]`** — Create immediate snapshots, list historical backups, or restore previous settings.
+* **`/admin logs [action]`** — Inspect active daily logs, list 10-day `.tar.gz` archives, or tail recent log lines.
+* **`/admin audit [limit] [event_type]`** — Inspect database audit logs with optional event type filtering.
+* **`/admin resync`** — Re-check and synchronize roles across mutual servers.
+* **`/admin updates [stream]`** — Check for new git updates on a specific or default stream directly from Discord.
+* **`/admin sync_commands`** — Clean duplicate slash commands and force sync with Discord.
 
 
 

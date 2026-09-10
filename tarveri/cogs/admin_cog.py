@@ -1,13 +1,17 @@
 """
-Admin Commands & Audit Tools for TARVeri.
+Admin Commands, Interactive Dashboard & Audit Tools for TARVeri.
 """
 
 from __future__ import annotations
+
+import logging
+from typing import Literal
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from tarveri.cogs.admin_dashboard import AdminDashboardView
 from tarveri.config import FACULTY_ROLE_NAMES, FACULTY_ROLES
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
@@ -21,6 +25,8 @@ from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
 from tarveri.utils import format_ticket_seq, schedule_ttl_delete
 
+logger = logging.getLogger("tarveri")
+
 
 def is_admin_or_has_role(interaction: discord.Interaction, admin_role_name: str) -> bool:
     """Checks if invoking user has Administrator permission, the configured Admin role, or a standard admin/staff role."""
@@ -29,14 +35,22 @@ def is_admin_or_has_role(interaction: discord.Interaction, admin_role_name: str)
     if interaction.user.guild_permissions.administrator:
         return True
     from tarveri.cogs.guest_cog import get_admin_role_or_fallback
+
     admin_role = get_admin_role_or_fallback(interaction.guild, admin_role_name)
     if admin_role and admin_role in interaction.user.roles:
         return True
     return any(r.name.lower() == admin_role_name.lower() for r in interaction.user.roles)
 
 
-
 class AdminCog(commands.Cog, name="Admin"):
+    """Consolidated Administrator Control Center and Server Operations."""
+
+    admin_group = app_commands.Group(
+        name="admin",
+        description="TARVeri Administrator Control Center and Server Operations",
+        default_permissions=discord.Permissions(administrator=True),
+    )
+
     def __init__(
         self,
         bot: commands.Bot,
@@ -58,7 +72,34 @@ class AdminCog(commands.Cog, name="Admin"):
     def _check_admin(self, interaction: discord.Interaction) -> bool:
         return is_admin_or_has_role(interaction, self.admin_role_name)
 
-    @app_commands.command(name="stats", description="View student verification statistics.")
+    # ==========================================
+    # 🛡️ 1. Interactive Dashboard Launcher
+    # ==========================================
+
+    @admin_group.command(
+        name="dashboard",
+        description="Open the interactive TARVeri Administrator Control Center dashboard.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def dashboard(self, interaction: discord.Interaction) -> None:
+        """Launches the rich interactive Administrator Control Center UI."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        view = AdminDashboardView(cog=self, admin_user=interaction.user, initial_category="overview")
+        embed = await view.build_overview_embed(interaction.guild)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    # ==========================================
+    # 📊 2. Statistics & Metrics
+    # ==========================================
+
+    @admin_group.command(name="stats", description="View student verification statistics and server metrics.")
     @app_commands.default_permissions(administrator=True)
     async def stats(self, interaction: discord.Interaction) -> None:
         """Displays total verifications, faculty breakdown, and recent activity."""
@@ -131,7 +172,11 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(embed=embed, ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @app_commands.command(
+    # ==========================================
+    # 🩺 3. Diagnostics & Self-Healing
+    # ==========================================
+
+    @admin_group.command(
         name="diagnose",
         description="Run self-healing diagnostics and verify server permissions, roles, and channels.",
     )
@@ -152,16 +197,9 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
-        # 1. Restore faculty SRC roles if missing
         src_stats = await self.service.restore_src_roles(guild)
-
-        # 2. Trigger duplicate role reconciliation (migrate members & cleanup redundant roles)
         dedup_stats = await self.service.reconcile_duplicate_roles(guild)
-
-        # 3. Check permissions & role hierarchy diagnostics
         warnings = self.service.diagnose_guild_permissions(guild)
-
-        # 4. Trigger member role reconciliation for this guild
         reconcile_stats = await self.service.reconcile_verified_members(guild)
         alumni_stats = await self.service.reconcile_alumni_members(guild)
 
@@ -227,7 +265,11 @@ class AdminCog(commands.Cog, name="Admin"):
                 inline=False,
             )
 
-        if dedup_stats.get("deleted_roles", 0) > 0 or dedup_stats.get("migrated_members", 0) > 0 or dedup_stats.get("failed", 0) > 0:
+        if (
+            dedup_stats.get("deleted_roles", 0) > 0
+            or dedup_stats.get("migrated_members", 0) > 0
+            or dedup_stats.get("failed", 0) > 0
+        ):
             embed.add_field(
                 name="🧹 Duplicate Role Cleanup & Migration",
                 value=(
@@ -248,21 +290,31 @@ class AdminCog(commands.Cog, name="Admin"):
         )
 
         embed.add_field(
-            name="📁 Channel Configuration & Auto-Recovery",
+            name="📡 Channel Configuration Health",
             value="\n".join(channel_status),
             inline=False,
         )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
-        schedule_ttl_delete(interaction, delay=60.0)
+        schedule_ttl_delete(interaction, delay=90.0)
 
-    @app_commands.command(name="unverify", description="Unlink a member's student ID and revoke faculty roles.")
+    # ==========================================
+    # 👥 4. Member Moderation (Unverify & Revoke)
+    # ==========================================
+
+    @admin_group.command(name="unverify", description="Unlink a member's student ID and revoke faculty roles.")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(user="The Discord user to unverify", reason="Optional reason for unlinking")
+    @app_commands.describe(
+        user="The Discord user to unverify",
+        reason="Optional reason for unlinking the verification record",
+    )
     async def unverify(
-        self, interaction: discord.Interaction, user: discord.User, reason: str = "Admin unverified"
+        self,
+        interaction: discord.Interaction,
+        user: discord.User | discord.Member,
+        reason: str | None = None,
     ) -> None:
-        """Unbinds a Discord user and strips faculty roles across mutual guilds."""
+        """Unlinks verification from DB, resets rate limit, and strips faculty/alumni roles across mutual servers."""
         if not self._check_admin(interaction):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
@@ -272,71 +324,92 @@ class AdminCog(commands.Cog, name="Admin"):
 
         await interaction.response.defer(ephemeral=True)
 
-        existing = await self.db.get_verification_by_user(user.id)
-
-        # Remove faculty roles across mutual guilds (idempotent cleanup)
-        removed_from: list[str] = []
-        mutual_guilds = await self.service.get_mutual_guilds_for_user(user.id)
-        for guild in mutual_guilds:
-            member = await self.service.get_or_fetch_member(guild, user.id)
-            if member:
-                member_roles = getattr(member, "roles", [])
-                roles_to_remove = [
-                    r
-                    for r in member_roles
-                    if any(VerificationService._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES)
-                ]
-                for r in roles_to_remove:
-                    try:
-                        await member.remove_roles(r, reason=f"TARVeri unverify by {interaction.user}: {reason}")
-                        removed_from.append(f"{guild.name} ({r.name})")
-                    except discord.HTTPException:
-                        pass
-
-        if not existing and not removed_from:
-            await interaction.followup.send(
-                f"⚠️ User {user.mention} is not verified in TARVeri and has no active faculty roles.",
-                ephemeral=True,
-            )
+        verif = await self.db.get_verification_by_user(user.id)
+        if not verif:
+            await interaction.followup.send(f"❌ {user.mention} is not verified.", ephemeral=True)
             schedule_ttl_delete(interaction, delay=60.0)
             return
 
-        if existing:
-            await self.db.delete_verification(user.id)
+        mutual_guilds = await self.service.get_mutual_guilds_for_user(user.id)
+        roles_removed_servers: list[str] = []
 
+        for guild in mutual_guilds:
+            member = await self.service.get_or_fetch_member(guild, user.id)
+            if not member:
+                continue
+
+            roles_to_remove = [
+                r
+                for r in getattr(member, "roles", [])
+                if self.service._match_faculty_role_in_list([r], r.name) is not None
+                or r.name.strip().lower() in ("tarumt alumni", "alumni")
+            ]
+
+            me = getattr(guild, "me", None)
+            can_manage = (
+                getattr(me.guild_permissions, "manage_roles", False)
+                if me and hasattr(me, "guild_permissions")
+                else False
+            )
+            bot_top = getattr(me, "top_role", None)
+            bot_pos = getattr(bot_top, "position", 0) if bot_top else 0
+
+            for role in roles_to_remove:
+                role_pos = getattr(role, "position", 0)
+                if (
+                    can_manage
+                    and isinstance(bot_pos, int)
+                    and isinstance(role_pos, int)
+                    and role_pos < bot_pos
+                ):
+                    try:
+                        await member.remove_roles(
+                            role,
+                            reason=f"TARVeri: Verification unlinked by admin {interaction.user}. Reason: {reason or 'None'}",
+                        )
+                        roles_removed_servers.append(f"{guild.name} ({role.name})")
+                    except discord.HTTPException as e:
+                        logger.warning(f"Could not remove role {role.name} from {member} in {guild.name}: {e}")
+
+        await self.db.delete_verification(user.id)
         self.rate_limiter.reset(user.id)
 
         await self.db.log(
-            "INFO",
-            "ADMIN_UNVERIFY",
-            f"Admin {interaction.user} (ID: {interaction.user.id}) unverified {user} (ID: {user.id}). Reason: {reason}",
+            "WARNING",
+            "MEMBER_UNVERIFIED",
+            f"Admin {interaction.user} unverified member {user} (ID: {user.id}). Reason: {reason or 'No reason provided'}",
             guild=interaction.guild,
             user_id=user.id,
         )
 
-        removed_summary = ", ".join(removed_from) if removed_from else "No active roles removed"
-        await interaction.followup.send(
-            f"✅ Successfully unverified {user.mention}.\nRoles removed: {removed_summary}",
-            ephemeral=True,
-        )
+        report = f"✅ **Successfully unverified {user.mention} (ID: `{user.id}`).**\n"
+        if reason:
+            report += f"• **Reason:** *{reason}*\n"
+        if roles_removed_servers:
+            report += f"• **Roles removed in {len(roles_removed_servers)} server(s):** {', '.join(roles_removed_servers)}\n"
+        else:
+            report += "• **Roles removed:** None (member not found or had no roles)\n"
+        report += "• **Rate Limiter:** Reset successfully. The user may now verify a new ID."
+
+        await interaction.followup.send(report, ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @app_commands.command(
+    @admin_group.command(
         name="alumni_revoke",
-        description="Revoke a member's Alumni status and remove their TARUMT Alumni role.",
+        description="Revoke a member's graduated alumni status and remove TARUMT Alumni role.",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
-        user="The Discord user whose alumni status to revoke",
-        reason="Optional reason for revocation",
+        user="The Discord member whose Alumni status to revoke",
+        reason="Reason for revoking Alumni status",
     )
     async def alumni_revoke(
         self,
         interaction: discord.Interaction,
-        user: discord.User,
-        reason: str = "Admin revocation",
+        user: discord.User | discord.Member,
+        reason: str | None = None,
     ) -> None:
-        """Revokes alumni status and strips the TARUMT Alumni role."""
+        """Revokes alumni status from a verified member and strips their alumni role across mutual servers."""
         if not self._check_admin(interaction):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
@@ -345,146 +418,49 @@ class AdminCog(commands.Cog, name="Admin"):
             return
 
         await interaction.response.defer(ephemeral=True)
-        result = await self.service.revoke_alumni_status(
+
+        res = await self.service.revoke_alumni_status(
             target_user=user,
             admin=interaction.user,
             current_guild=interaction.guild,
             reason=reason,
         )
 
-        if not result["success"]:
-            await interaction.followup.send(result["message"], ephemeral=True)
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        await interaction.followup.send(
-            f"✅ Successfully revoked Alumni status for {user.mention}.\n"
-            f"Removed **`TARUMT Alumni`** role across {result.get('roles_removed_count', 0)} server(s).",
-            ephemeral=True,
-        )
-        schedule_ttl_delete(interaction, delay=60.0)
-
-    @app_commands.command(name="audit", description="Query recent audit log entries.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        limit="Number of entries to fetch (max 25)",
-        event_type="Filter by event type (e.g. VERIFIED, RATE_LIMITED, ADMIN_UNVERIFY)",
-    )
-    async def audit(
-        self,
-        interaction: discord.Interaction,
-        limit: app_commands.Range[int, 1, 25] = 10,
-        event_type: str | None = None,
-    ) -> None:
-        """Retrieves and formats recent audit log entries from the database."""
-        if not self._check_admin(interaction):
-            await interaction.response.send_message(
-                "❌ You do not have permission to use this command.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-
-        filter_type = event_type.strip().upper() if event_type else None
-        entries = await self.db.recent_audit(limit=limit, event_type=filter_type)
-
-        if not entries:
-            msg = f"No audit log records found{' for event `' + filter_type + '`' if filter_type else ''}."
-            await interaction.followup.send(msg, ephemeral=True)
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        embed = discord.Embed(
-            title=f"📋 Audit Log Entries ({len(entries)})",
-            color=discord.Color.gold(),
-        )
-
-        for ts, level, ev_type, g_name, uid, msg in entries:
-            guild_str = f" • Server: {g_name}" if g_name else ""
-            user_str = f" • User ID: `{uid}`" if uid else ""
-            name = f"[{level}] {ev_type} ({ts}){guild_str}{user_str}"
-            embed.add_field(name=name[:256], value=msg[:1024], inline=False)
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        schedule_ttl_delete(interaction, delay=60.0)
-
-    @app_commands.command(name="resync", description="Force resynchronization of verification roles.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(user="User to resynchronize (defaults to yourself if omitted)")
-    async def resync(self, interaction: discord.Interaction, user: discord.User | None = None) -> None:
-        """Resyncs roles for a user across all shared guilds."""
-        target = user or interaction.user
-        is_admin = self._check_admin(interaction)
-
-        if target.id != interaction.user.id and not is_admin:
-            await interaction.response.send_message(
-                "❌ You can only resync your own roles unless you are an administrator.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-
-        existing = await self.db.get_verification_by_user(target.id)
-        if not existing:
+        if not res.get("success"):
             await interaction.followup.send(
-                f"⚠️ {'You are' if target.id == interaction.user.id else f'{target.mention} is'} not verified.",
-                ephemeral=True,
+                f"❌ {res.get('message', 'Failed to revoke alumni status.')}", ephemeral=True
             )
             schedule_ttl_delete(interaction, delay=60.0)
             return
 
-        _, stored_faculty, _ = existing
-        faculty_role = FACULTY_ROLES.get(stored_faculty)
-        if not faculty_role:
-            await interaction.followup.send("❌ Stored faculty role is invalid.", ephemeral=True)
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        mutual_guilds = await self.service.get_mutual_guilds_for_user(target.id)
-        result = await self.service.assign_role_across_guilds(target.id, faculty_role, mutual_guilds)
-
-        if target.id != interaction.user.id:
-            await self.db.log(
-                "INFO",
-                "ADMIN_RESYNC",
-                f"Admin {interaction.user} (ID: {interaction.user.id}) force-resynced roles for {target} (ID: {target.id})",
-                guild=interaction.guild,
-                user_id=target.id,
-            )
-
-        summary = self.service.format_role_summary(result)
-        await interaction.followup.send(
-            summary or "ℹ️ All roles are already up to date.",
-            ephemeral=True,
+        msg = (
+            f"✅ **Successfully revoked Alumni status for {user.mention} (ID: `{user.id}`).**\n"
+            f"• Removed `TARUMT Alumni` role across **{res.get('roles_removed_count', 0)}** mutual server(s).\n"
+            f"• **Reason:** *{reason or 'No reason provided'}*"
         )
+        await interaction.followup.send(msg, ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @app_commands.command(
-        name="backup",
-        description="Create, list, or restore database snapshots and server settings.",
+    # ==========================================
+    # ⚙️ 5. Consolidated Server Channel & Role Settings
+    # ==========================================
+
+    @admin_group.command(
+        name="set_channel",
+        description="Configure or reset welcome, help, or guest review channels for this server.",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
-        action="Backup operation to perform (default: Create Snapshot)",
-        backup_file="Optional specific backup filename (used for restore operations)",
+        channel_type="The type of channel to configure (welcome, help, or review)",
+        channel="The text channel to set (leave blank to reset to auto-detect)",
     )
-    @app_commands.choices(
-        action=[
-            app_commands.Choice(name="Create Backup Snapshot", value="create"),
-            app_commands.Choice(name="Restore Settings from Latest Backup", value="restore_settings"),
-            app_commands.Choice(name="List Available Backups", value="list"),
-            app_commands.Choice(name="Restore Full Database", value="restore_full"),
-        ]
-    )
-    async def backup(
+    async def set_channel(
         self,
         interaction: discord.Interaction,
-        action: str = "create",
-        backup_file: str | None = None,
+        channel_type: Literal["welcome", "help", "review"],
+        channel: discord.TextChannel | None = None,
     ) -> None:
-        """Manages database backups and restores server settings."""
+        """Consolidated channel configuration for welcome, help, and review channels."""
         if not self._check_admin(interaction):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
@@ -492,162 +468,61 @@ class AdminCog(commands.Cog, name="Admin"):
             schedule_ttl_delete(interaction, delay=60.0)
             return
 
-        await interaction.response.defer(ephemeral=True)
-        import os
-        action_val = action.value if hasattr(action, "value") else str(action)
-
-        if action_val == "list":
-            backups = self.db.list_backups()
-            if not backups:
-                await interaction.followup.send("ℹ️ No database backup files found in `backups/` directory.", ephemeral=True)
-                schedule_ttl_delete(interaction, delay=60.0)
-                return
-
-            embed = discord.Embed(
-                title=f"📦 TARVeri Database Backups ({len(backups)})",
-                color=discord.Color.blue(),
-                description="Available point-in-time database snapshots in `backups/`:",
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ This command can only be used inside a server.", ephemeral=True
             )
-            for b in backups[:10]:
-                size_kb = b["size_bytes"] / 1024
-                embed.add_field(
-                    name=f"📄 `{b['filename']}`",
-                    value=f"• **Created:** `{b['timestamp']}`\n• **Size:** `{size_kb:.1f} KB`",
-                    inline=False,
-                )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
 
-        elif action_val == "restore_settings":
-            target_file = None
-            if backup_file:
-                candidate = backup_file if os.path.isabs(backup_file) else os.path.join("backups", backup_file)
-                if os.path.isfile(candidate):
-                    target_file = candidate
-                else:
-                    await interaction.followup.send(f"❌ Backup file `{backup_file}` not found.", ephemeral=True)
-                    schedule_ttl_delete(interaction, delay=60.0)
-                    return
+        await interaction.response.defer(ephemeral=True)
+        channel_id = channel.id if channel else None
 
-            try:
-                g_id = interaction.guild.id if interaction.guild else None
-                if target_file:
-                    result = await self.db.restore_guild_settings_from_backup(target_file, guild_id=g_id)
-                    used_name = os.path.basename(target_file)
-                else:
-                    result = await self.db.restore_latest_guild_settings(guild_id=g_id)
-                    used_name = result.get("backup_file", "Latest") if result else "None"
+        if channel_type == "welcome":
+            await self.db.set_guild_welcome_channel(interaction.guild.id, channel_id)
+            verif_cog = self.bot.get_cog("Verification")
+            if verif_cog and hasattr(verif_cog, "invalidate_guild_cache"):
+                verif_cog.invalidate_guild_cache(interaction.guild.id)
+            desc = f"Welcome channel set to {channel.mention}." if channel else "Welcome channel reset to **auto-detect** mode."
+        elif channel_type == "help":
+            await self.db.set_guild_help_channel(interaction.guild.id, channel_id)
+            verif_cog = self.bot.get_cog("Verification")
+            if verif_cog and hasattr(verif_cog, "invalidate_guild_cache"):
+                verif_cog.invalidate_guild_cache(interaction.guild.id)
+            desc = f"Help channel set to {channel.mention}." if channel else "Help channel reset to **auto-detect** mode."
+        elif channel_type == "review":
+            await self.db.set_guild_review_channel(interaction.guild.id, channel_id)
+            desc = f"Guest review channel set to {channel.mention}." if channel else "Guest review channel reset to **auto-detect** mode."
 
-                if not result or result.get("restored_guilds", 0) == 0:
-                    await interaction.followup.send("⚠️ No previous server settings found in backup.", ephemeral=True)
-                    schedule_ttl_delete(interaction, delay=60.0)
-                    return
+        await self.db.log(
+            "INFO",
+            f"CONFIG_{channel_type.upper()}_CHANNEL",
+            f"Admin {interaction.user} set {channel_type} channel to '{channel.name if channel else 'Auto-detect'}' ({channel_id})",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
 
-                # Invalidate VerificationCog channel caches
-                verification_cog = self.bot.get_cog("Verification")
-                if verification_cog and hasattr(verification_cog, "invalidate_guild_cache") and interaction.guild:
-                    verification_cog.invalidate_guild_cache(interaction.guild.id)
-
-                await self.db.log(
-                    "INFO",
-                    "ADMIN_SETTINGS_RESTORED",
-                    f"Admin {interaction.user} (ID: {interaction.user.id}) restored guild settings from '{used_name}'",
-                    guild=interaction.guild,
-                    user_id=interaction.user.id,
-                )
-
-                embed = discord.Embed(
-                    title="🔄 Server Settings Restored",
-                    color=discord.Color.green(),
-                    description=f"✅ Restored server settings for **{result['restored_guilds']}** guild(s) from snapshot `{used_name}`.",
-                )
-                if interaction.guild:
-                    settings = await self.db.get_guild_settings(interaction.guild.id)
-                    if settings:
-                        embed.add_field(
-                            name="Restored Server Configuration",
-                            value=(
-                                f"• **Welcome Channel:** {f'<#{settings[0]}>' if settings[0] else '*Auto-detect*'}\n"
-                                f"• **Help Channel:** {f'<#{settings[1]}>' if settings[1] else '*Auto-detect*'}\n"
-                                f"• **Guest Role:** `{settings[2] or 'Guest'}`\n"
-                                f"• **Review Channel:** {f'<#{settings[3]}>' if settings[3] else '*Auto-detect*'}\n"
-                                f"• **Admin Role:** `{settings[4] or 'Auto-detect'}`"
-                            ),
-                            inline=False,
-                        )
-                await interaction.followup.send(embed=embed, ephemeral=True)
-
-            except Exception as e:
-                await interaction.followup.send(f"❌ Failed to restore settings: {e}", ephemeral=True)
-
-        elif action_val == "restore_full":
-            target_file = None
-            if backup_file:
-                candidate = backup_file if os.path.isabs(backup_file) else os.path.join("backups", backup_file)
-                if os.path.isfile(candidate):
-                    target_file = candidate
-                else:
-                    await interaction.followup.send(f"❌ Backup file `{backup_file}` not found.", ephemeral=True)
-                    schedule_ttl_delete(interaction, delay=60.0)
-                    return
-            else:
-                backups = self.db.list_backups()
-                if not backups:
-                    await interaction.followup.send("❌ No backup snapshots available to restore.", ephemeral=True)
-                    schedule_ttl_delete(interaction, delay=60.0)
-                    return
-                target_file = backups[0]["path"]
-
-            try:
-                await self.db.restore_full_database(target_file)
-                used_name = os.path.basename(target_file)
-                await self.db.log(
-                    "WARNING",
-                    "ADMIN_FULL_DB_RESTORED",
-                    f"Admin {interaction.user} (ID: {interaction.user.id}) restored entire active database from snapshot '{used_name}'",
-                    guild=interaction.guild,
-                    user_id=interaction.user.id,
-                )
-                await interaction.followup.send(
-                    f"✅ **Database Full Restore Complete!** Restored active database from `{used_name}`.",
-                    ephemeral=True,
-                )
-            except Exception as e:
-                await interaction.followup.send(f"❌ Failed to restore full database: {e}", ephemeral=True)
-
-        else:  # "create"
-            try:
-                backup_path = await self.db.create_backup()
-                await self.db.log(
-                    "INFO",
-                    "ADMIN_BACKUP",
-                    f"Admin {interaction.user} (ID: {interaction.user.id}) created database snapshot at '{backup_path}'",
-                    guild=interaction.guild,
-                    user_id=interaction.user.id,
-                )
-                await interaction.followup.send(
-                    f"✅ Database backup created successfully at `{backup_path}`.", ephemeral=True
-                )
-            except Exception as e:
-                await interaction.followup.send(f"❌ Backup failed: {e}", ephemeral=True)
-
+        await interaction.followup.send(f"✅ {desc}", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @app_commands.command(
-        name="sync_commands",
-        description="Sync slash commands or clean up duplicate guild command overrides.",
+    @admin_group.command(
+        name="set_role",
+        description="Configure or reset custom guest role or reviewer/admin role.",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
-        clean_duplicates="Clean and remove duplicate guild commands, leaving only global commands (Recommended)",
-        guild_only="Sync commands only to this guild (useful for immediate developer testing)",
+        role_type="The role setting to configure (guest or admin)",
+        role="The Discord role (for admin role, or leave blank to reset)",
+        role_name="Custom role name string (for guest role, e.g. 'Guest (Approved)')",
     )
-    async def sync_commands(
+    async def set_role(
         self,
         interaction: discord.Interaction,
-        clean_duplicates: bool = True,
-        guild_only: bool = False,
+        role_type: Literal["guest", "admin"],
+        role: discord.Role | None = None,
+        role_name: str | None = None,
     ) -> None:
-        """Manually forces a sync or cleanup of the Discord application command tree."""
+        """Consolidated role configuration for guest and admin reviewer roles."""
         if not self._check_admin(interaction):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
@@ -655,48 +530,73 @@ class AdminCog(commands.Cog, name="Admin"):
             schedule_ttl_delete(interaction, delay=60.0)
             return
 
-        await interaction.response.defer(ephemeral=True)
-        try:
-            if guild_only and interaction.guild:
-                self.bot.tree.copy_global_to(guild=interaction.guild)
-                synced = await self.bot.tree.sync(guild=interaction.guild)
-                scope = f"server '{interaction.guild.name}'"
-                msg_suffix = "*(Note: If commands appear duplicated, run `/sync_commands clean_duplicates:True`)*"
-            else:
-                if clean_duplicates and interaction.guild:
-                    self.bot.tree.clear_commands(guild=interaction.guild)
-                    await self.bot.tree.sync(guild=interaction.guild)
-                synced = await self.bot.tree.sync()
-                scope = "globally (deduplicated)"
-                msg_suffix = "*(Duplicate guild commands cleared. Press `Ctrl + R` on Discord Desktop or restart your app to refresh your cache)*"
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "❌ This command can only be used inside a server.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
 
-            await self.db.log(
-                "INFO",
-                "ADMIN_SYNC_COMMANDS",
-                f"Admin {interaction.user} (ID: {interaction.user.id}) synced {len(synced)} command(s) {scope}",
-                guild=interaction.guild,
-                user_id=interaction.user.id,
+        await interaction.response.defer(ephemeral=True)
+
+        if role_type == "guest":
+            target_name = role_name.strip() if role_name else (role.name if role else "Guest")
+            await self.db.set_guild_guest_role(interaction.guild.id, target_name)
+            desc = f"Guest role name set to **{target_name}**."
+            log_key = "CONFIG_GUEST_ROLE"
+            log_val = target_name
+        else:  # admin
+            target_name = role.name if role else (role_name.strip() if role_name else None)
+            await self.db.set_guild_admin_role(interaction.guild.id, target_name)
+            desc = (
+                f"Admin / Reviewer role set to {role.mention if role else target_name}."
+                if target_name
+                else "Admin / Reviewer role reset to **auto-detect** mode."
             )
-            await interaction.followup.send(
-                f"✅ Successfully synced {len(synced)} command(s) {scope}.\n{msg_suffix}",
-                ephemeral=True,
-            )
-        except Exception as e:
-            await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
+            log_key = "CONFIG_ADMIN_ROLE"
+            log_val = target_name or "Auto-detect"
+
+        await self.db.log(
+            "INFO",
+            log_key,
+            f"Admin {interaction.user} set {role_type} role to '{log_val}'",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
+
+        await interaction.followup.send(f"✅ {desc}", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @app_commands.command(
-        name="check_updates",
-        description="Check if bot updates are available from git upstream.",
+    # Legacy individual helper aliases for direct backwards compatibility
+    async def setwelcomec(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None) -> None:
+        await self.set_channel(interaction, channel_type="welcome", channel=channel)
+
+    async def sethelpc(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None) -> None:
+        await self.set_channel(interaction, channel_type="help", channel=channel)
+
+    async def setreviewchannel(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None) -> None:
+        await self.set_channel(interaction, channel_type="review", channel=channel)
+
+    async def setguestrole(self, interaction: discord.Interaction, role_name: str | None = None) -> None:
+        await self.set_role(interaction, role_type="guest", role_name=role_name)
+
+    async def setadminrole(self, interaction: discord.Interaction, role: discord.Role | None = None) -> None:
+        await self.set_role(interaction, role_type="admin", role=role)
+
+    # ==========================================
+    # 🚀 6. Verification Gateway Panel Deployer
+    # ==========================================
+
+    @admin_group.command(
+        name="panel",
+        description="Deploy the persistent 3-button verification gateway panel.",
     )
     @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        stream="Optional branch/stream name to check against (defaults to configured stream)"
-    )
-    async def check_updates(
-        self, interaction: discord.Interaction, stream: str | None = None
+    @app_commands.describe(channel="Target channel (defaults to current channel)")
+    async def panel(
+        self, interaction: discord.Interaction, channel: discord.TextChannel | None = None
     ) -> None:
-        """Checks git upstream for new commits on the configured or specified branch."""
+        """Posts the persistent verification gateway panel."""
         if not self._check_admin(interaction):
             await interaction.response.send_message(
                 "❌ You do not have permission to use this command.", ephemeral=True
@@ -704,302 +604,59 @@ class AdminCog(commands.Cog, name="Admin"):
             schedule_ttl_delete(interaction, delay=60.0)
             return
 
+        target_ch = channel or interaction.channel
+        if not isinstance(target_ch, discord.TextChannel):
+            await interaction.response.send_message("❌ Target must be a text channel.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
         await interaction.response.defer(ephemeral=True)
 
-        checker = self.update_checker
-        if not checker:
-            checker = UpdateCheckerService(
+        from tarveri.cogs.guest_cog import VerificationGatewayView
+
+        guest_service = getattr(self.bot, "guest_service", None)
+        if not guest_service:
+            from tarveri.services.guest_service import GuestService
+
+            guest_service = GuestService(
                 bot=self.bot,
                 db=self.db,
-                update_stream=stream or "auto",
+                rate_limiter=self.rate_limiter,
+                admin_role_name=self.admin_role_name,
             )
-
-        is_avail, count, local_h, remote_h, target_stream = await checker.check_for_updates(
-            custom_stream=stream
-        )
 
         embed = discord.Embed(
-            title="🔄 TARVeri Update Status",
-            color=discord.Color.green() if not is_avail else discord.Color.gold(),
+            title="🎓 Welcome to the Server!",
+            description=(
+                "Please choose how you would like to gain access to the server:\n\n"
+                "• 🎓 **TARUMT Students:** Click **Verify TARUMT Student** to submit your Student ID and receive your Faculty Role.\n"
+                "• 🎟️ **Have a Referral Code:** Click **Enter Referral Code** if a current student gave you an invite code.\n"
+                "• 🌐 **Outside Guests / Speakers:** Click **Apply as Guest** to request access from server administration."
+            ),
+            color=discord.Color.dark_teal(),
         )
-        embed.add_field(name="Target Stream", value=f"`{target_stream}`", inline=False)
-        embed.add_field(name="Local Version", value=f"`{local_h[:7]}`" if local_h else "*Unknown*", inline=True)
-        embed.add_field(name="Remote Version", value=f"`{remote_h[:7]}`" if remote_h else "*Unknown*", inline=True)
+        embed.set_footer(text="TARVeri Student & Guest Verification System")
 
-        if is_avail:
-            branch_arg = target_stream.replace("origin/", "").strip()
-            embed.description = (
-                f"🔔 **Update available!** Remote is **{count} commit(s)** ahead.\n\n"
-                f"To update, run on your server terminal:\n"
-                f"```bash\n./scripts/update.sh {branch_arg}\n```"
+        view = VerificationGatewayView(self.service, guest_service)
+        try:
+            await target_ch.send(embed=embed, view=view)
+            await interaction.followup.send(
+                f"✅ Verification gateway panel posted to {target_ch.mention}!", ephemeral=True
             )
-        else:
-            if not remote_h:
-                embed.description = f"⚠️ Could not resolve remote branch `{target_stream}`. Check if the branch exists on remote."
-            else:
-                embed.description = "✅ TARVeri is up to date on this stream!"
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        except (discord.HTTPException, discord.Forbidden) as e:
+            await interaction.followup.send(f"❌ Failed to send gateway panel: {e}", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @app_commands.command(
-        name="setwelcomec",
-        description="Set or reset the server's welcome channel where new members are tagged to verify.",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        channel="The text channel where new members will be tagged (leave empty to reset to auto-detect)"
-    )
-    async def setwelcomec(
-        self, interaction: discord.Interaction, channel: discord.TextChannel | None = None
-    ) -> None:
-        """Configures or clears the welcome channel for this server."""
-        if not self._check_admin(interaction):
-            await interaction.response.send_message(
-                "❌ You do not have permission to use this command.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
+    # Legacy alias
+    async def send_gateway_panel(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None) -> None:
+        await self.panel(interaction, channel=channel)
 
-        if not interaction.guild:
-            await interaction.response.send_message(
-                "❌ This command can only be used inside a server.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
+    # ==========================================
+    # 🎟️ 7. Guest Review Tickets
+    # ==========================================
 
-        await interaction.response.defer(ephemeral=True)
-
-        channel_id = channel.id if channel else None
-        await self.db.set_guild_welcome_channel(interaction.guild.id, channel_id)
-
-        # Invalidate VerificationCog channel cache if loaded
-        verification_cog = self.bot.get_cog("Verification")
-        if verification_cog and hasattr(verification_cog, "invalidate_guild_cache"):
-            verification_cog.invalidate_guild_cache(interaction.guild.id)
-
-        await self.db.log(
-            "INFO",
-            "CONFIG_WELCOME_CHANNEL",
-            f"Admin {interaction.user} set welcome channel for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{channel.name if channel else 'Auto-detect'}' (Channel ID: {channel_id})",
-            guild=interaction.guild,
-            user_id=interaction.user.id,
-        )
-
-        if channel:
-            await interaction.followup.send(
-                f"✅ Welcome channel set to {channel.mention}.\n"
-                f"New unverified members joining this server will be tagged here with verification instructions.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(
-                "🔄 Welcome channel reset to **auto-detect** mode (searches for #welcome, #verify, or system channel).",
-                ephemeral=True,
-            )
-        schedule_ttl_delete(interaction, delay=60.0)
-
-    @app_commands.command(
-        name="sethelpc",
-        description="Set or reset the server's help channel for automated role verification tips.",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        channel="The text channel for role help tips (leave empty to reset to auto-detect)"
-    )
-    async def sethelpc(
-        self, interaction: discord.Interaction, channel: discord.TextChannel | None = None
-    ) -> None:
-        """Configures or clears the help channel for this server."""
-        if not self._check_admin(interaction):
-            await interaction.response.send_message(
-                "❌ You do not have permission to use this command.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        if not interaction.guild:
-            await interaction.response.send_message(
-                "❌ This command can only be used inside a server.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-
-        channel_id = channel.id if channel else None
-        await self.db.set_guild_help_channel(interaction.guild.id, channel_id)
-
-        # Invalidate VerificationCog channel cache if loaded
-        verification_cog = self.bot.get_cog("Verification")
-        if verification_cog and hasattr(verification_cog, "invalidate_guild_cache"):
-            verification_cog.invalidate_guild_cache(interaction.guild.id)
-
-        await self.db.log(
-            "INFO",
-            "CONFIG_HELP_CHANNEL",
-            f"Admin {interaction.user} set help channel for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{channel.name if channel else 'Auto-detect'}' (Channel ID: {channel_id})",
-            guild=interaction.guild,
-            user_id=interaction.user.id,
-        )
-
-        if channel:
-            await interaction.followup.send(
-                f"✅ Help channel set to {channel.mention}.\n"
-                f"Unverified members asking about roles in {channel.mention} will receive helpful verification tips.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(
-                "🔄 Help channel reset to **auto-detect** mode (searches for channels with 'help', 'support', 'faq', etc.).",
-                ephemeral=True,
-            )
-        schedule_ttl_delete(interaction, delay=60.0)
-
-    @app_commands.command(
-        name="setguestrole",
-        description="Set or reset the server's custom role name for verified guests (default: Guest).",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(role_name="The name of the guest role (leave empty to reset to 'Guest')")
-    async def setguestrole(
-        self, interaction: discord.Interaction, role_name: str | None = None
-    ) -> None:
-        """Configures or clears the guest role name for this server."""
-        if not self._check_admin(interaction):
-            await interaction.response.send_message(
-                "❌ You do not have permission to use this command.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        if not interaction.guild:
-            await interaction.response.send_message(
-                "❌ This command can only be used inside a server.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-        role_to_set = role_name.strip() if role_name else "Guest"
-        await self.db.set_guild_guest_role(interaction.guild.id, role_to_set)
-
-        await self.db.log(
-            "INFO",
-            "CONFIG_GUEST_ROLE",
-            f"Admin {interaction.user} set guest role for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{role_to_set}'",
-            guild=interaction.guild,
-            user_id=interaction.user.id,
-        )
-
-        await interaction.followup.send(
-            f"✅ Guest role name for this server set to **{role_to_set}**.",
-            ephemeral=True,
-        )
-        schedule_ttl_delete(interaction, delay=60.0)
-
-    @app_commands.command(
-        name="setreviewchannel",
-        description="Set or reset the parent channel where private guest review threads are created.",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(channel="The text channel for private review threads (leave empty for auto-detect)")
-    async def setreviewchannel(
-        self, interaction: discord.Interaction, channel: discord.TextChannel | None = None
-    ) -> None:
-        """Configures or clears the parent review channel for private guest threads."""
-        if not self._check_admin(interaction):
-            await interaction.response.send_message(
-                "❌ You do not have permission to use this command.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        if not interaction.guild:
-            await interaction.response.send_message(
-                "❌ This command can only be used inside a server.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-        channel_id = channel.id if channel else None
-        await self.db.set_guild_review_channel(interaction.guild.id, channel_id)
-
-        await self.db.log(
-            "INFO",
-            "CONFIG_REVIEW_CHANNEL",
-            f"Admin {interaction.user} set guest review channel for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{channel.name if channel else 'Auto-detect'}' (Channel ID: {channel_id})",
-            guild=interaction.guild,
-            user_id=interaction.user.id,
-        )
-
-        if channel:
-            await interaction.followup.send(
-                f"✅ Guest review channel set to {channel.mention}.\n"
-                f"Private review threads for guest applications will be created under this channel.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(
-                "🔄 Guest review channel reset to **auto-detect** mode.",
-                ephemeral=True,
-            )
-        schedule_ttl_delete(interaction, delay=60.0)
-
-    @app_commands.command(
-        name="setadminrole",
-        description="Set or reset the server's reviewer/admin role for private guest review threads.",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(
-        role="The role whose members should manage verifications/reviews (leave empty for auto-detect)"
-    )
-    async def setadminrole(
-        self, interaction: discord.Interaction, role: discord.Role | None = None
-    ) -> None:
-        """Configures or clears the custom admin/reviewer role for this server."""
-        if not self._check_admin(interaction):
-            await interaction.response.send_message(
-                "❌ You do not have permission to use this command.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        if not interaction.guild:
-            await interaction.response.send_message(
-                "❌ This command can only be used inside a server.", ephemeral=True
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
-
-        await interaction.response.defer(ephemeral=True)
-        role_name = role.name if role else None
-        await self.db.set_guild_admin_role(interaction.guild.id, role_name)
-
-        await self.db.log(
-            "INFO",
-            "CONFIG_ADMIN_ROLE",
-            f"Admin {interaction.user} set admin role for server '{interaction.guild.name}' (ID: {interaction.guild.id}) to '{role_name if role_name else 'Auto-detect'}'",
-            guild=interaction.guild,
-            user_id=interaction.user.id,
-        )
-
-        if role:
-            await interaction.followup.send(
-                f"✅ Review/Admin role for this server set to {role.mention}.\n"
-                f"Members with this role will be automatically invited to review new guest applications and referral tickets.",
-                ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(
-                "🔄 Review/Admin role reset to **auto-detect** mode (checks server admins, moderators, and staff roles).",
-                ephemeral=True,
-            )
-        schedule_ttl_delete(interaction, delay=60.0)
-
-    @app_commands.command(
-        name="guest_tickets",
+    @admin_group.command(
+        name="tickets",
         description="List and inspect recent guest review tickets with links to threads.",
     )
     @app_commands.default_permissions(administrator=True)
@@ -1007,7 +664,7 @@ class AdminCog(commands.Cog, name="Admin"):
         status="Filter by status (OPEN, APPROVED, REJECTED, EXPIRED, LEFT_SERVER)",
         limit="Number of records to show (1-20, default 10)",
     )
-    async def guest_tickets(
+    async def tickets(
         self,
         interaction: discord.Interaction,
         status: str | None = None,
@@ -1030,11 +687,9 @@ class AdminCog(commands.Cog, name="Admin"):
 
         await interaction.response.defer(ephemeral=True)
 
-        tickets = await self.db.list_guest_tickets(
-            interaction.guild.id, status=status, limit=limit
-        )
+        tickets_list = await self.db.list_guest_tickets(interaction.guild.id, status=status, limit=limit)
 
-        if not tickets:
+        if not tickets_list:
             filter_text = f" with status `{status}`" if status else ""
             await interaction.followup.send(
                 f"ℹ️ No guest tickets found in this server{filter_text}.", ephemeral=True
@@ -1044,11 +699,13 @@ class AdminCog(commands.Cog, name="Admin"):
 
         embed = discord.Embed(
             title=f"📋 Guest Review Tickets — {interaction.guild.name}",
-            description=f"Showing **{len(tickets)}** recent ticket(s)" + (f" filtered by `{status.upper()}`" if status else "") + ":",
+            description=f"Showing **{len(tickets_list)}** recent ticket(s)"
+            + (f" filtered by `{status.upper()}`" if status else "")
+            + ":",
             color=discord.Color.blue(),
         )
 
-        for t in tickets:
+        for t in tickets_list:
             seq = t.get("ticket_seq") or t.get("ticket_id")
             seq_code = format_ticket_seq(seq)
             t_status = t.get("status", "OPEN")
@@ -1076,7 +733,108 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.followup.send(embed=embed, ephemeral=True)
         schedule_ttl_delete(interaction, delay=90.0)
 
-    @app_commands.command(
+    # Legacy alias
+    async def guest_tickets(
+        self,
+        interaction: discord.Interaction,
+        status: str | None = None,
+        limit: app_commands.Range[int, 1, 20] = 10,
+    ) -> None:
+        await self.tickets(interaction, status=status, limit=limit)
+
+    # ==========================================
+    # 💾 8. Database Backups
+    # ==========================================
+
+    @admin_group.command(
+        name="backup",
+        description="Manage SQLite database snapshots, backups, and settings restoration.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        action="Backup operation to perform (create, list, or restore_settings)",
+        backup_file="Optional specific backup filename to restore (default: most recent)",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="Create Snapshot Now", value="create"),
+            app_commands.Choice(name="List Available Backups", value="list"),
+            app_commands.Choice(name="Restore Previous Settings", value="restore_settings"),
+        ]
+    )
+    async def backup(
+        self,
+        interaction: discord.Interaction,
+        action: str = "create",
+        backup_file: str | None = None,
+    ) -> None:
+        """Manages SQLite database backups and guild settings restoration."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        action_val = action.value if hasattr(action, "value") else str(action)
+
+        if action_val == "create":
+            backup_path = await self.db.create_backup()
+            max_b = getattr(self.bot, "settings", None) and self.bot.settings.max_backups or 10
+            await interaction.followup.send(
+                f"✅ **Database backup created successfully.**\n"
+                f"• Snapshot file: `{backup_path}`\n"
+                f"• Retention: up to **{max_b}** most recent backups are automatically kept in `backups/`.",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+
+        elif action_val == "list":
+            settings = getattr(self.bot, "settings", None)
+            backup_dir = settings.backup_dir if settings and isinstance(getattr(settings, "backup_dir", None), str) else "backups"
+            backups = self.db.list_backups(backup_dir=backup_dir)
+            if not backups:
+                await interaction.followup.send("ℹ️ No backups currently found.", ephemeral=True)
+                schedule_ttl_delete(interaction, delay=60.0)
+                return
+
+            embed = discord.Embed(
+                title=f"💾 Database Backups (`{backup_dir}/`)",
+                description=f"Showing **{len(backups)}** available snapshot(s):",
+                color=discord.Color.blue(),
+            )
+            for b in backups[:10]:
+                size_kb = b.get("size_bytes", 0) / 1024 if "size_bytes" in b else b.get("size_kb", 0)
+                time_str = b.get("timestamp") or b.get("created_at") or "N/A"
+                embed.add_field(
+                    name=f"📦 {b['filename']}",
+                    value=f"• Size: `{size_kb:.1f} KB`\n• Created: `{time_str}`",
+                    inline=False,
+                )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=90.0)
+
+        elif action_val == "restore_settings":
+            if backup_file:
+                res = await self.db.restore_guild_settings_from_backup(backup_file)
+                count = res.get("restored_guilds", 0) if isinstance(res, dict) else 0
+            else:
+                count = await self.db.restore_latest_guild_settings()
+            if count:
+                await interaction.followup.send(
+                    f"✅ **Successfully restored `{count}` guild settings records** from backup.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send("⚠️ No suitable backup found to restore settings from.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
+
+    # ==========================================
+    # 📋 9. Daily Logs & Historical Archives
+    # ==========================================
+
+    @admin_group.command(
         name="logs",
         description="Inspect daily log files, view compressed 10-day archives, or trigger log rotation.",
     )
@@ -1106,8 +864,9 @@ class AdminCog(commands.Cog, name="Admin"):
 
         await interaction.response.defer(ephemeral=True)
         action_val = action.value if hasattr(action, "value") else str(action)
-        logs_dir = getattr(self.bot, "settings", None) and self.bot.settings.logs_dir or "logs"
-        tz_name = getattr(self.bot, "settings", None) and self.bot.settings.timezone_name or "Asia/Kuala_Lumpur"
+        settings = getattr(self.bot, "settings", None)
+        logs_dir = settings.logs_dir if settings and isinstance(getattr(settings, "logs_dir", None), str) else "logs"
+        tz_name = settings.timezone_name if settings and isinstance(getattr(settings, "timezone_name", None), str) else "Asia/Kuala_Lumpur"
 
         if action_val == "list":
             daily_logs = list_daily_logs(logs_dir=logs_dir, tz_name=tz_name)
@@ -1215,7 +974,204 @@ class AdminCog(commands.Cog, name="Admin"):
                 await interaction.followup.send(f"❌ Failed to read log file: {e}", ephemeral=True)
             schedule_ttl_delete(interaction, delay=90.0)
 
+    # ==========================================
+    # 🔍 10. Audit Log Query
+    # ==========================================
+
+    @admin_group.command(name="audit", description="Query recent audit log entries.")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        limit="Number of log records to retrieve (1-50, default 10)",
+        event_type="Filter by event type (e.g. VERIFICATION_SUCCESS, MEMBER_UNVERIFIED)",
+    )
+    async def audit(
+        self,
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1, 50] = 10,
+        event_type: str | None = None,
+    ) -> None:
+        """Retrieves recent audit log records with filtering."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        logs = await self.db.recent_audit(limit=limit, event_type=event_type)
+        if not logs:
+            await interaction.followup.send("ℹ️ No audit log records found.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        embed = discord.Embed(
+            title="📜 TARVeri — Audit Log Entries",
+            description=f"Showing the last **{len(logs)}** log event(s):",
+            color=discord.Color.dark_gray(),
+        )
+
+        for log_row in logs:
+            timestamp, level, ev_type, guild_name, user_id, msg = log_row
+            guild_str = f"Guild: {guild_name}" if guild_name else "Global"
+            user_str = f"User: <@{user_id}>" if user_id else "System"
+
+            embed.add_field(
+                name=f"[{level}] {ev_type} • {timestamp}",
+                value=f"{msg}\n*{guild_str} | {user_str}*",
+                inline=False,
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=90.0)
+
+    # ==========================================
+    # 🔄 11. Role Resynchronization
+    # ==========================================
+
+    @admin_group.command(name="resync", description="Force resynchronization of verification roles.")
+    @app_commands.default_permissions(administrator=True)
+    async def resync(self, interaction: discord.Interaction) -> None:
+        """Checks and re-applies faculty and alumni roles across mutual servers."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        if interaction.guild:
+            reconcile_stats = await self.service.reconcile_verified_members(interaction.guild)
+            alumni_stats = await self.service.reconcile_alumni_members(interaction.guild)
+            await interaction.followup.send(
+                f"✅ **Mutual Server Role Resynchronization Complete!**\n"
+                f"• Verified Students: checked **{reconcile_stats['checked']}**, restored **{reconcile_stats['restored']}**\n"
+                f"• Graduated Alumni: checked **{alumni_stats['checked']}**, restored **{alumni_stats['restored']}**",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send("❌ Resync must be run in a server.", ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
+
+    # ==========================================
+    # 🔄 12. Updates Checker
+    # ==========================================
+
+    @admin_group.command(
+        name="updates",
+        description="Check if bot updates are available from git upstream.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        stream="Optional branch/stream name to check against (defaults to configured stream)"
+    )
+    async def updates(
+        self, interaction: discord.Interaction, stream: str | None = None
+    ) -> None:
+        """Checks git upstream for new commits on the configured or specified branch."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        checker = self.update_checker
+        if not checker:
+            checker = UpdateCheckerService(
+                bot=self.bot,
+                db=self.db,
+                update_stream=stream or "auto",
+            )
+
+        is_avail, count, local_h, remote_h, target_stream = await checker.check_for_updates(
+            custom_stream=stream
+        )
+
+        embed = discord.Embed(
+            title="🔄 TARVeri Update Status",
+            color=discord.Color.green() if not is_avail else discord.Color.gold(),
+        )
+        embed.add_field(name="Target Stream", value=f"`{target_stream}`", inline=False)
+        embed.add_field(name="Local Version", value=f"`{local_h[:7]}`" if local_h else "*Unknown*", inline=True)
+        embed.add_field(name="Remote Version", value=f"`{remote_h[:7]}`" if remote_h else "*Unknown*", inline=True)
+
+        if is_avail:
+            branch_arg = target_stream.replace("origin/", "").strip()
+            embed.description = (
+                f"🔔 **Update available!** Remote is **{count} commit(s)** ahead.\n\n"
+                f"To update, run on your server terminal:\n"
+                f"```bash\n./scripts/update.sh {branch_arg}\n```"
+            )
+        else:
+            if not remote_h:
+                embed.description = f"⚠️ Could not resolve remote branch `{target_stream}`. Check if the branch exists on remote."
+            else:
+                embed.description = "✅ TARVeri is up to date on this stream!"
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
+
+    # Legacy alias
+    async def check_updates(self, interaction: discord.Interaction, stream: str | None = None) -> None:
+        await self.updates(interaction, stream=stream)
+
+    # ==========================================
+    # ⚡ 13. Sync Commands
+    # ==========================================
+
+    @admin_group.command(
+        name="sync_commands",
+        description="Synchronize application slash commands with Discord.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        clean_duplicates="Clear guild-specific command overrides before syncing",
+        guild_only="Sync only to the current server (faster) instead of globally",
+    )
+    async def sync_commands(
+        self,
+        interaction: discord.Interaction,
+        clean_duplicates: bool = False,
+        guild_only: bool = False,
+    ) -> None:
+        """Synchronizes application commands with Discord API."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            guild = interaction.guild if (guild_only or clean_duplicates) else None
+            if clean_duplicates and interaction.guild:
+                self.bot.tree.clear_commands(guild=interaction.guild)
+
+            if guild_only and interaction.guild:
+                self.bot.tree.copy_global_to(guild=interaction.guild)
+                synced = await self.bot.tree.sync(guild=interaction.guild)
+                scope = f"to server '{interaction.guild.name}'"
+            else:
+                synced = await self.bot.tree.sync()
+                scope = "globally"
+
+            msg_suffix = "Duplicates cleared prior to sync." if clean_duplicates else ""
+            await interaction.followup.send(
+                f"✅ Successfully synced {len(synced)} command(s) {scope}.\n{msg_suffix}",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
 
 
-
-
+async def setup(bot: commands.Bot) -> None:
+    pass
