@@ -206,20 +206,30 @@ async def test_card_cog_slash_and_context_menu(tmp_path):
         interaction.response.defer = AsyncMock()
         interaction.followup.send = AsyncMock()
 
-        # 1. Test /card self
-        await cog.card.callback(cog, interaction, member=None, public=False)
-        interaction.response.defer.assert_called_once_with(ephemeral=True, thinking=True)
+        # 1. Test /card self (public by default)
+        await cog.card.callback(cog, interaction, member=None, hidden=False)
+        interaction.response.defer.assert_called_once_with(ephemeral=False, thinking=True)
         interaction.followup.send.assert_called_once()
         call_kwargs = interaction.followup.send.call_args[1]
         assert "embed" in call_kwargs
         assert "file" in call_kwargs
-        assert call_kwargs["ephemeral"] is True
+        assert call_kwargs["ephemeral"] is False
 
-        # 2. Test context menu
+        # 2. Test /card with hidden=True
+        interaction.response.defer.reset_mock()
+        interaction.followup.send.reset_mock()
+        await cog.card.callback(cog, interaction, member=None, hidden=True)
+        interaction.response.defer.assert_called_once_with(ephemeral=True, thinking=True)
+        call_kwargs_hidden = interaction.followup.send.call_args[1]
+        assert call_kwargs_hidden["ephemeral"] is True
+
+        # 3. Test context menu (public by default)
         interaction.response.defer.reset_mock()
         interaction.followup.send.reset_mock()
         await cog.view_card_context_menu(interaction, user)
-        interaction.response.defer.assert_called_once_with(ephemeral=True, thinking=True)
+        interaction.response.defer.assert_called_once_with(ephemeral=False, thinking=True)
         interaction.followup.send.assert_called_once()
+        call_kwargs_cm = interaction.followup.send.call_args[1]
+        assert call_kwargs_cm["ephemeral"] is False
     finally:
         await db.close()

@@ -146,8 +146,8 @@ flowchart TD
 
 ### Student & Member Commands
 - `/verify [student_id]` — Submit student ID via private modal or direct argument.
-- `/card [member] [public]` — Generate and render high-DPI digital student/guest ID card with glassmorphism design and achievement badges.
-- `View Campus Card` (User Context Menu) — Inspect member's campus card via Discord user menu.
+- `/card [member] [hidden]` — Generate and render high-DPI digital student/guest ID card with glassmorphism design and achievement badges (public by default, or `hidden: True`).
+- `View Campus Card` (User Context Menu) — Inspect and share member's campus card via Discord user menu.
 - `/referral generate [ttl_hours]` — Generate single-use guest referral code (max 3 active).
 - `/referral list` — View active and past referral codes.
 

@@ -38,7 +38,7 @@ class CardCog(commands.Cog, name="CampusCard"):
         self,
         interaction: discord.Interaction,
         target_member: discord.Member | discord.User,
-        is_public: bool = False,
+        is_public: bool = True,
     ) -> None:
         """Helper to render and dispatch card image response."""
         ephemeral = not is_public
@@ -102,20 +102,20 @@ class CardCog(commands.Cog, name="CampusCard"):
     )
     @app_commands.describe(
         member="Optional member to view (leave blank to view your own card)",
-        public="Set to True to share your card publicly in the chat channel (default: False / ephemeral)",
+        hidden="Set to True to make the card visible only to you (default: False / public)",
     )
     async def card(
         self,
         interaction: discord.Interaction,
         member: discord.Member | None = None,
-        public: bool = False,
+        hidden: bool = False,
     ) -> None:
         """Slash command to view your own or another member's digital student card."""
         target = member or interaction.user
-        await self._send_card_response(interaction, target, is_public=public)
+        await self._send_card_response(interaction, target, is_public=not hidden)
 
     async def view_card_context_menu(
         self, interaction: discord.Interaction, member: discord.Member
     ) -> None:
         """Context menu handler when right-clicking a user -> Apps -> View Campus Card."""
-        await self._send_card_response(interaction, member, is_public=False)
+        await self._send_card_response(interaction, member, is_public=True)
