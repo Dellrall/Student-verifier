@@ -1005,15 +1005,17 @@ class Database:
         status: str,
         closed_by_admin_id: int | None = None,
         close_reason: str | None = None,
+        only_if_open: bool = False,
     ) -> bool:
         """Closes a guest ticket with status ('APPROVED', 'REJECTED', 'EXPIRED'), admin ID, and reason/comment."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
+        where_clause = "WHERE ticket_id = ? AND status = 'OPEN'" if only_if_open else "WHERE ticket_id = ?"
         cursor = await self._conn.execute(
-            """UPDATE guest_tickets
+            f"""UPDATE guest_tickets
                SET status = ?, closed_at = ?, closed_by_admin_id = ?, close_reason = ?
-               WHERE ticket_id = ?""",
+               {where_clause}""",
             (status, ts, closed_by_admin_id, close_reason, ticket_id),
         )
         await self._conn.commit()

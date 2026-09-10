@@ -44,7 +44,13 @@ class GuestService:
         self.admin_role_name = admin_role_name
         self.rate_limiter = rate_limiter
         self._lock = asyncio.Lock()
+        self._role_locks: dict[int, asyncio.Lock] = {}
         self._escalation_task: asyncio.Task[None] | None = None
+
+    def _get_guild_role_lock(self, guild_id: int) -> asyncio.Lock:
+        if guild_id not in self._role_locks:
+            self._role_locks[guild_id] = asyncio.Lock()
+        return self._role_locks[guild_id]
 
     async def create_referral_code(
         self,
@@ -227,6 +233,7 @@ class GuestService:
         First checks server configuration in DB, then searches for existing roles matching
         'Guest(Approved)', 'Guest (Approved)', 'Guest', etc. across cache and live API.
         Only creates a new 'Guest(Approved)' role if no matching guest role exists.
+        Guarantees idempotency via double-checked locking across concurrent tasks.
         """
         settings = await self.db.get_guild_settings(guild.id)
         configured_name = settings[2].strip() if settings and settings[2] else None
@@ -236,44 +243,51 @@ class GuestService:
         if existing_role is not None:
             return existing_role
 
-        # 2. If no existing guest role was found anywhere, auto-create "Guest(Approved)"
-        if not getattr(guild.me.guild_permissions, "manage_roles", False):
-            return None
+        # 2. Acquire per-guild lock for atomic role creation
+        lock = self._get_guild_role_lock(guild.id)
+        async with lock:
+            # Re-check under lock (double-checked locking)
+            existing_role = await self.find_guest_role(guild, configured_name)
+            if existing_role is not None:
+                return existing_role
 
-        role_name_to_create = configured_name or "Guest(Approved)"
-        try:
-            permissions = discord.Permissions(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                attach_files=True,
-                embed_links=True,
-                add_reactions=True,
-                use_external_emojis=True,
-                connect=True,
-                speak=True,
-                use_voice_activation=True,
-            )
-            role = await guild.create_role(
-                name=role_name_to_create,
-                permissions=permissions,
-                colour=discord.Colour(GUEST_ROLE_COLOR),
-                reason="TARVeri: Auto-created Guest(Approved) role for verified guests",
-            )
+            if not getattr(guild.me.guild_permissions, "manage_roles", False):
+                return None
+
+            role_name_to_create = configured_name or "Guest(Approved)"
             try:
-                await self.db.record_bot_created_role(guild.id, role.id, role_name_to_create)
-            except Exception as e:
-                logger.debug(f"Could not record bot created guest role: {e}")
-            await self.db.log(
-                "INFO",
-                "ROLE_CREATED",
-                f"Created guest role '{role_name_to_create}' in '{guild.name}' (Guild ID: {guild.id})",
-                guild=guild,
-            )
-            return role
-        except discord.HTTPException as e:
-            logger.warning(f"Could not create guest role '{role_name_to_create}' in '{guild.name}': {e}")
-            return None
+                permissions = discord.Permissions(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    attach_files=True,
+                    embed_links=True,
+                    add_reactions=True,
+                    use_external_emojis=True,
+                    connect=True,
+                    speak=True,
+                    use_voice_activation=True,
+                )
+                role = await guild.create_role(
+                    name=role_name_to_create,
+                    permissions=permissions,
+                    colour=discord.Colour(GUEST_ROLE_COLOR),
+                    reason="TARVeri: Auto-created Guest(Approved) role for verified guests",
+                )
+                try:
+                    await self.db.record_bot_created_role(guild.id, role.id, role_name_to_create)
+                except Exception as e:
+                    logger.debug(f"Could not record bot created guest role: {e}")
+                await self.db.log(
+                    "INFO",
+                    "ROLE_CREATED",
+                    f"Created guest role '{role_name_to_create}' in '{guild.name}' (Guild ID: {guild.id})",
+                    guild=guild,
+                )
+                return role
+            except discord.HTTPException as e:
+                logger.warning(f"Could not create guest role '{role_name_to_create}' in '{guild.name}': {e}")
+                return None
 
     async def get_admin_role_or_fallback(self, guild: discord.Guild) -> discord.Role | None:
         """
@@ -701,6 +715,15 @@ class GuestService:
         referral_code = ticket.get("referral_code")
         approval_reason = reason.strip() if reason else "Approved by admin"
 
+        # 0. Atomic DB transition check to ensure idempotency across concurrent admin actions
+        closed = await self.db.close_guest_ticket(
+            ticket_id, "APPROVED", closed_by_admin_id=admin_user.id, close_reason=approval_reason, only_if_open=True
+        )
+        if not closed:
+            latest = await self.db.get_guest_ticket_by_id(ticket_id)
+            status_str = latest.get("status") if latest else "UNKNOWN"
+            return False, f"⚠️ Ticket #{ticket_id} is already resolved ({status_str})."
+
         # 1. Assign Guest Role
         guest_role = await self.get_or_create_guest_role(guild)
         if not guest_role:
@@ -729,10 +752,7 @@ class GuestService:
             except discord.Forbidden:
                 pass
 
-        # 2. Update DB ticket and referral code
-        await self.db.close_guest_ticket(
-            ticket_id, "APPROVED", closed_by_admin_id=admin_user.id, close_reason=approval_reason
-        )
+        # 2. Update referral code status
         if referral_code:
             await self.db.update_referral_code_status(
                 referral_code, guild.id, "USED", used_by_discord_id=applicant_id
@@ -763,6 +783,15 @@ class GuestService:
         referral_code = ticket.get("referral_code")
         reject_reason = reason.strip() if reason else "Guest application not approved by server administration."
 
+        # 0. Atomic DB transition check to ensure idempotency across concurrent admin actions
+        closed = await self.db.close_guest_ticket(
+            ticket_id, "REJECTED", closed_by_admin_id=admin_user.id, close_reason=reject_reason, only_if_open=True
+        )
+        if not closed:
+            latest = await self.db.get_guest_ticket_by_id(ticket_id)
+            status_str = latest.get("status") if latest else "UNKNOWN"
+            return False, f"⚠️ Ticket #{ticket_id} is already resolved ({status_str})."
+
         applicant_member = guild.get_member(applicant_id)
         if not applicant_member:
             try:
@@ -789,10 +818,7 @@ class GuestService:
                 except discord.HTTPException as e:
                     logger.warning(f"Could not kick rejected guest {applicant_member}: {e}")
 
-        # 3. Update DB ticket and referral code
-        await self.db.close_guest_ticket(
-            ticket_id, "REJECTED", closed_by_admin_id=admin_user.id, close_reason=reject_reason
-        )
+        # 3. Update referral code status
         if referral_code:
             await self.db.update_referral_code_status(
                 referral_code, guild.id, "REJECTED", used_by_discord_id=applicant_id
@@ -959,6 +985,7 @@ class GuestService:
                     t["ticket_id"],
                     status="APPROVED",
                     close_reason="Applicant was manually granted guest role by admin",
+                    only_if_open=True,
                 )
                 if t.get("referral_code"):
                     await self.db.update_referral_code_status(
@@ -1036,6 +1063,7 @@ class GuestService:
                     t["ticket_id"],
                     status="EXPIRED",
                     close_reason="Review thread was deleted during maintenance",
+                    only_if_open=True,
                 )
                 summary["reconciled_tickets"] += 1
 

@@ -267,15 +267,8 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.response.defer(ephemeral=True)
 
         existing = await self.db.get_verification_by_user(user.id)
-        if not existing:
-            await interaction.followup.send(f"⚠️ User {user.mention} is not verified in TARVeri.", ephemeral=True)
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
 
-        deleted = await self.db.delete_verification(user.id)
-        self.rate_limiter.reset(user.id)
-
-        # Remove faculty roles across mutual guilds
+        # Remove faculty roles across mutual guilds (idempotent cleanup)
         removed_from: list[str] = []
         mutual_guilds = await self.service.get_mutual_guilds_for_user(user.id)
         for guild in mutual_guilds:
@@ -283,7 +276,8 @@ class AdminCog(commands.Cog, name="Admin"):
             if member:
                 member_roles = getattr(member, "roles", [])
                 roles_to_remove = [
-                    r for r in member_roles
+                    r
+                    for r in member_roles
                     if any(VerificationService._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES)
                 ]
                 for r in roles_to_remove:
@@ -292,6 +286,19 @@ class AdminCog(commands.Cog, name="Admin"):
                         removed_from.append(f"{guild.name} ({r.name})")
                     except discord.HTTPException:
                         pass
+
+        if not existing and not removed_from:
+            await interaction.followup.send(
+                f"⚠️ User {user.mention} is not verified in TARVeri and has no active faculty roles.",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        if existing:
+            await self.db.delete_verification(user.id)
+
+        self.rate_limiter.reset(user.id)
 
         await self.db.log(
             "INFO",

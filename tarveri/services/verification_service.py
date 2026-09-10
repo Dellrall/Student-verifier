@@ -49,6 +49,12 @@ class VerificationService:
         self.rate_limiter = rate_limiter
         self._in_flight_users: set[int] = set()
         self._lock = asyncio.Lock()
+        self._role_locks: dict[int, asyncio.Lock] = {}
+
+    def _get_guild_role_lock(self, guild_id: int) -> asyncio.Lock:
+        if guild_id not in self._role_locks:
+            self._role_locks[guild_id] = asyncio.Lock()
+        return self._role_locks[guild_id]
 
     async def get_or_fetch_member(self, guild: discord.Guild, user_id: int) -> discord.Member | None:
         """Retrieves a member from cache (O(1)), or fetches from Discord API on cache miss."""
@@ -189,6 +195,7 @@ class VerificationService:
         """
         Restores / creates the faculty SRC (Student Representative Council) roles if missing.
         FAFB SRC, CPUS SRC, FOCS SRC, FCCI SRC, FOAS SRC, FOBE SRC, FSSH SRC, FOET SRC.
+        Guarantees idempotency via per-guild role lock.
         """
         stats = {"created": 0, "existing": 0, "failed": 0}
         if not guild or not hasattr(guild, "roles"):
@@ -203,39 +210,48 @@ class VerificationService:
             stats["failed"] = len(SRC_ROLES)
             return stats
 
-        guild_roles = list(getattr(guild, "roles", []))
-
-        for fac_code, src_name in SRC_ROLES.items():
-            # Check if role already exists (exact or case-insensitive)
-            exists = any(getattr(r, "name", "").strip().lower() == src_name.lower() for r in guild_roles)
-            if exists:
-                stats["existing"] += 1
-                continue
-
-            # Role missing, create it
-            color_val = FACULTY_COLORS.get(fac_code, 0x3498DB)
-            try:
-                role = await guild.create_role(
-                    name=src_name,
-                    colour=discord.Colour(color_val),
-                    mentionable=True,
-                    reason="TARVeri: restore missing faculty SRC role",
-                )
-                guild_roles.append(role)
+        lock = self._get_guild_role_lock(guild.id)
+        async with lock:
+            guild_roles = list(getattr(guild, "roles", []))
+            if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
                 try:
-                    await self.db.record_bot_created_role(guild.id, role.id, src_name)
-                except Exception as e:
-                    logger.debug(f"Could not record bot created SRC role: {e}")
-                stats["created"] += 1
-                await self.db.log(
-                    "INFO",
-                    "SRC_ROLE_RESTORED",
-                    f"Restored SRC role '{src_name}' in '{guild.name}' (Guild ID: {guild.id})",
-                    guild=guild,
-                )
-            except discord.HTTPException as e:
-                stats["failed"] += 1
-                logger.warning(f"Failed to restore SRC role '{src_name}' in '{guild.name}': {e}")
+                    live_roles = await guild.fetch_roles()
+                    if isinstance(live_roles, (list, tuple)):
+                        guild_roles = list(live_roles)
+                except (discord.HTTPException, discord.Forbidden):
+                    pass
+
+            for fac_code, src_name in SRC_ROLES.items():
+                # Check if role already exists (exact or case-insensitive)
+                exists = any(getattr(r, "name", "").strip().lower() == src_name.lower() for r in guild_roles)
+                if exists:
+                    stats["existing"] += 1
+                    continue
+
+                # Role missing, create it
+                color_val = FACULTY_COLORS.get(fac_code, 0x3498DB)
+                try:
+                    role = await guild.create_role(
+                        name=src_name,
+                        colour=discord.Colour(color_val),
+                        mentionable=True,
+                        reason="TARVeri: restore missing faculty SRC role",
+                    )
+                    guild_roles.append(role)
+                    try:
+                        await self.db.record_bot_created_role(guild.id, role.id, src_name)
+                    except Exception as e:
+                        logger.debug(f"Could not record bot created SRC role: {e}")
+                    stats["created"] += 1
+                    await self.db.log(
+                        "INFO",
+                        "SRC_ROLE_RESTORED",
+                        f"Restored SRC role '{src_name}' in '{guild.name}' (Guild ID: {guild.id})",
+                        guild=guild,
+                    )
+                except discord.HTTPException as e:
+                    stats["failed"] += 1
+                    logger.warning(f"Failed to restore SRC role '{src_name}' in '{guild.name}': {e}")
 
         if stats["created"] > 0:
             logger.info(f"[{guild.name}] Restored {stats['created']} missing SRC role(s).")
@@ -270,49 +286,58 @@ class VerificationService:
     async def get_or_create_faculty_role(self, guild: discord.Guild, role_name: str) -> discord.Role | None:
         """
         Finds an existing faculty role. ONLY creates a new role if the role absolutely does not exist.
+        Guarantees idempotency via double-checked locking across concurrent tasks.
         """
         # 1. Exhaustive search across cache and live API
         existing_role = await self.find_faculty_role(guild, role_name)
         if existing_role is not None:
             return existing_role
 
-        # 2. Check if bot has Manage Roles permission before attempting creation
-        can_manage = (
-            getattr(guild.me.guild_permissions, "manage_roles", False)
-            if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
-            else False
-        )
-        if not can_manage:
-            return None
+        # 2. Acquire per-guild lock for atomic role creation
+        lock = self._get_guild_role_lock(guild.id)
+        async with lock:
+            # Re-check under lock (double-checked locking)
+            existing_role = await self.find_faculty_role(guild, role_name)
+            if existing_role is not None:
+                return existing_role
 
-        # 3. Create the role only when absolutely not found anywhere
-        try:
-            color_val = FACULTY_COLORS.get(role_name, 0x3498DB)
-            role = await guild.create_role(
-                name=role_name,
-                colour=discord.Colour(color_val),
-                mentionable=True,
-                reason="TARVeri: auto-created missing faculty role for verification",
+            # 3. Check if bot has Manage Roles permission before attempting creation
+            can_manage = (
+                getattr(guild.me.guild_permissions, "manage_roles", False)
+                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
+                else False
             )
+            if not can_manage:
+                return None
+
+            # 4. Create the role only when absolutely not found anywhere
             try:
-                await self.db.record_bot_created_role(guild.id, role.id, role_name)
-            except Exception as e:
-                logger.debug(f"Could not record bot created faculty role: {e}")
-            await self.db.log(
-                "INFO",
-                "ROLE_CREATED",
-                f"Created role '{role_name}' in '{guild.name}' (Guild ID: {guild.id})",
-                guild=guild,
-            )
-            return role
-        except discord.HTTPException as e:
-            await self.db.log(
-                "ERROR",
-                "ROLE_CREATE_FAILED",
-                f"Failed to create role '{role_name}' in '{guild.name}': {e}",
-                guild=guild,
-            )
-            return None
+                color_val = FACULTY_COLORS.get(role_name, 0x3498DB)
+                role = await guild.create_role(
+                    name=role_name,
+                    colour=discord.Colour(color_val),
+                    mentionable=True,
+                    reason="TARVeri: auto-created missing faculty role for verification",
+                )
+                try:
+                    await self.db.record_bot_created_role(guild.id, role.id, role_name)
+                except Exception as e:
+                    logger.debug(f"Could not record bot created faculty role: {e}")
+                await self.db.log(
+                    "INFO",
+                    "ROLE_CREATED",
+                    f"Created role '{role_name}' in '{guild.name}' (Guild ID: {guild.id})",
+                    guild=guild,
+                )
+                return role
+            except discord.HTTPException as e:
+                await self.db.log(
+                    "ERROR",
+                    "ROLE_CREATE_FAILED",
+                    f"Failed to create role '{role_name}' in '{guild.name}': {e}",
+                    guild=guild,
+                )
+                return None
 
     async def _assign_role_in_guild(
         self, guild: discord.Guild, user_id: int, role_name: str, result: RoleSyncResult

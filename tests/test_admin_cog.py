@@ -274,6 +274,8 @@ async def test_admin_unverify_lifecycle(tmp_path):
 
     bot = MagicMock()
     service = MagicMock()
+    service.get_mutual_guilds_for_user = AsyncMock(return_value=[])
+    service.get_or_fetch_member = AsyncMock(return_value=None)
     rate_limiter = MagicMock()
     cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
 
