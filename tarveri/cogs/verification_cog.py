@@ -103,74 +103,6 @@ class VerificationCog(commands.Cog, name="Verification"):
         # Open the interactive modal dialog
         await interaction.response.send_modal(VerificationModal(self.service))
 
-    @commands.command(name="verify")
-    async def verify_prefix(self, ctx: commands.Context, *args: str) -> None:
-        """Fallback text command for members; guides them to privacy-safe verification."""
-        if ctx.guild is not None:
-            try:
-                await ctx.message.delete()
-            except discord.HTTPException:
-                pass
-
-        if self.rate_limiter.is_rate_limited(ctx.author.id):
-            await self.db.log(
-                "WARNING", "RATE_LIMITED", f"{ctx.author} hit attempt limit on !verify", user_id=ctx.author.id
-            )
-            msg = "⏳ You've made too many verification attempts. Please wait a few minutes before trying again."
-            if ctx.guild is not None:
-                await ctx.send(f"{ctx.author.mention} {msg}")
-            else:
-                await ctx.author.send(msg)
-            return
-
-        # In direct message (DM) with student ID argument
-        if ctx.guild is None:
-            if args:
-                response_text = await self.service.perform_verification(ctx.author, args[0])
-                await ctx.author.send(response_text)
-            else:
-                self.rate_limiter.record_attempt(ctx.author.id)
-                await ctx.author.send("🎓 Please send your student ID (e.g., `23WMD09867`) directly here in DMs.")
-            return
-
-        self.rate_limiter.record_attempt(ctx.author.id)
-
-        # Check existing verification
-        existing = await self.db.get_verification_by_user(ctx.author.id)
-        if existing:
-            _, stored_faculty, _ = existing
-            faculty_role = FACULTY_ROLES.get(stored_faculty)
-            if faculty_role:
-                mutual_guilds = await self.service.get_mutual_guilds_for_user(ctx.author.id)
-                result = await self.service.assign_role_across_guilds(ctx.author.id, faculty_role, mutual_guilds)
-                summary = self.service.format_role_summary(result)
-                try:
-                    await ctx.author.send(
-                        summary
-                        or "🪿 You're already verified! Your roles are up to date across all servers! 🚀"
-                    )
-                except discord.Forbidden:
-                    pass
-                await ctx.send(
-                    f"{ctx.author.mention} Bro, you're already verified, you silly goose! 🪿🎓 Roles resynced! ✨"
-                )
-                return
-
-        try:
-            await ctx.author.send(
-                "🎓 Please enter your student ID (e.g., `23WMD09867`) here to get verified, "
-                "or use the `/verify` slash command directly in the server."
-            )
-            await ctx.send(
-                f"{ctx.author.mention} I've sent you a DM to continue verification. "
-                "You can also use `/verify` directly in this server!"
-            )
-        except discord.Forbidden:
-            await ctx.send(
-                f"{ctx.author.mention} Your DMs are closed! Please use the `/verify` slash command "
-                "directly in this server (only you will see the response)."
-            )
-
     def invalidate_guild_cache(self, guild_id: int | None = None) -> None:
         """Clears cached channel settings for a guild or all guilds."""
         if guild_id is not None:
@@ -454,11 +386,9 @@ class VerificationCog(commands.Cog, name="Verification"):
             return
 
         if message.guild is None:
-            prefixes = await self.bot.get_prefix(message)
-            if isinstance(prefixes, str):
-                prefixes = [prefixes]
-            if not any(p and message.content.startswith(p) for p in prefixes):
-                response = await self.service.perform_verification(message.author, message.content)
+            content = message.content.strip()
+            if content:
+                response = await self.service.perform_verification(message.author, content)
                 if response:
                     await message.author.send(response)
         else:

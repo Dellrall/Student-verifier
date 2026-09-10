@@ -636,44 +636,6 @@ class AdminCog(commands.Cog, name="Admin"):
             await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 
-    @commands.command(name="sync", aliases=["sync_commands"])
-    async def sync_prefix(self, ctx: commands.Context, scope: str = "clean") -> None:
-        """Text fallback command to immediately sync slash commands or clean duplicates."""
-        if not ctx.guild or not isinstance(ctx.author, discord.Member):
-            return
-        if not (ctx.author.guild_permissions.administrator or any(r.name == self.admin_role_name for r in ctx.author.roles)):
-            await ctx.send("❌ You do not have permission to sync commands.")
-            return
-
-        msg = await ctx.send("🔄 Syncing slash commands...")
-        try:
-            if scope.lower() in ("guild", "here"):
-                self.bot.tree.copy_global_to(guild=ctx.guild)
-                synced = await self.bot.tree.sync(guild=ctx.guild)
-                await msg.edit(
-                    content=(
-                        f"✅ Instantly synced **{len(synced)}** slash command(s) to **{ctx.guild.name}**!\n"
-                        f"*(Tip: If commands appear duplicated in your menu, run `!sync clean` to remove duplicate guild overrides)*"
-                    )
-                )
-            elif scope.lower() in ("clean", "clear", "fix", "dedupe"):
-                self.bot.tree.clear_commands(guild=ctx.guild)
-                await self.bot.tree.sync(guild=ctx.guild)
-                synced = await self.bot.tree.sync()
-                await msg.edit(
-                    content=(
-                        f"✅ **Deduplicated & Synced!** Cleared duplicate guild commands in **{ctx.guild.name}** and synced **{len(synced)}** global command(s)!\n"
-                        f"*(Tip: Press `Ctrl + R` on Discord Desktop or restart your Discord app to refresh your command cache)*"
-                    )
-                )
-            else:
-                synced = await self.bot.tree.sync()
-                await msg.edit(
-                    content=f"✅ Synced **{len(synced)}** global command(s)!"
-                )
-        except Exception as e:
-            await msg.edit(content=f"❌ Failed to sync commands: {e}")
-
     @app_commands.command(
         name="check_updates",
         description="Check if bot updates are available from git upstream.",

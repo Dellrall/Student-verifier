@@ -61,7 +61,6 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 
 ### Students
 * `/verify` — Opens a private modal popup in the server to submit your student ID.
-* `!verify` — Fallback prefix command.
 * Or DM your student ID (e.g. `23WMD09867`) directly to the bot.
 * `/referral generate [ttl_hours]` — Verified students generate a single-use guest referral code for friends.
 * `/referral list` — View your active and past generated referral codes.

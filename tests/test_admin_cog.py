@@ -103,7 +103,7 @@ async def test_setwelcomec_and_sethelpc(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sync_prefix(tmp_path):
+async def test_sync_commands_slash(tmp_path):
     from unittest.mock import AsyncMock
     from tarveri.cogs.admin_cog import AdminCog
     from tarveri.database import Database
@@ -115,6 +115,8 @@ async def test_sync_prefix(tmp_path):
     bot = MagicMock()
     bot.tree = MagicMock()
     bot.tree.sync = AsyncMock(return_value=[MagicMock(), MagicMock()])
+    bot.tree.clear_commands = MagicMock()
+    bot.tree.copy_global_to = MagicMock()
     service = MagicMock()
     rate_limiter = MagicMock()
     cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
@@ -124,25 +126,28 @@ async def test_sync_prefix(tmp_path):
 
     admin_user = MagicMock(spec=discord.Member)
     admin_user.guild_permissions.administrator = True
+    admin_user.__str__.return_value = "Admin#0001"
 
-    ctx = MagicMock()
-    ctx.guild = guild
-    ctx.author = admin_user
-    msg = MagicMock()
-    msg.edit = AsyncMock()
-    ctx.send = AsyncMock(return_value=msg)
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
 
-    await cog.sync_prefix.callback(cog, ctx, scope="guild")
-    ctx.send.assert_called_once()
-    msg.edit.assert_called_once()
-    assert "Instantly synced **2** slash command(s)" in msg.edit.call_args[1]["content"]
-
-    # Test !sync clean / deduplication
-    bot.tree.clear_commands = MagicMock()
-    msg.edit.reset_mock()
-    await cog.sync_prefix.callback(cog, ctx, scope="clean")
+    # 1. Clean duplicates sync (global)
+    await cog.sync_commands.callback(cog, interaction, clean_duplicates=True, guild_only=False)
+    interaction.response.defer.assert_called_once()
     bot.tree.clear_commands.assert_called_once_with(guild=guild)
-    assert "Deduplicated & Synced" in msg.edit.call_args[1]["content"]
+    bot.tree.sync.assert_called()
+    assert "Successfully synced 2 command(s)" in interaction.followup.send.call_args[0][0]
+
+    # 2. Guild-only sync
+    interaction.response.defer.reset_mock()
+    interaction.followup.send.reset_mock()
+    bot.tree.sync.reset_mock()
+    await cog.sync_commands.callback(cog, interaction, clean_duplicates=False, guild_only=True)
+    bot.tree.copy_global_to.assert_called_once_with(guild=guild)
+    assert "server 'Test Guild'" in interaction.followup.send.call_args[0][0]
 
     await db.close()
 
