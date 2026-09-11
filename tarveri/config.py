@@ -885,8 +885,8 @@ def parse_card_expiry_date(raw_date: str | None) -> str | None:
         try:
             month = int(m_y_match.group(1))
             raw_year = int(m_y_match.group(2))
-            year = 2000 + raw_year if raw_year < 100 else raw_year
-            if 1 <= month <= 12 and 2000 <= year <= 2100:
+            year = (2000 + raw_year if raw_year < 70 else 1900 + raw_year) if raw_year < 100 else raw_year
+            if 1 <= month <= 12 and 1969 <= year <= 2100:
                 last_day = calendar.monthrange(year, month)[1]
                 return f"{year:04d}-{month:02d}-{last_day:02d}"
         except Exception:
@@ -912,8 +912,8 @@ def parse_card_expiry_date(raw_date: str | None) -> str | None:
         m_str = month_text_match.group(1)
         raw_year = int(month_text_match.group(2))
         month = month_names.get(m_str)
-        year = 2000 + raw_year if raw_year < 100 else raw_year
-        if month and 2000 <= year <= 2100:
+        year = (2000 + raw_year if raw_year < 70 else 1900 + raw_year) if raw_year < 100 else raw_year
+        if month and 1969 <= year <= 2100:
             last_day = calendar.monthrange(year, month)[1]
             return f"{year:04d}-{month:02d}-{last_day:02d}"
 
