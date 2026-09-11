@@ -160,9 +160,29 @@ GUEST_ROLE_COLOR: Final[int] = 0x2ECC71  # Green / Emerald (#2ECC71)
 ALUMNI_ROLE_NAME: Final[str] = "TARUMT Alumni"
 ALUMNI_ROLE_COLOR: Final[int] = 0xD4AF37  # Academic Gold (#D4AF37)
 ALUMNI_ROLE_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"\b(alumni|graduates?|alumnus|alumna)\b",
+    r"\b(alumni|graduates?|alumnus|alumna|graduate|graduated)\b",
     re.IGNORECASE,
 )
+ALUMNI_ALIASES: Final[list[str]] = [
+    "TARUMT Alumni",
+    "TAR UMT Alumni",
+    "Alumni",
+    "TARUC Alumni",
+    "TAR UC Alumni",
+    "TARC Alumni",
+    "TAR College Alumni",
+    "Alumni TARUMT",
+    "TARUMT Graduate",
+    "TARUMT Graduates",
+    "TARUMT Graduated",
+    "Graduated",
+    "Graduate",
+    "Graduates",
+    "Alumnus",
+    "Alumna",
+    "Alumni Member",
+    "Alumni Members",
+]
 
 # Branch campus code mapping (index 2 of student ID) -> Role Name
 CAMPUS_ROLES: Final[dict[str, str]] = {

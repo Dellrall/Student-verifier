@@ -15,8 +15,10 @@ import aiosqlite
 import discord
 
 from tarveri.config import (
+    ALUMNI_ALIASES,
     ALUMNI_ROLE_COLOR,
     ALUMNI_ROLE_NAME,
+    ALUMNI_ROLE_PATTERN,
     CAMPUS_ALIASES,
     CAMPUS_COLORS,
     CAMPUS_ROLE_NAMES,
@@ -352,22 +354,64 @@ class VerificationService:
                 )
                 return None
 
+    @classmethod
+    def _match_alumni_role_in_list(cls, roles: Sequence[discord.Role]) -> discord.Role | None:
+        """
+        Dynamic multi-tier matcher to find an existing alumni role in a list of roles.
+        Checks:
+        1. Exact match with ALUMNI_ROLE_NAME ('TARUMT Alumni')
+        2. Exact alias match (e.g. 'Alumni', 'TARUC Alumni', 'Graduated', 'TAR UMT Alumni')
+        3. Alphanumeric normalized match (e.g. '[TARUMT] Alumni' or 'TARUMT-Alumni')
+        4. Regex pattern search with ALUMNI_ROLE_PATTERN (e.g. 'Alumni🎓', 'Graduated Students', '2024 Alumni')
+        """
+        if not roles:
+            return None
+
+        # Tier 1: Exact target name match
+        for r in roles:
+            if getattr(r, "name", None) == ALUMNI_ROLE_NAME:
+                return r
+
+        # Tier 2: Exact alias match (case-insensitive)
+        alias_set = {a.strip().upper() for a in ALUMNI_ALIASES}
+        for r in roles:
+            r_name = getattr(r, "name", "").strip().upper()
+            if r_name in alias_set:
+                return r
+
+        # Tier 3: Alphanumeric normalized match
+        target_alnum = re.sub(r"[^A-Za-z0-9]", "", ALUMNI_ROLE_NAME.upper())
+        alias_alnums = {re.sub(r"[^A-Za-z0-9]", "", a.upper()) for a in ALUMNI_ALIASES}
+        for r in roles:
+            r_alnum = re.sub(r"[^A-Za-z0-9]", "", getattr(r, "name", "").upper())
+            if r_alnum and (r_alnum == target_alnum or r_alnum in alias_alnums):
+                return r
+
+        # Tier 4: Regex pattern search (any role containing alumni/graduate/alumnus/alumna)
+        for r in roles:
+            r_name = getattr(r, "name", "")
+            if ALUMNI_ROLE_PATTERN.search(r_name):
+                return r
+
+        return None
+
     async def find_alumni_role(self, guild: discord.Guild) -> discord.Role | None:
-        """Finds existing alumni role in guild cache or live API."""
+        """Finds existing alumni role in guild cache or live API using multi-tier matching."""
+        if not guild:
+            return None
         guild_roles = getattr(guild, "roles", [])
         if isinstance(guild_roles, (list, tuple)):
-            for r in guild_roles:
-                name = getattr(r, "name", "").strip().lower()
-                if name in ("tarumt alumni", "alumni"):
-                    return r
+            found = self._match_alumni_role_in_list(guild_roles)
+            if found is not None:
+                return found
+
         if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
             try:
                 live_roles = await guild.fetch_roles()
                 if isinstance(live_roles, (list, tuple)):
-                    for r in live_roles:
-                        name = getattr(r, "name", "").strip().lower()
-                        if name in ("tarumt alumni", "alumni"):
-                            return r
+                    found = self._match_alumni_role_in_list(live_roles)
+                    if found is not None:
+                        return found
             except (discord.HTTPException, discord.Forbidden):
                 pass
         return None
@@ -879,7 +923,7 @@ class VerificationService:
             member = await self.get_or_fetch_member(g, user.id)
             if member:
                 for r in getattr(member, "roles", []):
-                    if getattr(r, "name", "") == ALUMNI_ROLE_NAME:
+                    if self._match_alumni_role_in_list([r]) is not None:
                         try:
                             await member.remove_roles(r, reason="TARVeri: Transitioned back to active student status")
                         except discord.HTTPException:

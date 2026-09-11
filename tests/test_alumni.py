@@ -340,3 +340,71 @@ async def test_admin_alumni_revoke_command(tmp_path):
         assert await db.get_alumni_info_by_user(user_id) is None
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_existing_alumni_role_discovery_and_reuse(tmp_path):
+    """
+    Verifies that if a guild already has an existing alumni role named 'Alumni', '[TARUMT] Alumni',
+    or 'Graduated', TARVeri finds and uses the existing role without calling guild.create_role.
+    """
+    db = Database(str(tmp_path / "existing_alumni_role_test.db"))
+    await db.connect()
+    try:
+        bot = MagicMock(spec=discord.Client)
+        service = VerificationService(bot=bot, db=db, secret="test_secret", rate_limiter=RateLimiter())
+
+        user_id = 987654321
+        await db.record_verification(user_id, "hash_9876", "M")
+
+        # Guild with existing custom alumni role "Alumni"
+        existing_role = MagicMock(spec=discord.Role)
+        existing_role.id = 554433
+        existing_role.name = "Alumni"
+        existing_role.position = 5
+
+        guild = MagicMock(spec=discord.Guild)
+        guild.id = 12345
+        guild.name = "Existing Role Guild"
+        guild.roles = [existing_role]
+        guild.create_role = AsyncMock()
+
+        bot_top_role = MagicMock(spec=discord.Role)
+        bot_top_role.position = 10
+        bot_member = MagicMock(spec=discord.Member)
+        bot_member.guild_permissions.manage_roles = True
+        bot_member.top_role = bot_top_role
+        guild.me = bot_member
+
+        member = MagicMock(spec=discord.Member)
+        member.id = user_id
+        member.display_name = "Jane Graduate"
+        member.roles = []
+        member.add_roles = AsyncMock()
+        guild.get_member = MagicMock(return_value=member)
+        guild.fetch_member = AsyncMock(return_value=member)
+        bot.guilds = [guild]
+
+        # Claim alumni status
+        res = await service.claim_alumni_status(
+            user_id=user_id,
+            user_display_name="Jane Graduate",
+            graduated_year=2024,
+            programme="Information Systems",
+            current_guild=guild,
+        )
+
+        assert res["success"] is True
+        # Verify the existing role was assigned and NO new role was created
+        guild.create_role.assert_not_called()
+        member.add_roles.assert_called_once_with(
+            existing_role,
+            reason="TARVeri: Claimed Alumni status (Class of 2024)",
+        )
+
+        # Reconcile also uses existing role without creating
+        reconcile_res = await service.reconcile_alumni_members(guild)
+        assert reconcile_res["checked"] == 1
+        guild.create_role.assert_not_called()
+    finally:
+        await db.close()
