@@ -888,7 +888,15 @@ class VerificationService:
         to_faculty_role = info.faculty_role or FACULTY_ROLES.get(to_faculty, "FOCS")
         to_campus_role = info.campus_role or CAMPUS_ROLES.get(to_campus, "KL Main Campus")
         to_level_role = info.level_role or STUDY_LEVEL_ROLES.get(to_level, "Degree")
-        to_expiry_date = parse_card_expiry_date(raw_expiry_date) or estimate_student_card_expiry(to_student_id, to_level)
+        if raw_expiry_date and raw_expiry_date.strip():
+            to_expiry_date = parse_card_expiry_date(raw_expiry_date)
+            if not to_expiry_date:
+                return (
+                    "❌ Invalid new student card expiry date format. Please use `MM/YY` (e.g. `10/28`) "
+                    "or leave it blank to auto-calculate."
+                )
+        else:
+            to_expiry_date = estimate_student_card_expiry(to_student_id, to_level)
 
         from_faculty_name = FACULTY_ROLES.get(from_faculty, from_faculty)
         from_level_name = STUDY_LEVEL_ROLES.get(from_level, from_level)
@@ -1009,9 +1017,15 @@ class VerificationService:
             campus_role_name = info.campus_role
             level_code = info.level_code
             level_role_name = info.level_role
-            iso_expiry_date = parse_card_expiry_date(raw_expiry_date) or estimate_student_card_expiry(
-                student_id, level_code
-            )
+            if raw_expiry_date and raw_expiry_date.strip():
+                iso_expiry_date = parse_card_expiry_date(raw_expiry_date)
+                if not iso_expiry_date:
+                    return (
+                        "❌ Invalid student card expiry date format. Please use `MM/YY` (e.g. `10/26`) "
+                        "or leave it blank to auto-calculate."
+                    )
+            else:
+                iso_expiry_date = estimate_student_card_expiry(student_id, level_code)
 
             id_hash = hash_student_id(student_id, self.secret)
 

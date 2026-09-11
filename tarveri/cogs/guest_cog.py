@@ -98,8 +98,15 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
         label="Student ID",
         placeholder="e.g. 23WMD09867 or 22PMR12345",
         min_length=7,
-        max_length=15,
+        max_length=20,
         required=True,
+    )
+    card_expiry = discord.ui.TextInput(
+        label="Student Card Expiry Date (MM/YY)",
+        placeholder="e.g. 10/26 (Optional)",
+        min_length=4,
+        max_length=10,
+        required=False,
     )
 
     def __init__(self, verification_service: VerificationService) -> None:
@@ -108,8 +115,9 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
+        raw_expiry = self.card_expiry.value.strip() if self.card_expiry.value else None
         resp = await self.verification_service.perform_verification(
-            interaction.user, self.student_id.value.strip()
+            interaction.user, self.student_id.value.strip(), raw_expiry_date=raw_expiry
         )
         await interaction.followup.send(resp, ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)

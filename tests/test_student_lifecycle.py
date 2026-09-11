@@ -316,3 +316,48 @@ async def test_database_startup_backfills_legacy_card_expiry(tmp_path):
 
     await db.close()
 
+
+@pytest.mark.asyncio
+async def test_perform_verification_invalid_expiry_validation():
+    bot = MagicMock()
+    db = MagicMock(spec=Database)
+    service = VerificationService(bot, db, "secret", RateLimiter())
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 12345
+
+    # Passing an invalid expiry format string
+    res = await service.perform_verification(
+        user=member,
+        raw_student_id="24WMR12345",
+        raw_expiry_date="invalid_date",
+    )
+    assert "Invalid student card expiry date format" in res
+    assert "MM/YY" in res
+
+
+@pytest.mark.asyncio
+async def test_student_verification_modal_in_guest_cog():
+    from tarveri.cogs.guest_cog import StudentVerificationModal
+
+    service = MagicMock(spec=VerificationService)
+    service.perform_verification = AsyncMock(return_value="✅ Verified!")
+
+    modal = StudentVerificationModal(service)
+    modal.student_id._value = "23WMD09867"
+    modal.card_expiry._value = "10/26"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.user = MagicMock()
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await modal.on_submit(interaction)
+
+    interaction.response.defer.assert_called_once()
+    service.perform_verification.assert_called_once_with(
+        interaction.user, "23WMD09867", raw_expiry_date="10/26"
+    )
+    interaction.followup.send.assert_called_once_with("✅ Verified!", ephemeral=True)
+
+

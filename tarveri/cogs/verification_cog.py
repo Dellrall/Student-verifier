@@ -30,7 +30,7 @@ from tarveri.utils import schedule_ttl_delete
 logger = logging.getLogger("tarveri")
 
 
-class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
+class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verification"):
     student_id = discord.ui.TextInput(
         label="Student ID",
         placeholder="e.g. 23WMD09867",
@@ -743,7 +743,15 @@ class VerificationCog(commands.Cog, name="Verification"):
         if message.guild is None:
             content = message.content.strip()
             if content:
-                response = await self.service.perform_verification(message.author, content)
+                parts = content.split()
+                student_id_input = parts[0]
+                expiry_input = parts[1] if len(parts) > 1 else None
+                if expiry_input:
+                    response = await self.service.perform_verification(
+                        message.author, student_id_input, raw_expiry_date=expiry_input
+                    )
+                else:
+                    response = await self.service.perform_verification(message.author, student_id_input)
                 if response:
                     await message.author.send(response)
         else:
