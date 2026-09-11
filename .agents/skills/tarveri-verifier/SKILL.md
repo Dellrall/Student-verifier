@@ -17,24 +17,28 @@ Student-verifier/
 │   ├── __init__.py               # Top-level exports and versioning
 │   ├── __main__.py               # python -m tarveri entrypoint
 │   ├── bot.py                    # TARVeriBot lifecycle, persistent views, startup self-healing
-│   ├── config.py                 # Settings, faculty mappings, colors, HMAC hashing, validation
-│   ├── database.py               # Async SQLite layer (WAL mode, PRAGMAs, migrations, backup rotation)
+│   ├── config.py                 # Settings, faculty mappings, colors, HMAC hashing, validation, sliding century windowing
+│   ├── database.py               # Async SQLite layer (WAL mode, PRAGMAs, migrations, backup rotation, legacy backfill)
 │   ├── rate_limiter.py           # Monotonic sliding-window rate limiting
 │   ├── utils.py                  # Ticket formatting (#A0001), TTL schedulers, timestamp parsers
 │   ├── services/
-│   │   ├── verification_service.py # Student verification logic, role auto-creation, reconciliation
-│   │   ├── guest_service.py        # Referral codes, double verification, batch staff tagging, escalation
-│   │   ├── log_service.py          # Daily log rotation, 10-day period grouping & .tar.gz compression
-│   │   ├── outage_service.py       # Network probe watchdog, debounce & power outage signals
-│   │   └── update_checker.py       # Background git upstream check and DM notifications
+│   │   ├── verification_service.py      # Student verification logic, role auto-creation, reconciliation, academic transition
+│   │   ├── graduation_watchdog_service.py # Periodic graduation & card expiry watchdog daemon
+│   │   ├── card_service.py              # Digital campus card rendering, Pillow glassmorphism, badge system
+│   │   ├── guest_service.py             # Referral codes, double verification, batch staff tagging, escalation
+│   │   ├── log_service.py               # Daily log rotation, 10-day period grouping & .tar.gz compression
+│   │   ├── outage_service.py            # Network probe watchdog, debounce & power outage signals
+│   │   └── update_checker.py            # Background git upstream check and DM notifications
 │   └── cogs/
-│       ├── verification_cog.py   # Student slash (/verify) and text commands, welcome/help auto-tips
+│       ├── verification_cog.py   # Student slash (/verify, /graduate) and text commands, welcome/help auto-tips, lifecycle UI
+│       ├── card_cog.py           # Campus card slash (/card) and user context menu apps
 │       ├── guest_cog.py          # Guest gateway panel, private review thread views, vouchers
-│       └── admin_cog.py          # Admin tools (/stats, /diagnose, /audit, /unverify, /backup, /logs)
+│       ├── admin_dashboard.py    # Rich interactive admin control center UI with category dropdowns
+│       └── admin_cog.py          # Admin tools (/stats, /diagnose, /audit, /unverify, /backup, /logs, /backfill_roles)
 ├── scripts/
 │   ├── update.sh                 # Safe upstream git updater with backup and test preflight
 │   └── show_servers.py           # CLI database inspector for server settings and metrics
-└── tests/                        # 130 unit tests covering all modules with 0 warnings
+└── tests/                        # 170 unit & integration tests covering all modules with 0 warnings
 ```
 
 ---
@@ -428,13 +432,21 @@ fi
 - **Archive & Audit**: The transition pipeline records previous study level, faculty, campus, and hashed ID in `verification_transitions` without exposing sensitive student ID details publicly.
 - **Atomic Role Sync**: Strips previous faculty, campus, study level, and alumni roles, and assigns new roles across all mutual guilds.
 
-### 2. Student Card Expiry & Lifecycle Resolution
-- Card validity dates (parsed from `MM/YY`, `YYYY-MM-DD`, `OCT 2026`, etc.) are tracked in `verifications.card_expiry_date`.
-- `GraduationWatchdogService` runs background periodic sweeps (every 24h) scanning `get_expired_student_verifications()`.
-- Expired students are prompted with `StudentLifecycleResolutionView` presenting 3 resolution paths:
-  1. 🎓 **"I have Graduated"**: Claims `TARUMT Alumni` role + card badge.
-  2. 📚 **"Further Studies at TARUMT"**: Opens `FurtherStudyTransitionModal` for new Student ID & expiry date.
+### 2. Zero-Effort Automated Expiry Estimation & Institutional Century Windowing
+- **Zero-Bother Optional Input**: Students are never forced or nagged to enter their card expiry date. Leaving the field empty automatically invokes `estimate_student_card_expiry()`, deriving expected graduation dates from TARUMT student IDs:
+  - Foundation (`F`): Intake Year + 1 (May 31)
+  - Diploma (`D`): Intake Year + 2 (October 31)
+  - Degree (`R`): Intake Year + 3 (October 31)
+  - Postgraduate (`P`): Intake Year + 2 (October 31)
+- **Sliding Century Windowing (`parse_card_expiry_date`)**: Uses dynamic pivot threshold (`< 70 -> 20xx`, `>= 70 -> 19xx`), allowing valid institutional years from 1969 (TAR College founding) up to 2068+ with calendar leap-year calculations.
+- **Zero Hardcoded Time-Locks**: All modules, services, watchdog sweeps, and alumni claim validations (`1969 <= year <= datetime.now().year + 5`) execute dynamically against the configured local timezone (`Asia/Kuala_Lumpur`).
+
+### 3. Dynamic Intake Detection & Interactive Lifecycle Resolution UI
+- **Real-Time Past Intake Detection**: When a student verifies with an ID whose intake year or estimated expiry date has passed, the verification response automatically attaches the interactive `StudentLifecycleResolutionView` with 3 resolution paths:
+  1. 🎓 **"I have Graduated"**: Claims `TARUMT Alumni` role + card badge (discovers existing server alumni roles or creates official `#D4AF37` role).
+  2. 📚 **"Further Studies at TARUMT"**: Opens `FurtherStudyTransitionModal` for new Student ID & study level.
   3. ⏳ **"Still Studying / Extension"**: Opens `ExtendExpiryModal` to update expiry date.
+- **Background Daemon (`GraduationWatchdogService`)**: Periodic sweeps (every 24h) scan `get_expired_student_verifications()`, dispatching direct message prompts with a 7-day cooldown.
 - **Active Chat & `/card` Interception**: When an expired student posts in a channel or views their `/card`, the bot provides the `StudentLifecycleResolutionView` with a 7-day cooldown to prevent spam.
 
 ---

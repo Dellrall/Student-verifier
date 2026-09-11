@@ -60,13 +60,21 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 ## Usage
 
 ### Students & Members
-* `/verify` — Opens a private modal popup in the server to submit your student ID.
-* Or DM your student ID (e.g. `23WMD09867`) directly to the bot.
-* `/graduate [year] [programme]` — Instant graduation claim for verified students. Assigns the `TARUMT Alumni` role across mutual servers and updates the digital campus card to Alumni status.
-* `/card [member] [hidden]` — Generate and share your modern digital student/guest/alumni campus card in the channel (public by default, or set `hidden: True` for private view).
-* **Context Menu**: Right-click (or long-press) any member $\to$ **Apps** $\to$ **"View Campus Card"**.
-* `/referral generate [ttl_hours]` — Verified students generate a single-use guest referral code for friends.
-* `/referral list` — View your active and past generated referral codes.
+* **`/verify [student_id] [expiry_date]`** — Opens a private modal popup (or verifies directly via slash arguments).
+  * *Zero-Effort Card Expiry*: Leaving the expiry date blank automatically estimates card validity based on intake year and study level (`F`: +1y, `D`: +2y, `R`: +3y, `P`: +2y).
+  * *Smart Academic Transition*: Progressing to Degree or Masters? Simply enter your new Student ID to atomically update your study level and roles with full audit history.
+  * *Real-Time Lifecycle Detection*: If your intake year or card expiry date is in the past, TARVeri automatically attaches an interactive resolution menu (🎓 Graduated Alumni / 📚 Further Studies / ⏳ Extend Expiry).
+* **Direct Messages (DMs)** — Send your student ID (e.g. `24WMR12345` or `24WMR12345 10/27`) directly to the bot for private verification.
+* **`/graduate [year] [programme]`** — Instant alumni claim for verified students. Discovers existing server `Alumni` roles or provisions the official `#D4AF37` role, updating your Digital Campus Card to Alumni status.
+* **`/card [member] [hidden]`** — Generate and share high-DPI digital student/guest/alumni campus ID cards rendered with glassmorphism design, verification checkmarks, and achievement badges (`public` by default, or `hidden: True`).
+* **Context Menu App**: Right-click (or long-press) any member $\to$ **Apps** $\to$ **"View Campus Card"**.
+* **`/referral generate [ttl_hours]`** — Verified students generate a single-use guest referral code for friends (max 3 active).
+* **`/referral list`** — View active and past generated referral codes.
+
+### 🎓 Academic Lifecycle & Graduation Watchdog Engine
+* **Automated Expiry Sweeps (`GraduationWatchdogService`)**: Periodic background checks (every 24h) monitor card validity and send polite lifecycle resolution DMs with a 7-day cooldown.
+* **Active-Chat Graduation Prompt**: When a student with an expired card participates in server channels, the bot delivers the interactive lifecycle resolution UI to guide their status update.
+* **Sliding Century Windowing**: Dynamically handles historical and future intake years (`1969 <= year <= datetime.now().year + 5`) with zero hardcoded time-locks.
 
 ### Guests & Non-TARUMT Outsiders
 * **Referral Entry**: Outsiders with a referral code click **"Enter Referral Code"** on the gateway panel or use the modal to enter the code.
@@ -82,13 +90,15 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 ### 🛡️ Self-Healing & Auto-Recovery Engine
 * **Database Auto-Healing**: Executes `PRAGMA integrity_check` on connection startup and truncates SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) on startup/shutdown.
 * **Channel Drift & Deleted Channel Recovery**: If configured review, help, or welcome channels are deleted, TARVeri clears stale database IDs and falls back smoothly to keyword-matched channels (`review`, `approval`, `ticket`, `help`, `welcome`).
-* **Dynamic Role Auto-Creation**: If faculty or guest roles are deleted from Discord, the bot automatically recreates them with standard server colors (FAFB Dark Red, CPUS Dark Teal, FOCS Yellow, FCCI Dark Purple, FOAS Coral Red, FOBE Green, FSSH Blue, FOET Lime Green, Guest Green) and assigns them without failing verifications.
+* **Dynamic Role Auto-Creation & Fuzzy Discovery**: If faculty, campus, study level, or guest roles are deleted from Discord, the bot automatically recreates them with official palette colors without failing verifications.
+* **Duplicate Role Cleanup & Migration**: Scans servers for duplicate faculty roles, migrates members to the primary role, and deletes bot-created duplicates while strictly protecting admin-created roles.
+* **SRC & Council Role Protection**: Functional student council roles (`FAFB SRC`, `FOCS SRC`, etc.) are protected from deduplication and automatically recreated if missing.
 * **Downtime Manual Grant Detection**: If an admin manually grants the `Guest(Approved)` role during maintenance, open tickets are automatically transitioned to `APPROVED` and review threads archived.
-* **Returning Student Role Restoration**: Automatically restores missing faculty roles for verified students who rejoined during maintenance or had roles stripped.
-* **Role Hierarchy Diagnostics**: Scans and warns if the bot's role is below managed faculty/guest roles.
+* **Returning Student & Alumni Role Restoration**: Automatically restores missing faculty and alumni roles for verified members who rejoined during maintenance.
+* **Network & Power Outage Watchdog**: Probes external gateway connectivity with a 5-minute debounce window and cleanly checkpoints SQLite on UPS power failure signals (`SIGPWR`).
 
 ### Automated Server Assistance
-* **Interactive Gateway Panel**: Admins can post a persistent 3-button verification panel (`/send_gateway_panel`) in the welcome channel.
+* **Interactive Gateway Panel**: Admins can post a persistent 3-button verification panel (`/admin panel`) in the welcome channel.
 * **New Member Onboarding**: When a new unverified student joins the server, the bot tags them in the welcome channel with permanent verification instructions.
 * **Smart Role Help Tips**: When an unverified user asks questions like *"How to get role"* or *"nak verify"* in support channels, the bot replies with permanent tips explaining how to verify.
 
@@ -96,6 +106,7 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 * **`/admin dashboard`** — Opens the rich interactive **TARVeri Administrator Control Center** UI (with category navigation dropdowns, diagnostics execution, channel/role pickers, unverify/revoke modals, and one-click backups).
 * **`/admin stats`** — View student verification numbers, alumni metrics, faculty distribution percentages, and server health.
 * **`/admin diagnose`** — Run role hierarchy diagnostics, duplicate role reconciliation, and auto-heal missing faculty/alumni/SRC roles.
+* **`/admin backfill_roles [default_campus] [default_level] [all_servers]`** — Batch sync and assign missing branch campus and study level roles to all verified members.
 * **`/admin unverify @user [reason]`** — Unlink a student ID and remove their faculty/alumni roles across mutual servers.
 * **`/admin alumni_revoke @user [reason]`** — Revoke Alumni status and remove the `TARUMT Alumni` role across mutual servers.
 * **`/admin set_channel [type] [channel]`** — Configure or reset the server's `welcome`, `help`, or guest `review` channels in a single command.
