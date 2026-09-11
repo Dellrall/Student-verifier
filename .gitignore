@@ -20,9 +20,10 @@ ENV/
 *.sqlite
 *.sqlite3
 
-# Log files
+# Log files & backups
 *.log
 logs/
+backups/
 
 # Testing and coverage
 .pytest_cache/

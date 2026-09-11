@@ -113,6 +113,10 @@ FONT_CANDIDATES = [
 ]
 
 
+import functools
+
+
+@functools.lru_cache(maxsize=32)
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Safely loads a TrueType font with graceful fallback to Pillow default font."""
     for path in FONT_CANDIDATES:
