@@ -1421,7 +1421,8 @@ class VerificationService:
             }
 
         # Validate year (from 1969 TAR College founding to realistic graduation window)
-        current_year = 2026
+        from datetime import datetime
+        current_year = datetime.now().year
         if graduated_year < 1969 or graduated_year > current_year + 5:
             return {
                 "success": False,
