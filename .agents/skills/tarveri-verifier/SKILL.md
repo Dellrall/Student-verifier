@@ -131,6 +131,18 @@ flowchart TD
 - **Automated Tarball Compression & Cleanup**: Bundles old logs into gzip-compressed `.tar.gz` archives in `logs/archives/`, seamlessly merging with existing archives if needed, and safely deletes uncompressed log files to conserve disk space.
 - **On-Demand Admin Management**: Inspect daily logs, archives, and manually trigger compression anytime using `/logs`.
 
+### 12. Branch Campus & Study Level Roles & Backfill Engine
+- **ID Structure Decomposition**: Parses TARUMT student IDs (`YY[B][F][L]XXXXX` e.g. `24WMD12345` or `23PMR12345`):
+  - **Branch Campuses**: `W` (KL Main Campus), `P` (Penang Branch), `A` (Perak Branch), `J` (Johor Branch), `C`/`K` (Pahang Branch), `S` (Sabah Branch).
+  - **Study Levels**: `D` (Diploma), `R` (Bachelor's Degree), `F` (Foundation), `P` (Postgraduate / Master / PhD).
+- **Atomic Multi-Role Provisioning**: When verified, students concurrently receive:
+  1. Base verification role (`TARUMT Verified` / `#16A085`)
+  2. Faculty role (e.g. `FOCS` / `#F1C40F`)
+  3. Campus role (e.g. `TARUMT KL Main Campus` / `#2980B9`, `TARUMT Penang Campus` / `#16A085`, etc.)
+  4. Study level role (e.g. `Bachelor's Degree` / `#8E44AD`, `Diploma` / `#3498DB`, `Foundation` / `#E67E22`, `Postgraduate` / `#9B59B6`)
+- **Backward Compatible Auto-Migration**: Automatically adds `campus_code` and `level_code` columns to SQLite `verifications` table.
+- **Legacy Backfill Engine**: Automatically maps legacy records without campus/level tags (defaults `W` and `R`), reconciles with existing Discord guild roles during `reconcile_verified_members()`, and provides administrative migration via `/admin backfill_roles`.
+
 ---
 
 ## 🎟️ Alphanumeric Ticket Sequencing & Smart Escalation
@@ -162,6 +174,7 @@ flowchart TD
 - `/admin dashboard` — Launches the rich interactive **TARVeri Administrator Control Center** UI with live category navigation, quick diagnostics, channel/role pickers, unverify/revoke modals, and backup triggers.
 - `/admin stats` — View student verification numbers, alumni metrics, and faculty distribution.
 - `/admin diagnose` — Run self-healing diagnostics, check role hierarchy, restore SRC roles, and reconcile missing member/alumni roles.
+- `/admin backfill_roles [default_campus] [default_level] [all_servers]` — Batch sync and assign missing branch campus and study level roles to all verified members.
 - `/admin unverify @user [reason]` — Unlink student ID and strip faculty roles across mutual servers.
 - `/admin alumni_revoke @user [reason]` — Revoke Alumni status and strip `TARUMT Alumni` role across mutual servers.
 - `/admin set_channel [type] [channel]` — Configure or reset welcome, help, or guest review channels in one command.
@@ -174,6 +187,237 @@ flowchart TD
 - `/admin resync` — Re-synchronize roles across mutual servers.
 - `/admin updates [stream]` — Check git upstream for new commits.
 - `/admin sync_commands` — Force sync application commands with Discord and clear duplicates.
+
+---
+
+## 🔮 Future Architecture & Infrastructure Plans
+
+### 1. Garage Rust-Based S3 Object Storage (Media Pipeline)
+
+```mermaid
+flowchart LR
+    subgraph TARVeri Bot Application
+        Card["CardService (/card)"] --> S3Client["MediaStorageService (aioboto3)"]
+        Ticket["GuestService (Attachments)"] --> S3Client
+        Backup["Database (/admin backup)"] --> S3Client
+    end
+
+    subgraph Self-Hosted Infrastructure
+        S3Client -->|"S3 API (:3900)"| Garage["Garage S3 Engine (Rust)"]
+        Garage --> LocalStorage["/var/lib/garage/data (NVMe / SSD)"]
+    end
+```
+
+#### Why Garage Object Storage?
+- **Ultra-Lightweight Rust Engine**: Consumes <20MB RAM vs Java/Go behemoths (MinIO), running seamlessly on modest VPS or homelab servers alongside the bot.
+- **Zero Database Bloat**: Offloads binary payloads (passport card PNGs, guest proof screenshots, identity documents, database snapshots) from SQLite/PostgreSQL, keeping relational tables lean and indexing blazing fast.
+- **S3-Compatible API**: Standard AWS S3 SDK compatibility (`aioboto3`, `boto3`, `botocore`) with bucket policies and presigned URL capabilities.
+- **Resilient Replication**: Native single-node or multi-node geo-distributed CRDT topology without external metadata dependencies.
+
+#### Target Bucket Hierarchy (`tarveri-media`)
+```
+tarveri-media/
+├── cards/
+│   └── {student_id_hash}_{theme_version}.png    # Cached rendered digital ID cards
+├── proofs/
+│   └── {ticket_seq}/{timestamp}_{random_id}.png # Guest proof screenshots & docs
+├── avatars/
+│   └── {discord_user_id}.png                   # Cached member avatars for cards
+└── backups/
+    └── db_{timestamp}.sqlite.gz                 # Compressed database snapshots
+```
+
+#### Garage Configuration (`garage.toml`)
+```toml
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+
+[rpc]
+bind_addr = "127.0.0.1:3901"
+rpc_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "127.0.0.1:3900"
+root_domain = ".s3.garage"
+```
+
+#### Provisioning & Bucket Initialization
+```bash
+# 1. Assign single-node layout
+garage layout assign -z dc1 -c 20G $(garage node id)
+garage layout apply --version 1
+
+# 2. Create media bucket and bot credentials
+garage bucket create tarveri-media
+garage key create tarveri-bot-key
+garage bucket allow --read --write --owner tarveri-media --key tarveri-bot-key
+```
+
+#### Python `MediaStorageService` Integration Pattern
+```python
+import aioboto3
+from tarveri.config import settings
+
+class MediaStorageService:
+    def __init__(self):
+        self.session = aioboto3.Session()
+        self.endpoint_url = settings.s3_endpoint_url  # e.g. "http://127.0.0.1:3900"
+        self.bucket = settings.s3_bucket_name         # "tarveri-media"
+
+    async def put_media(self, key: str, data: bytes, content_type: str = "image/png") -> str:
+        async with self.session.client(
+            "s3",
+            endpoint_url=self.endpoint_url,
+            aws_access_key_id=settings.s3_access_key,
+            aws_secret_access_key=settings.s3_secret_key,
+        ) as s3:
+            await s3.put_object(
+                Bucket=self.bucket,
+                Key=key,
+                Body=data,
+                ContentType=content_type,
+            )
+            return f"{self.endpoint_url}/{self.bucket}/{key}"
+
+    async def generate_presigned_url(self, key: str, ttl_seconds: int = 3600) -> str:
+        async with self.session.client(
+            "s3",
+            endpoint_url=self.endpoint_url,
+            aws_access_key_id=settings.s3_access_key,
+            aws_secret_access_key=settings.s3_secret_key,
+        ) as s3:
+            return await s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket, "Key": key},
+                ExpiresIn=ttl_seconds,
+            )
+```
+
+---
+
+### 2. Blue-Green Production Deployment for Discord Bots
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Deployer as Deployment Script (deploy.sh)
+    participant Inactive as Inactive Slot (Green)
+    participant Shared as Shared Volume (/opt/tarveri-shared)
+    participant Active as Active Slot (Blue)
+    participant Discord as Discord Gateway
+
+    Deployer->>Inactive: 1. Pull Git main & run pytest preflight
+    Deployer->>Active: 2. systemctl stop tarveri-blue (SIGINT)
+    Active->>Shared: 3. Flush SQLite WAL checkpoint & close DB
+    Active->>Discord: 4. Close Gateway WebSocket cleanly
+    Active-->>Deployer: 5. Active slot stopped (Process exit 0)
+    Deployer->>Inactive: 6. systemctl start tarveri-green
+    Inactive->>Shared: 7. Open bot.db in WAL mode & recover state
+    Inactive->>Discord: 8. Connect Gateway & run on_ready self-healing
+    Inactive-->>Deployer: 9. Verified online -> flip /opt/tarveri-shared/active_slot to green
+```
+
+#### The Discord Gateway Constraint
+- Unlike stateless HTTP APIs where load balancers (Nginx/Envoy) can route traffic between blue and green instances concurrently, a Discord bot maintains a **stateful, singleton Gateway WebSocket connection**.
+- Running two instances with the same bot token simultaneously triggers:
+  1. Gateway session invalidation and collision errors (`400 Bad Request`).
+  2. Duplicate event dispatching (e.g. users receiving duplicate responses and roles).
+  3. Discord API interaction timeout conflicts.
+- **Solution**: Coordinated rapid switchover where the active slot performs an immediate clean `SIGINT` shutdown (checkpointing WAL in <500ms), followed immediately by the inactive slot starting up and resuming the gateway session. Total downtime is under 2–3 seconds.
+
+#### Dual-Slot Directory Layout
+```
+/opt/
+├── tarveri-blue/                 # Blue slot application checkout
+│   ├── .venv/
+│   └── tarveri/
+├── tarveri-green/                # Green slot application checkout
+│   ├── .venv/
+│   └── tarveri/
+└── tarveri-shared/               # Persistent shared state
+    ├── active_slot               # File containing "blue" or "green"
+    ├── .env                      # Production secrets & bot token
+    ├── data/
+    │   └── bot.db                # Shared SQLite database (WAL mode)
+    └── logs/                     # Shared rotating log files
+```
+
+#### Systemd Unit Definitions
+`/etc/systemd/system/tarveri-blue.service` (and green counterpart):
+```ini
+[Unit]
+Description=TARVeri Discord Bot (Blue Slot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tarveri
+Group=tarveri
+WorkingDirectory=/opt/tarveri-blue
+EnvironmentFile=/opt/tarveri-shared/.env
+Environment=DATA_DIR=/opt/tarveri-shared/data
+Environment=LOG_DIR=/opt/tarveri-shared/logs
+ExecStart=/opt/tarveri-blue/.venv/bin/python -m tarveri
+KillSignal=SIGINT
+TimeoutStopSec=15
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
+```
+
+#### Zero-Downtime Switchover Script (`scripts/deploy_blue_green.sh`)
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SHARED_DIR="/opt/tarveri-shared"
+ACTIVE_SLOT=$(cat "$SHARED_DIR/active_slot" 2>/dev/null || echo "blue")
+
+if [ "$ACTIVE_SLOT" = "blue" ]; then
+    TARGET_SLOT="green"
+    ACTIVE_SERVICE="tarveri-blue"
+    TARGET_SERVICE="tarveri-green"
+else
+    TARGET_SLOT="blue"
+    ACTIVE_SERVICE="tarveri-green"
+    TARGET_SERVICE="tarveri-blue"
+fi
+
+TARGET_DIR="/opt/tarveri-$TARGET_SLOT"
+echo "🚀 Starting Blue-Green deployment to [$TARGET_SLOT]..."
+
+# 1. Update target codebase
+cd "$TARGET_DIR"
+git fetch origin main
+git reset --hard origin/main
+"$TARGET_DIR/.venv/bin/pip" install -r requirements.txt --quiet
+
+# 2. Run test preflight on target slot
+"$TARGET_DIR/.venv/bin/pytest" -v -W error
+
+# 3. Gracefully stop active slot (triggers WAL checkpoint & clean gateway disconnect)
+echo "⏸️ Stopping active slot [$ACTIVE_SLOT]..."
+sudo systemctl stop "$ACTIVE_SERVICE"
+
+# 4. Start target slot
+echo "▶️ Starting target slot [$TARGET_SLOT]..."
+sudo systemctl start "$TARGET_SERVICE"
+
+# 5. Verify target slot health (wait up to 10s for active state)
+sleep 3
+if sudo systemctl is-active --quiet "$TARGET_SERVICE"; then
+    echo "$TARGET_SLOT" > "$SHARED_DIR/active_slot"
+    echo "✅ Successfully switched active slot to [$TARGET_SLOT]!"
+else
+    echo "❌ Target slot failed to start! Rolling back to [$ACTIVE_SLOT]..."
+    sudo systemctl start "$ACTIVE_SERVICE"
+    exit 1
+fi
+```
 
 ---
 
