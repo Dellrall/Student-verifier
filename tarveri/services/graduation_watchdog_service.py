@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 import discord
 
-from tarveri.config import format_card_expiry_display
+from tarveri.config import format_card_expiry_display, get_configured_tz
 from tarveri.database import Database
+from tarveri.utils import parse_db_timestamp
 
 if TYPE_CHECKING:
     from tarveri.services.verification_service import VerificationService
@@ -89,7 +90,7 @@ class GraduationWatchdogService:
             "errors": 0,
         }
 
-        now_utc = datetime.now(timezone.utc)
+        now_dt = datetime.now(get_configured_tz())
         cooldown_delta = timedelta(days=self.prompt_cooldown_days)
 
         # Lazy import of StudentLifecycleResolutionView to prevent circular dependency
@@ -102,15 +103,10 @@ class GraduationWatchdogService:
 
             # Check cooldown
             if last_prompt_str:
-                try:
-                    last_prompt_dt = datetime.fromisoformat(last_prompt_str)
-                    if last_prompt_dt.tzinfo is None:
-                        last_prompt_dt = last_prompt_dt.replace(tzinfo=timezone.utc)
-                    if now_utc - last_prompt_dt < cooldown_delta:
-                        stats["skipped_cooldown"] += 1
-                        continue
-                except ValueError:
-                    pass
+                last_prompt_dt = parse_db_timestamp(last_prompt_str)
+                if last_prompt_dt and (now_dt - last_prompt_dt < cooldown_delta):
+                    stats["skipped_cooldown"] += 1
+                    continue
 
             # Fetch user
             user = self.bot.get_user(user_id)
@@ -141,7 +137,7 @@ class GraduationWatchdogService:
 
             try:
                 await user.send(embed=embed, view=view)
-                now_iso = now_utc.strftime("%Y-%m-%d %H:%M:%S")
+                now_iso = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                 await self.db.update_verification_profile(
                     discord_user_id=user_id,
                     lifecycle_prompt_status="prompted",
@@ -155,7 +151,7 @@ class GraduationWatchdogService:
                 )
                 stats["prompted"] += 1
             except discord.Forbidden:
-                now_iso = now_utc.strftime("%Y-%m-%d %H:%M:%S")
+                now_iso = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                 await self.db.update_verification_profile(
                     discord_user_id=user_id,
                     last_lifecycle_prompt_at=now_iso,

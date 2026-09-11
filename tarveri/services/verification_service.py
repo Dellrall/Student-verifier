@@ -5,6 +5,7 @@ Verification business logic, concurrency control, and cross-guild role synchroni
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import logging
 import re
 import sqlite3
@@ -38,6 +39,7 @@ from tarveri.config import (
     StudentIdInfo,
     estimate_student_card_expiry,
     format_card_expiry_display,
+    get_configured_tz,
     hash_student_id,
     mask_student_id,
     parse_card_expiry_date,
@@ -1166,8 +1168,7 @@ class VerificationService:
             summary = self.format_role_summary(sync_result) or "⚠️ Verification completed, but no roles could be assigned."
 
             # Automatically detect if the student ID intake or expiry has already passed
-            from datetime import datetime, timezone
-            today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
             if iso_expiry_date and iso_expiry_date < today_iso:
                 expiry_disp = format_card_expiry_display(iso_expiry_date)
                 summary += (

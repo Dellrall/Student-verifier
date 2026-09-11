@@ -6,6 +6,7 @@ and private thread review orchestration.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import logging
 from typing import Any
 
@@ -13,7 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from tarveri.config import FACULTY_ROLE_NAMES
+from tarveri.config import FACULTY_ROLE_NAMES, get_configured_tz
 from tarveri.database import Database
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
@@ -126,8 +127,7 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
                 details = await db.get_verification_details(interaction.user.id)
                 if details and details.get("is_alumni") == 0:
                     card_exp = details.get("card_expiry_date")
-                    from datetime import datetime, timezone
-                    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                     if card_exp and card_exp < today_iso:
                         from tarveri.cogs.verification_cog import StudentLifecycleResolutionView
                         view = StudentLifecycleResolutionView(self.verification_service, db)

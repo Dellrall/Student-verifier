@@ -4,6 +4,7 @@ Discord UI and Commands for Student Verification.
 
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 import time
 
@@ -18,6 +19,8 @@ from tarveri.config import (
     ROLE_HELP_KEYWORDS_PATTERN,
     Settings,
     format_card_expiry_display,
+    get_configured_tz,
+    now_formatted,
     parse_card_expiry_date,
 )
 from tarveri.cogs.guest_cog import VerificationGatewayView
@@ -25,7 +28,7 @@ from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
-from tarveri.utils import schedule_ttl_delete
+from tarveri.utils import parse_db_timestamp, schedule_ttl_delete
 
 logger = logging.getLogger("tarveri")
 
@@ -255,8 +258,7 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
                 details = await self.service.db.get_verification_details(interaction.user.id)
                 if details and details.get("is_alumni") == 0:
                     card_exp = details.get("card_expiry_date")
-                    from datetime import datetime, timezone
-                    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                     if card_exp and card_exp < today_iso:
                         view = StudentLifecycleResolutionView(self.service, self.service.db)
             except Exception:
@@ -315,8 +317,7 @@ class VerificationCog(commands.Cog, name="Verification"):
                     details = await self.db.get_verification_details(interaction.user.id)
                     if details and details.get("is_alumni") == 0:
                         card_exp = details.get("card_expiry_date")
-                        from datetime import datetime, timezone
-                        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                        today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                         if card_exp and card_exp < today_iso:
                             view = StudentLifecycleResolutionView(self.service, self.db)
                 except Exception:
@@ -706,8 +707,9 @@ class VerificationCog(commands.Cog, name="Verification"):
         if not card_expiry:
             return
 
-        from datetime import datetime, timezone
-        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        from datetime import datetime, timedelta
+        now_dt = datetime.now(get_configured_tz())
+        today_iso = now_dt.strftime("%Y-%m-%d")
         if card_expiry >= today_iso:
             return
 
@@ -719,15 +721,9 @@ class VerificationCog(commands.Cog, name="Verification"):
         # Check DB prompt cooldown (7 days)
         last_prompt_str = details.get("last_lifecycle_prompt_at")
         if last_prompt_str:
-            try:
-                from datetime import timedelta
-                last_prompt_dt = datetime.fromisoformat(last_prompt_str)
-                if last_prompt_dt.tzinfo is None:
-                    last_prompt_dt = last_prompt_dt.replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) - last_prompt_dt < timedelta(days=7):
-                    return
-            except ValueError:
-                pass
+            last_prompt_dt = parse_db_timestamp(last_prompt_str)
+            if last_prompt_dt and (now_dt - last_prompt_dt < timedelta(days=7)):
+                return
 
         expiry_disp = format_card_expiry_display(card_expiry)
         embed = discord.Embed(
@@ -745,7 +741,7 @@ class VerificationCog(commands.Cog, name="Verification"):
         embed.set_footer(text="TARVeri Academic Lifecycle Engine • Click an option below to update")
         view = StudentLifecycleResolutionView(self.service, self.db)
 
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now_iso = now_dt.strftime("%Y-%m-%d %H:%M:%S")
         try:
             await message.author.send(embed=embed, view=view)
             await self.db.update_verification_profile(
@@ -791,8 +787,7 @@ class VerificationCog(commands.Cog, name="Verification"):
                             details = await self.db.get_verification_details(message.author.id)
                             if details and details.get("is_alumni") == 0:
                                 card_exp = details.get("card_expiry_date")
-                                from datetime import datetime, timezone
-                                today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                                today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                                 if card_exp and card_exp < today_iso:
                                     view = StudentLifecycleResolutionView(self.service, self.db)
                         except Exception:
