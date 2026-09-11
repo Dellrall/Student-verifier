@@ -52,6 +52,7 @@ class AlumniClaimModal(discord.ui.Modal, title="TARUMT Alumni Transition"):
     def __init__(self, service: VerificationService):
         super().__init__()
         self.service = service
+        self.grad_year.placeholder = f"e.g. {datetime.now().year}"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=False, thinking=True)
@@ -60,7 +61,7 @@ class AlumniClaimModal(discord.ui.Modal, title="TARUMT Alumni Transition"):
             year_int = int(raw_year)
         except ValueError:
             await interaction.followup.send(
-                "❌ Please enter a valid 4-digit graduation year (e.g. 2025).",
+                f"❌ Please enter a valid 4-digit graduation year (e.g. {datetime.now().year}).",
                 ephemeral=True,
             )
             return
@@ -112,6 +113,9 @@ class FurtherStudyTransitionModal(discord.ui.Modal, title="TARUMT Level Progress
     def __init__(self, service: VerificationService):
         super().__init__()
         self.service = service
+        current_yy = str(datetime.now().year)[-2:]
+        self.student_id.placeholder = f"e.g. {current_yy}WMR12345"
+        self.card_expiry.placeholder = f"e.g. 10/{(int(current_yy) + 3) % 100:02d} (Optional)"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -128,7 +132,7 @@ class FurtherStudyTransitionModal(discord.ui.Modal, title="TARUMT Level Progress
 class ExtendExpiryModal(discord.ui.Modal, title="Extend Student Card Validity"):
     expiry_date = discord.ui.TextInput(
         label="New Student Card Expiry Date (MM/YY)",
-        placeholder="e.g. 05/27",
+        placeholder="e.g. MM/YY",
         min_length=4,
         max_length=10,
         required=True,
@@ -144,14 +148,17 @@ class ExtendExpiryModal(discord.ui.Modal, title="Extend Student Card Validity"):
         super().__init__()
         self.db = db
         self.service = service
+        current_yy = str(datetime.now().year)[-2:]
+        self.expiry_date.placeholder = f"e.g. 10/{(int(current_yy) + 1) % 100:02d}"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         raw_val = self.expiry_date.value.strip()
         iso_date = parse_card_expiry_date(raw_val)
         if not iso_date:
+            current_yy = str(datetime.now().year)[-2:]
             await interaction.followup.send(
-                "❌ Invalid date format. Please use `MM/YY` (e.g. `05/27`) or `YYYY-MM-DD`.",
+                f"❌ Invalid date format. Please use `MM/YY` (e.g. `10/{(int(current_yy) + 1) % 100:02d}`) or `YYYY-MM-DD`.",
                 ephemeral=True,
             )
             return
@@ -227,14 +234,14 @@ class StudentLifecycleResolutionView(discord.ui.View):
 class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verification"):
     student_id = discord.ui.TextInput(
         label="Student ID",
-        placeholder="e.g. 23WMD09867",
+        placeholder="e.g. 24WMD09867",
         min_length=7,
         max_length=20,
         required=True,
     )
     card_expiry = discord.ui.TextInput(
         label="Student Card Expiry Date (MM/YY)",
-        placeholder="e.g. 10/26 (Optional)",
+        placeholder="e.g. MM/YY (Optional)",
         min_length=4,
         max_length=10,
         required=False,
@@ -243,6 +250,9 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
     def __init__(self, service: VerificationService):
         super().__init__()
         self.service = service
+        current_yy = str(datetime.now().year)[-2:]
+        self.student_id.placeholder = f"e.g. {current_yy}WMD09867"
+        self.card_expiry.placeholder = f"e.g. 10/{(int(current_yy) + 2) % 100:02d} (Optional)"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -357,7 +367,7 @@ class VerificationCog(commands.Cog, name="Verification"):
         description="Claim your official TARUMT Alumni status and unlock the Alumni role & card badge.",
     )
     @app_commands.describe(
-        year="Your graduation year (e.g. 2025). Leave blank to open input form.",
+        year="Your 4-digit graduation year. Leave blank to open input form.",
         programme="Your completed programme / degree (optional, e.g. Bachelor of Software Engineering)",
     )
     async def graduate_slash(

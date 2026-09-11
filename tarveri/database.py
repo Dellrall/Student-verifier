@@ -291,6 +291,9 @@ class Database:
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_verifications_expiry ON verifications(card_expiry_date);"
         )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_verifications_expiry_alumni ON verifications(is_alumni, card_expiry_date);"
+        )
 
         # 5. One-time data migration: Backfill legacy verifications missing campus_code to 'W' (KL Main Campus)
         try:

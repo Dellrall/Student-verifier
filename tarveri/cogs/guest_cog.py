@@ -113,6 +113,9 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
     def __init__(self, verification_service: VerificationService) -> None:
         super().__init__()
         self.verification_service = verification_service
+        current_yy = str(datetime.now().year)[-2:]
+        self.student_id.placeholder = f"e.g. {current_yy}WMD09867 or {int(current_yy)-1:02d}PMR12345"
+        self.card_expiry.placeholder = f"e.g. 10/{(int(current_yy) + 2) % 100:02d} (Optional)"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
