@@ -17,6 +17,8 @@ from tarveri.config import (
     GUEST_ROLE_PATTERN,
     ROLE_HELP_KEYWORDS_PATTERN,
     Settings,
+    format_card_expiry_display,
+    parse_card_expiry_date,
 )
 from tarveri.cogs.guest_cog import VerificationGatewayView
 from tarveri.database import Database
@@ -36,6 +38,13 @@ class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
         max_length=20,
         required=True,
     )
+    card_expiry = discord.ui.TextInput(
+        label="Student Card Expiry Date (MM/YY)",
+        placeholder="e.g. 10/26 (Optional)",
+        min_length=4,
+        max_length=10,
+        required=False,
+    )
 
     def __init__(self, service: VerificationService):
         super().__init__()
@@ -43,9 +52,145 @@ class VerificationModal(discord.ui.Modal, title="TARUMT Verification"):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        response_text = await self.service.perform_verification(interaction.user, self.student_id.value)
+        raw_expiry = self.card_expiry.value.strip() if self.card_expiry.value else None
+        response_text = await self.service.perform_verification(
+            interaction.user,
+            self.student_id.value,
+            raw_expiry_date=raw_expiry,
+        )
         await interaction.followup.send(response_text, ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
+
+
+class FurtherStudyTransitionModal(discord.ui.Modal, title="TARUMT Level Progression"):
+    student_id = discord.ui.TextInput(
+        label="New Student ID",
+        placeholder="e.g. 24WMR12345",
+        min_length=7,
+        max_length=20,
+        required=True,
+    )
+    card_expiry = discord.ui.TextInput(
+        label="New Student Card Expiry (MM/YY)",
+        placeholder="e.g. 10/28 (Optional)",
+        min_length=4,
+        max_length=10,
+        required=False,
+    )
+
+    def __init__(self, service: VerificationService):
+        super().__init__()
+        self.service = service
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        raw_expiry = self.card_expiry.value.strip() if self.card_expiry.value else None
+        response_text = await self.service.perform_verification(
+            interaction.user,
+            self.student_id.value,
+            raw_expiry_date=raw_expiry,
+        )
+        await interaction.followup.send(response_text, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=90.0)
+
+
+class ExtendExpiryModal(discord.ui.Modal, title="Extend Student Card Validity"):
+    expiry_date = discord.ui.TextInput(
+        label="New Student Card Expiry Date (MM/YY)",
+        placeholder="e.g. 05/27",
+        min_length=4,
+        max_length=10,
+        required=True,
+    )
+    note = discord.ui.TextInput(
+        label="Extension Reason (Optional)",
+        placeholder="e.g. Final year project extension / Delayed semester",
+        max_length=100,
+        required=False,
+    )
+
+    def __init__(self, db: Database, service: VerificationService):
+        super().__init__()
+        self.db = db
+        self.service = service
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        raw_val = self.expiry_date.value.strip()
+        iso_date = parse_card_expiry_date(raw_val)
+        if not iso_date:
+            await interaction.followup.send(
+                "❌ Invalid date format. Please use `MM/YY` (e.g. `05/27`) or `YYYY-MM-DD`.",
+                ephemeral=True,
+            )
+            return
+
+        await self.db.update_verification_profile(
+            discord_user_id=interaction.user.id,
+            card_expiry_date=iso_date,
+            lifecycle_prompt_status="extended",
+        )
+        guild = interaction.guild
+        note_str = f" ({self.note.value.strip()})" if self.note.value and self.note.value.strip() else ""
+        await self.db.log(
+            "INFO",
+            "EXPIRY_EXTENDED",
+            f"{interaction.user} (ID: {interaction.user.id}) extended card expiry to {iso_date}{note_str}",
+            user_id=interaction.user.id,
+            guild=guild,
+        )
+        display_str = format_card_expiry_display(iso_date)
+        await interaction.followup.send(
+            f"✅ **Student Card Validity Extended!**\n"
+            f"Your new card expiry is set to **{display_str}**.\n"
+            f"Your Digital Campus Card (`/card`) has been updated.",
+            ephemeral=True,
+        )
+        schedule_ttl_delete(interaction, delay=60.0)
+
+
+class StudentLifecycleResolutionView(discord.ui.View):
+    """Interactive persistent view presented to students whose card expiry is reached."""
+
+    def __init__(
+        self,
+        service: VerificationService,
+        db: Database,
+        timeout: float | None = None,
+    ):
+        super().__init__(timeout=timeout)
+        self.service = service
+        self.db = db
+
+    @discord.ui.button(
+        label="I have Graduated",
+        style=discord.ButtonStyle.success,
+        emoji="🎓",
+        custom_id="tarveri_lifecycle_graduated",
+        row=0,
+    )
+    async def on_graduated(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(AlumniClaimModal(self.service))
+
+    @discord.ui.button(
+        label="Further Studies at TARUMT",
+        style=discord.ButtonStyle.primary,
+        emoji="📚",
+        custom_id="tarveri_lifecycle_further_study",
+        row=0,
+    )
+    async def on_further_study(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(FurtherStudyTransitionModal(self.service))
+
+    @discord.ui.button(
+        label="Still Studying / Extension",
+        style=discord.ButtonStyle.secondary,
+        emoji="⏳",
+        custom_id="tarveri_lifecycle_extend",
+        row=0,
+    )
+    async def on_extend(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ExtendExpiryModal(self.db, self.service))
 
 
 class AlumniClaimModal(discord.ui.Modal, title="TARUMT Alumni Transition"):
@@ -125,6 +270,7 @@ class VerificationCog(commands.Cog, name="Verification"):
         self.settings = settings or getattr(bot, "settings", None)
         self.guest_service = guest_service or getattr(bot, "guest_service", None)
         self._tip_cooldowns: dict[int, float] = {}
+        self._lifecycle_cooldowns: dict[int, float] = {}
         self._guild_channels_cache: dict[int, tuple[int | None, int | None]] = {}
 
     @app_commands.command(
@@ -132,13 +278,21 @@ class VerificationCog(commands.Cog, name="Verification"):
         description="Verify your TARUMT student status and receive your faculty role.",
     )
     @app_commands.describe(
-        student_id="Your TARUMT student ID (e.g. 23WMD09867). Leave blank to open input window."
+        student_id="Your TARUMT student ID (e.g. 23WMD09867). Leave blank to open input window.",
+        expiry_date="Student Card Expiry Date (MM/YY, e.g. 10/26, optional)",
     )
-    async def verify_slash(self, interaction: discord.Interaction, student_id: str | None = None) -> None:
+    async def verify_slash(
+        self,
+        interaction: discord.Interaction,
+        student_id: str | None = None,
+        expiry_date: str | None = None,
+    ) -> None:
         """Slash command for verification with optional direct input or modal prompt."""
         if student_id:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            response_text = await self.service.perform_verification(interaction.user, student_id)
+            response_text = await self.service.perform_verification(
+                interaction.user, student_id, raw_expiry_date=expiry_date
+            )
             await interaction.followup.send(response_text, ephemeral=True)
             schedule_ttl_delete(interaction, delay=60.0)
             return
@@ -153,8 +307,10 @@ class VerificationCog(commands.Cog, name="Verification"):
                 interaction.user.id, FACULTY_ROLES[stored_faculty], mutual_guilds
             )
             summary = self.service.format_role_summary(result)
+            msg = summary or "ℹ️ You're already verified and up to date in every server I share with you."
+            msg += "\n💡 *If you are progressing to a new study level (e.g. Diploma -> Degree), run `/verify student_id:<your_new_id>` to transition.*"
             await interaction.followup.send(
-                summary or "ℹ️ You're already verified and up to date in every server I share with you.",
+                msg,
                 ephemeral=True,
             )
             schedule_ttl_delete(interaction, delay=60.0)
@@ -499,6 +655,85 @@ class VerificationCog(commands.Cog, name="Verification"):
                 user_id=member.id,
             )
 
+    async def handle_expired_student_activity(self, message: discord.Message) -> None:
+        """Checks if an active student has an expired student card and needs a lifecycle resolution prompt."""
+        if not message.author or message.author.bot or message.guild is None:
+            return
+
+        now = time.monotonic()
+        last_time = self._lifecycle_cooldowns.get(message.author.id, 0.0)
+        # In-memory cooldown: 1 day per user session
+        if now - last_time < 86400.0:
+            return
+
+        details = await self.db.get_verification_details(message.author.id)
+        if not details or details.get("is_alumni") == 1:
+            return
+
+        card_expiry = details.get("card_expiry_date")
+        if not card_expiry:
+            return
+
+        from datetime import datetime, timezone
+        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if card_expiry >= today_iso:
+            return
+
+        # Expired! Record in-memory cooldown
+        self._lifecycle_cooldowns[message.author.id] = now
+        if len(self._lifecycle_cooldowns) > 1000:
+            self._lifecycle_cooldowns = {uid: t for uid, t in self._lifecycle_cooldowns.items() if now - t < 86400.0}
+
+        # Check DB prompt cooldown (7 days)
+        last_prompt_str = details.get("last_lifecycle_prompt_at")
+        if last_prompt_str:
+            try:
+                from datetime import timedelta
+                last_prompt_dt = datetime.fromisoformat(last_prompt_str)
+                if last_prompt_dt.tzinfo is None:
+                    last_prompt_dt = last_prompt_dt.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) - last_prompt_dt < timedelta(days=7):
+                    return
+            except ValueError:
+                pass
+
+        expiry_disp = format_card_expiry_display(card_expiry)
+        embed = discord.Embed(
+            title="🎓 TARUMT Student Card Expiry & Academic Status Confirmation",
+            description=(
+                f"Hello {message.author.mention}!\n\n"
+                f"According to TARVeri records, your TARUMT student card reached its validity date (**{expiry_disp}**).\n\n"
+                "Please confirm your current academic status:\n\n"
+                "• 🎓 **I have Graduated:** Claim your official **TARUMT Alumni** role & card badge.\n"
+                "• 📚 **Further Studies at TARUMT:** Progressing to Degree / Masters? Update your student ID & study level.\n"
+                "• ⏳ **Still Studying / Extension:** Extending semester or final year project? Update your card expiry date."
+            ),
+            color=discord.Color.from_rgb(212, 175, 55),
+        )
+        embed.set_footer(text="TARVeri Academic Lifecycle Engine • Click an option below to update")
+        view = StudentLifecycleResolutionView(self.service, self.db)
+
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            await message.author.send(embed=embed, view=view)
+            await self.db.update_verification_profile(
+                discord_user_id=message.author.id,
+                lifecycle_prompt_status="prompted",
+                last_lifecycle_prompt_at=now_iso,
+            )
+            await self.db.log(
+                "INFO",
+                "GRADUATION_PROMPT_SENT",
+                f"Sent on-active-chat lifecycle prompt to {message.author} (ID: {message.author.id}, card expired: {expiry_disp})",
+                user_id=message.author.id,
+                guild=message.guild,
+            )
+        except discord.Forbidden:
+            await self.db.update_verification_profile(
+                discord_user_id=message.author.id,
+                last_lifecycle_prompt_at=now_iso,
+            )
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         """Handles student ID messages in direct messages (DMs) and role tips in help channels."""
@@ -514,6 +749,7 @@ class VerificationCog(commands.Cog, name="Verification"):
         else:
             if isinstance(message.channel, discord.TextChannel) and await self.is_help_channel(message.channel):
                 await self.handle_help_channel_message(message)
+            await self.handle_expired_student_activity(message)
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:

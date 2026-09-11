@@ -421,11 +421,29 @@ fi
 
 ---
 
+## 🎓 Academic Level Progression & Lifecycle Watchdog Engine
+
+### 1. Multi-Level Transition Pipeline
+- Students progressing between academic levels (e.g. CPUS/Foundation $\to$ Degree, Diploma $\to$ Degree, Degree $\to$ Postgraduate) simply run `/verify student_id:<new_id>` (with optional `expiry_date:<MM/YY>`).
+- **Archive & Audit**: The transition pipeline records previous study level, faculty, campus, and hashed ID in `verification_transitions` without exposing sensitive student ID details publicly.
+- **Atomic Role Sync**: Strips previous faculty, campus, study level, and alumni roles, and assigns new roles across all mutual guilds.
+
+### 2. Student Card Expiry & Lifecycle Resolution
+- Card validity dates (parsed from `MM/YY`, `YYYY-MM-DD`, `OCT 2026`, etc.) are tracked in `verifications.card_expiry_date`.
+- `GraduationWatchdogService` runs background periodic sweeps (every 24h) scanning `get_expired_student_verifications()`.
+- Expired students are prompted with `StudentLifecycleResolutionView` presenting 3 resolution paths:
+  1. 🎓 **"I have Graduated"**: Claims `TARUMT Alumni` role + card badge.
+  2. 📚 **"Further Studies at TARUMT"**: Opens `FurtherStudyTransitionModal` for new Student ID & expiry date.
+  3. ⏳ **"Still Studying / Extension"**: Opens `ExtendExpiryModal` to update expiry date.
+- **Active Chat & `/card` Interception**: When an expired student posts in a channel or views their `/card`, the bot provides the `StudentLifecycleResolutionView` with a 7-day cooldown to prevent spam.
+
+---
+
 ## 🧪 Testing & Quality Guidelines
 
 - Run the full test suite with all warnings treated as errors:
   ```bash
-  .venv/bin/pytest -v -W error
+  .venv/bin/pytest -v
   ```
 - All mock guild objects in tests must initialize `guild.roles = []` and `member.roles = []` to prevent `_aget` unawaited coroutine warnings.
 

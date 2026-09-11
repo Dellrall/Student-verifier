@@ -25,7 +25,9 @@ from tarveri.config import (
     GUEST_ROLE_COLOR,
     STUDY_LEVEL_ROLE_NAMES,
     STUDY_LEVEL_ROLES,
+    format_card_expiry_display,
     get_configured_tz,
+    parse_card_expiry_date,
 )
 from tarveri.database import Database
 from tarveri.utils import parse_db_timestamp
@@ -246,11 +248,13 @@ class CardService:
         # Campus cohort string and dynamic branch/level detection
         campus_name = None
         level_name = None
+        card_expiry_date = None
         if is_verified_student:
             details = await self.db.get_verification_details(user_id)
             if details:
                 c_code = details.get("campus_code")
                 l_code = details.get("level_code")
+                card_expiry_date = details.get("card_expiry_date")
                 if c_code:
                     campus_name = CAMPUS_ROLES.get(c_code)
                 if l_code:
@@ -274,6 +278,12 @@ class CardService:
                         break
                 if level_name:
                     break
+
+        expiry_display = format_card_expiry_display(card_expiry_date)
+        is_card_expired = False
+        if card_expiry_date:
+            today_str = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
+            is_card_expired = card_expiry_date <= today_str
 
         if is_alumni:
             cohort_str = f"Class of {graduated_year} • {faculty_name} Alumni" if graduated_year else f"{faculty_name} Alumni"
@@ -304,6 +314,9 @@ class CardService:
             "verified_at": verified_date_str,
             "joined_at": joined_str,
             "cohort_str": cohort_str,
+            "card_expiry_date": card_expiry_date,
+            "expiry_display": expiry_display,
+            "is_card_expired": is_card_expired,
             "guild_name": guild.name if guild else "TARUMT Community",
             "badges": badges[:6],  # Allow up to 6 badges
         }

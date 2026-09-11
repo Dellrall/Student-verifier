@@ -14,11 +14,12 @@ from discord.ext import commands
 from tarveri.cogs.admin_cog import AdminCog
 from tarveri.cogs.card_cog import CardCog
 from tarveri.cogs.guest_cog import GuestCog, GuestReviewThreadView, VerificationGatewayView
-from tarveri.cogs.verification_cog import VerificationCog
+from tarveri.cogs.verification_cog import StudentLifecycleResolutionView, VerificationCog
 from tarveri.config import Settings, setup_logger
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.card_service import CardService
+from tarveri.services.graduation_watchdog_service import GraduationWatchdogService
 from tarveri.services.guest_service import GuestService
 from tarveri.services.log_service import LogRotationService
 from tarveri.services.outage_service import OutageService
@@ -60,6 +61,17 @@ class TARVeriBot(commands.Bot):
         self.card_service = CardService(
             db=self.db,
             admin_role_name=settings.admin_role_name,
+        )
+        self.graduation_watchdog = (
+            GraduationWatchdogService(
+                bot=self,
+                db=self.db,
+                verification_service=self.service,
+                interval_hours=settings.graduation_check_interval_hours,
+                prompt_cooldown_days=settings.graduation_prompt_cooldown_days,
+            )
+            if settings.enable_graduation_watchdog
+            else None
         )
         self.update_checker = (
             UpdateCheckerService(
@@ -142,12 +154,14 @@ class TARVeriBot(commands.Bot):
                 bot=self,
                 db=self.db,
                 card_service=self.card_service,
+                verification_service=self.service,
             )
         )
 
         # Register persistent views so buttons work across bot reboots
         self.add_view(VerificationGatewayView(self.service, self.guest_service))
         self.add_view(GuestReviewThreadView(self.guest_service))
+        self.add_view(StudentLifecycleResolutionView(self.service, self.db))
 
         # Launch non-blocking background command sync so bot connects to gateway immediately
         self._cmd_sync_task = asyncio.create_task(
@@ -166,6 +180,9 @@ class TARVeriBot(commands.Bot):
 
         if self.log_rotator:
             self.log_rotator.start()
+
+        if self.graduation_watchdog:
+            self.graduation_watchdog.start()
 
     async def on_disconnect(self) -> None:
         logger.debug("Discord gateway connection lost (disconnect event).")
@@ -251,6 +268,9 @@ class TARVeriBot(commands.Bot):
 
         if self.guest_service:
             self.guest_service.stop_escalation_task()
+
+        if self.graduation_watchdog:
+            self.graduation_watchdog.stop()
 
         try:
             if self.db.is_connected:

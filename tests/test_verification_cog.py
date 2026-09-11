@@ -378,8 +378,15 @@ async def test_verify_slash_direct_argument(mock_bot, mock_service, mock_rate_li
     # Invoking with student_id directly
     await cog.verify_slash.callback(cog, interaction, student_id="23WMD09867")
     interaction.response.defer.assert_called_once()
-    mock_service.perform_verification.assert_called_once_with(interaction.user, "23WMD09867")
+    mock_service.perform_verification.assert_called_once_with(interaction.user, "23WMD09867", raw_expiry_date=None)
     interaction.followup.send.assert_called_once_with("✅ Verified successfully", ephemeral=True)
+
+    # Invoking with student_id and expiry_date
+    mock_service.perform_verification.reset_mock()
+    interaction.response.defer.reset_mock()
+    interaction.followup.send.reset_mock()
+    await cog.verify_slash.callback(cog, interaction, student_id="23WMD09867", expiry_date="10/26")
+    mock_service.perform_verification.assert_called_once_with(interaction.user, "23WMD09867", raw_expiry_date="10/26")
 
     await db.close()
 

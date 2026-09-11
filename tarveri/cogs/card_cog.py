@@ -11,18 +11,27 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from tarveri.cogs.verification_cog import StudentLifecycleResolutionView
 from tarveri.database import Database
 from tarveri.services.card_service import CardService
+from tarveri.services.verification_service import VerificationService
 from tarveri.utils import schedule_ttl_delete
 
 logger = logging.getLogger("tarveri")
 
 
 class CardCog(commands.Cog, name="CampusCard"):
-    def __init__(self, bot: discord.Client, db: Database, card_service: CardService):
+    def __init__(
+        self,
+        bot: discord.Client,
+        db: Database,
+        card_service: CardService,
+        verification_service: VerificationService | None = None,
+    ):
         self.bot = bot
         self.db = db
         self.card_service = card_service
+        self.verification_service = verification_service
 
         # Register User Context Menu command (Right-click Member -> Apps -> View Campus Card)
         self.context_menu = app_commands.ContextMenu(
@@ -76,7 +85,15 @@ class CardCog(commands.Cog, name="CampusCard"):
             embed.set_image(url=f"attachment://tarveri_card_{target_member.id}.png")
             embed.set_footer(text="TARVeri Digital Student & Guest Passport • Official Verification")
 
-            await interaction.followup.send(embed=embed, file=file, ephemeral=ephemeral)
+            view = None
+            if card_data.get("is_card_expired") and target_member.id == interaction.user.id and self.verification_service:
+                view = StudentLifecycleResolutionView(self.verification_service, self.db)
+                embed.description = "⚠️ **Student Card Validity Expired.** Please choose an option below to update your status:"
+
+            if view is not None:
+                await interaction.followup.send(embed=embed, file=file, view=view, ephemeral=ephemeral)
+            else:
+                await interaction.followup.send(embed=embed, file=file, ephemeral=ephemeral)
 
             if ephemeral:
                 schedule_ttl_delete(interaction, delay=180.0)

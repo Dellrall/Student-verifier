@@ -158,7 +158,7 @@ async def test_perform_verification_unknown_faculty_code(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_perform_verification_account_already_verified_different_id(tmp_path):
+async def test_perform_verification_account_already_verified_academic_transition(tmp_path):
     bot = MagicMock()
     db = Database(str(tmp_path / "different_id_test.db"))
     await db.connect()
@@ -169,15 +169,35 @@ async def test_perform_verification_account_already_verified_different_id(tmp_pa
     user_id = 66666
     old_id = "23WMD09867"
     old_hash = hash_student_id(old_id, secret)
-    await db.record_verification(user_id, old_hash, "M")
+    await db.record_verification(user_id, old_hash, "M", campus_code="W", level_code="D")
 
     user = MagicMock()
     user.id = user_id
     user.__str__.return_value = "User#6666"
 
-    # User attempts to verify under a different valid student ID
-    response = await service.perform_verification(user, "23WKD11111")
-    assert "already verified under a different student ID" in response
+    # User attempts to transition to Degree (23WMR11111)
+    response = await service.perform_verification(user, "23WMR11111", raw_expiry_date="10/26")
+    assert "Academic Level Progression Successful" in response
+    assert "FOCS" in response
+    assert "Degree" in response
+
+    # Transitions record exists
+    transitions = await db.get_academic_transitions_for_user(user_id)
+    assert len(transitions) == 1
+    assert transitions[0]["from_id_hash"] == old_hash
+    assert transitions[0]["to_level_code"] == "R"
+
+    # Verifications table is updated
+    updated = await db.get_verification_details(user_id)
+    assert updated["level_code"] == "R"
+    assert updated["card_expiry_date"] == "2026-10-31"
+
+    # Now another user (user_id 99999) tries to verify with the same student ID (23WMR11111) -> should fail as duplicate
+    user2 = MagicMock()
+    user2.id = 99999
+    user2.__str__.return_value = "User#9999"
+    response2 = await service.perform_verification(user2, "23WMR11111")
+    assert "already been used to verify a different Discord account" in response2
 
     await db.close()
 
@@ -1158,7 +1178,7 @@ async def test_perform_verification_when_student_has_conflicting_faculty_role(tm
         assert "FOCS" in response
 
         # Conflicting wrong role removed
-        member.remove_roles.assert_called_once_with(wrong_role, reason="TARVeri: Reconcile faculty role mismatch")
+        member.remove_roles.assert_called_once_with(wrong_role, reason="TARVeri: Reconcile faculty/campus/level role mismatch")
 
         # Correct roles added
         member.add_roles.assert_called_once_with(focs_role, camp_role, lvl_role, reason="TARVeri: Student verification role assignment")

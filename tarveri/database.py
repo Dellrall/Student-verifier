@@ -192,6 +192,21 @@ class Database:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS verification_transitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                discord_user_id INTEGER NOT NULL,
+                from_id_hash TEXT NOT NULL,
+                from_faculty_code TEXT NOT NULL,
+                from_campus_code TEXT NOT NULL,
+                from_level_code TEXT NOT NULL,
+                to_id_hash TEXT NOT NULL,
+                to_faculty_code TEXT NOT NULL,
+                to_campus_code TEXT NOT NULL,
+                to_level_code TEXT NOT NULL,
+                transitioned_at TEXT NOT NULL,
+                notes TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log(event_type);
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp);
             CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_log(user_id);
@@ -202,6 +217,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_guest_tickets_channel ON guest_tickets(channel_id);
             CREATE INDEX IF NOT EXISTS idx_guest_tickets_applicant ON guest_tickets(applicant_id);
             CREATE INDEX IF NOT EXISTS idx_bot_created_roles_guild ON bot_created_roles(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_transitions_user ON verification_transitions(discord_user_id);
             """
         )
 
@@ -252,7 +268,7 @@ class Database:
             if col not in existing_ticket_cols:
                 await self._conn.execute(f"ALTER TABLE guest_tickets ADD COLUMN {col} {col_def};")
 
-        # 4. verifications (Alumni fields + Campus & Study Level fields)
+        # 4. verifications (Alumni fields + Campus & Study Level fields + Expiry fields)
         cursor = await self._conn.execute("PRAGMA table_info(verifications);")
         existing_veri_cols = {row[1] for row in await cursor.fetchall()}
         for col, col_def in [
@@ -262,12 +278,18 @@ class Database:
             ("graduated_at", "TEXT"),
             ("campus_code", "TEXT"),
             ("level_code", "TEXT"),
+            ("card_expiry_date", "TEXT"),
+            ("lifecycle_prompt_status", "TEXT DEFAULT 'ACTIVE'"),
+            ("last_lifecycle_prompt_at", "TEXT"),
         ]:
             if col not in existing_veri_cols:
                 await self._conn.execute(f"ALTER TABLE verifications ADD COLUMN {col} {col_def};")
 
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_verifications_alumni ON verifications(is_alumni);"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_verifications_expiry ON verifications(card_expiry_date);"
         )
 
         # 5. One-time data migration: Backfill legacy verifications missing campus_code to 'W' (KL Main Campus)
@@ -580,23 +602,39 @@ class Database:
         faculty_code: str,
         campus_code: str | None = None,
         level_code: str | None = None,
+        card_expiry_date: str | None = None,
+        lifecycle_prompt_status: str = "ACTIVE",
     ) -> None:
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
         await self._conn.execute(
-            """INSERT INTO verifications (discord_user_id, student_id_hash, faculty_code, verified_at, campus_code, level_code)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (discord_user_id, student_id_hash, faculty_code, ts, campus_code, level_code),
+            """INSERT INTO verifications (
+                   discord_user_id, student_id_hash, faculty_code, verified_at,
+                   campus_code, level_code, card_expiry_date, lifecycle_prompt_status
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                discord_user_id,
+                student_id_hash,
+                faculty_code,
+                ts,
+                campus_code,
+                level_code,
+                card_expiry_date,
+                lifecycle_prompt_status,
+            ),
         )
         await self._conn.commit()
 
     async def get_verification_details(self, discord_user_id: int) -> dict[str, Any] | None:
-        """Retrieves complete verification details (faculty, campus, level, alumni status) for a user."""
+        """Retrieves complete verification details (faculty, campus, level, expiry, alumni status) for a user."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         cursor = await self._conn.execute(
-            """SELECT student_id_hash, faculty_code, verified_at, is_alumni, graduated_year, programme, graduated_at, campus_code, level_code
+            """SELECT student_id_hash, faculty_code, verified_at, is_alumni, graduated_year,
+                      programme, graduated_at, campus_code, level_code, card_expiry_date,
+                      lifecycle_prompt_status, last_lifecycle_prompt_at
                FROM verifications WHERE discord_user_id = ?""",
             (discord_user_id,),
         )
@@ -613,6 +651,9 @@ class Database:
             "graduated_at": row[6],
             "campus_code": row[7],
             "level_code": row[8],
+            "card_expiry_date": row[9],
+            "lifecycle_prompt_status": row[10] or "ACTIVE",
+            "last_lifecycle_prompt_at": row[11],
         }
 
     async def backfill_legacy_verifications(self, default_campus: str = "W") -> int:
@@ -633,8 +674,11 @@ class Database:
         discord_user_id: int,
         campus_code: str | None = None,
         level_code: str | None = None,
+        card_expiry_date: str | None = None,
+        lifecycle_prompt_status: str | None = None,
+        last_lifecycle_prompt_at: str | None = None,
     ) -> bool:
-        """Updates campus_code or level_code for an existing verified student."""
+        """Updates optional fields for an existing verified student."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         updates: list[str] = []
@@ -645,6 +689,15 @@ class Database:
         if level_code is not None:
             updates.append("level_code = ?")
             params.append(level_code)
+        if card_expiry_date is not None:
+            updates.append("card_expiry_date = ?")
+            params.append(card_expiry_date)
+        if lifecycle_prompt_status is not None:
+            updates.append("lifecycle_prompt_status = ?")
+            params.append(lifecycle_prompt_status)
+        if last_lifecycle_prompt_at is not None:
+            updates.append("last_lifecycle_prompt_at = ?")
+            params.append(last_lifecycle_prompt_at)
         if not updates:
             return False
         params.append(discord_user_id)
@@ -652,6 +705,180 @@ class Database:
         cursor = await self._conn.execute(sql, tuple(params))
         await self._conn.commit()
         return cursor.rowcount > 0
+
+    async def record_academic_transition(
+        self,
+        discord_user_id: int,
+        from_id_hash: str,
+        from_faculty_code: str,
+        from_campus_code: str,
+        from_level_code: str,
+        to_id_hash: str,
+        to_faculty_code: str,
+        to_campus_code: str,
+        to_level_code: str,
+        notes: str | None = None,
+    ) -> int:
+        """Archives a student's previous academic level/faculty profile into transition history."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        ts = now_formatted()
+        cursor = await self._conn.execute(
+            """INSERT INTO verification_transitions (
+                   discord_user_id, from_id_hash, from_faculty_code, from_campus_code, from_level_code,
+                   to_id_hash, to_faculty_code, to_campus_code, to_level_code, transitioned_at, notes
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                discord_user_id,
+                from_id_hash,
+                from_faculty_code,
+                from_campus_code,
+                from_level_code,
+                to_id_hash,
+                to_faculty_code,
+                to_campus_code,
+                to_level_code,
+                ts,
+                notes,
+            ),
+        )
+        await self._conn.commit()
+        return cursor.lastrowid
+
+    async def get_academic_transitions_for_user(
+        self, discord_user_id: int
+    ) -> list[dict[str, Any]]:
+        """Retrieves full academic progression history for a student."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT id, discord_user_id, from_id_hash, from_faculty_code, from_campus_code, from_level_code,
+                      to_id_hash, to_faculty_code, to_campus_code, to_level_code, transitioned_at, notes
+               FROM verification_transitions
+               WHERE discord_user_id = ?
+               ORDER BY id ASC""",
+            (discord_user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "discord_user_id": r[1],
+                "from_id_hash": r[2],
+                "from_faculty_code": r[3],
+                "from_campus_code": r[4],
+                "from_level_code": r[5],
+                "to_id_hash": r[6],
+                "to_faculty_code": r[7],
+                "to_campus_code": r[8],
+                "to_level_code": r[9],
+                "transitioned_at": r[10],
+                "notes": r[11],
+            }
+            for r in rows
+        ]
+
+    async def update_verification_profile(
+        self,
+        discord_user_id: int,
+        student_id_hash: str | None = None,
+        faculty_code: str | None = None,
+        campus_code: str | None = None,
+        level_code: str | None = None,
+        card_expiry_date: str | None = None,
+        lifecycle_prompt_status: str | None = None,
+        last_lifecycle_prompt_at: str | None = None,
+    ) -> bool:
+        """Updates the active verification record during an academic level transition or lifecycle prompt update."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+
+        updates: list[str] = []
+        params: list[Any] = []
+
+        if student_id_hash is not None:
+            updates.append("student_id_hash = ?")
+            params.append(student_id_hash)
+            updates.append("is_alumni = 0")
+            updates.append("graduated_year = NULL")
+            updates.append("programme = NULL")
+            updates.append("graduated_at = NULL")
+            updates.append("verified_at = ?")
+            params.append(now_formatted())
+
+        if faculty_code is not None:
+            updates.append("faculty_code = ?")
+            params.append(faculty_code)
+
+        if campus_code is not None:
+            updates.append("campus_code = ?")
+            params.append(campus_code)
+
+        if level_code is not None:
+            updates.append("level_code = ?")
+            params.append(level_code)
+
+        if card_expiry_date is not None:
+            updates.append("card_expiry_date = ?")
+            params.append(card_expiry_date)
+
+        if lifecycle_prompt_status is not None:
+            updates.append("lifecycle_prompt_status = ?")
+            params.append(lifecycle_prompt_status)
+
+        if last_lifecycle_prompt_at is not None:
+            updates.append("last_lifecycle_prompt_at = ?")
+            params.append(last_lifecycle_prompt_at)
+
+        if not updates:
+            return False
+
+        params.append(discord_user_id)
+        sql = f"UPDATE verifications SET {', '.join(updates)} WHERE discord_user_id = ?"
+        cursor = await self._conn.execute(sql, tuple(params))
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_expired_student_verifications(
+        self, before_date: str | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Retrieves active verified students (is_alumni = 0) whose card_expiry_date is on or before before_date.
+        Defaults before_date to today (YYYY-MM-DD in Asia/Kuala_Lumpur).
+        """
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        if not before_date:
+            from tarveri.config import get_configured_tz
+            now_dt = datetime.now(get_configured_tz())
+            before_date = now_dt.strftime("%Y-%m-%d")
+
+        cursor = await self._conn.execute(
+            """SELECT discord_user_id, student_id_hash, faculty_code, campus_code, level_code,
+                      card_expiry_date, lifecycle_prompt_status, last_lifecycle_prompt_at, verified_at
+               FROM verifications
+               WHERE is_alumni = 0
+                 AND card_expiry_date IS NOT NULL
+                 AND card_expiry_date <= ?
+               ORDER BY card_expiry_date ASC""",
+            (before_date,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "discord_user_id": r[0],
+                "student_id_hash": r[1],
+                "faculty_code": r[2],
+                "campus_code": r[3],
+                "level_code": r[4],
+                "card_expiry_date": r[5],
+                "lifecycle_prompt_status": r[6] or "ACTIVE",
+                "last_lifecycle_prompt_at": r[7],
+                "verified_at": r[8],
+            }
+            for r in rows
+        ]
 
     async def record_alumni_claim(
         self,

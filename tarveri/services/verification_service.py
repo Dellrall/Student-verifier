@@ -36,6 +36,7 @@ from tarveri.config import (
     StudentIdInfo,
     hash_student_id,
     mask_student_id,
+    parse_card_expiry_date,
     parse_student_id,
     validate_student_id,
 )
@@ -685,6 +686,15 @@ class VerificationService:
         # 2. Branch Campus role (if provided)
         if campus_role_name:
             has_campus = any(self._match_campus_role_in_list([r], campus_role_name) is not None for r in member_roles)
+            conflicting_campus_roles = [
+                r for r in member_roles
+                if any(self._match_campus_role_in_list([r], c) is not None for c in CAMPUS_ROLE_NAMES if c != campus_role_name)
+            ]
+            for conf_c in conflicting_campus_roles:
+                conf_c_pos = getattr(conf_c, "position", 0)
+                if can_manage and not (isinstance(bot_pos, int) and isinstance(conf_c_pos, int) and conf_c_pos >= bot_pos):
+                    roles_to_remove.append(conf_c)
+
             if not has_campus:
                 camp_role = await self.get_or_create_campus_role(guild, campus_role_name)
                 if camp_role:
@@ -699,6 +709,15 @@ class VerificationService:
         # 3. Study Level role (if provided)
         if level_role_name:
             has_level = any(self._match_study_level_role_in_list([r], level_role_name) is not None for r in member_roles)
+            conflicting_level_roles = [
+                r for r in member_roles
+                if any(self._match_study_level_role_in_list([r], l) is not None for l in STUDY_LEVEL_ROLE_NAMES if l != level_role_name)
+            ]
+            for conf_l in conflicting_level_roles:
+                conf_l_pos = getattr(conf_l, "position", 0)
+                if can_manage and not (isinstance(bot_pos, int) and isinstance(conf_l_pos, int) and conf_l_pos >= bot_pos):
+                    roles_to_remove.append(conf_l)
+
             if not has_level:
                 lvl_role = await self.get_or_create_study_level_role(guild, level_role_name)
                 if lvl_role:
@@ -714,7 +733,7 @@ class VerificationService:
         roles_modified = False
         if roles_to_remove:
             try:
-                await member.remove_roles(*roles_to_remove, reason="TARVeri: Reconcile faculty role mismatch")
+                await member.remove_roles(*roles_to_remove, reason="TARVeri: Reconcile faculty/campus/level role mismatch")
                 roles_modified = True
             except discord.HTTPException as e:
                 logger.warning(f"Failed to remove conflicting roles for user {user_id} in '{guild.name}': {e}")
@@ -794,15 +813,119 @@ class VerificationService:
             lines.extend(f"   • **{g}** (my role needs to be moved above the faculty roles)" for g in result.failed_in)
         return "\n".join(lines)
 
-    async def perform_verification(self, user: discord.User | discord.Member, raw_student_id: str) -> str:
+    async def transition_student_level(
+        self,
+        user: discord.User | discord.Member,
+        info: StudentIdInfo,
+        new_id_hash: str,
+        raw_expiry_date: str | None = None,
+    ) -> str:
+        """
+        Executes an academic level progression for an already-verified student
+        (e.g., Foundation/CPUS -> Degree, Diploma -> Degree, Degree -> Postgraduate).
+        Archives previous academic profile into verification_transitions, updates verifications,
+        and atomically swaps roles across mutual guilds.
+        """
+        guild_ctx = getattr(user, "guild", None)
+        current_details = await self.db.get_verification_details(user.id)
+        if not current_details:
+            return "❌ Could not retrieve your current verification record to perform transition."
+
+        from_hash = current_details.get("student_id_hash", "")
+        from_faculty = current_details.get("faculty_code", "M")
+        from_campus = current_details.get("campus_code") or "W"
+        from_level = current_details.get("level_code") or "R"
+
+        to_student_id = info.student_id
+        to_faculty = info.faculty_code or "M"
+        to_campus = info.campus_code or "W"
+        to_level = info.level_code or "R"
+        to_faculty_role = info.faculty_role or FACULTY_ROLES.get(to_faculty, "FOCS")
+        to_campus_role = info.campus_role or CAMPUS_ROLES.get(to_campus, "KL Main Campus")
+        to_level_role = info.level_role or STUDY_LEVEL_ROLES.get(to_level, "Degree")
+        to_expiry_date = parse_card_expiry_date(raw_expiry_date)
+
+        from_faculty_name = FACULTY_ROLES.get(from_faculty, from_faculty)
+        from_level_name = STUDY_LEVEL_ROLES.get(from_level, from_level)
+        from_campus_name = CAMPUS_ROLES.get(from_campus, from_campus)
+
+        # 1. Archive transition in verification_transitions
+        await self.db.record_academic_transition(
+            discord_user_id=user.id,
+            from_id_hash=from_hash,
+            from_faculty_code=from_faculty,
+            from_campus_code=from_campus,
+            from_level_code=from_level,
+            to_id_hash=new_id_hash,
+            to_faculty_code=to_faculty,
+            to_campus_code=to_campus,
+            to_level_code=to_level,
+            notes=f"Academic level progression: {from_level_name} ({from_faculty_name}) -> {to_level_role} ({to_faculty_role})",
+        )
+
+        # 2. Update primary verification profile
+        await self.db.update_verification_profile(
+            discord_user_id=user.id,
+            student_id_hash=new_id_hash,
+            faculty_code=to_faculty,
+            campus_code=to_campus,
+            level_code=to_level,
+            card_expiry_date=to_expiry_date,
+        )
+
+        # 3. Strip old alumni role if member held it
+        mutual_guilds = await self.get_mutual_guilds_for_user(user.id)
+        for g in mutual_guilds:
+            member = await self.get_or_fetch_member(g, user.id)
+            if member:
+                for r in getattr(member, "roles", []):
+                    if getattr(r, "name", "") == ALUMNI_ROLE_NAME:
+                        try:
+                            await member.remove_roles(r, reason="TARVeri: Transitioned back to active student status")
+                        except discord.HTTPException:
+                            pass
+
+        # 4. Sync new roles across all mutual guilds (auto removes conflicting faculty/campus/level roles)
+        sync_result = await self.assign_role_across_guilds(
+            user.id,
+            to_faculty_role,
+            mutual_guilds,
+            campus_role_name=to_campus_role,
+            level_role_name=to_level_role,
+        )
+
+        await self.db.log(
+            "INFO",
+            "ACADEMIC_TRANSITION",
+            f"{user} (ID: {user.id}) transitioned from [{from_faculty_name} • {from_level_name}] to [{to_faculty_role} • {to_level_role}] (new masked ID: {mask_student_id(to_student_id)})",
+            user_id=user.id,
+            guild=guild_ctx,
+        )
+
+        lines = [
+            "🎉 **Academic Level Progression Successful!**",
+            f"🎓 Your status has been transitioned to **{to_faculty_role}** • **{to_level_role}** ({to_campus_role}).",
+        ]
+        if sync_result.verified_in:
+            lines.append(f"🏷️ Updated roles in: {', '.join([f'**{e[1] if len(e) == 3 else e[0]}**' for e in sync_result.verified_in])}")
+        lines.append("🪪 Your Digital Campus Card (`/card`) has been updated to reflect your new study level.")
+        return "\n".join(lines)
+
+    async def perform_verification(
+        self,
+        user: discord.User | discord.Member,
+        raw_student_id: str,
+        raw_expiry_date: str | None = None,
+    ) -> str:
         """
         Core verification pipeline:
         1. Rate limit validation
         2. In-flight race condition check
         3. Student ID format and faculty/campus/level code extraction
         4. Account / duplicate ID verification checks
-        5. Role assignment across mutual guilds
-        6. Atomic database recording with rollback on collision
+        5. Academic level progression / transition for existing students
+        6. Role assignment across mutual guilds
+        7. Atomic database recording with rollback on collision
         """
         guild_ctx = getattr(user, "guild", None)
         if self.rate_limiter.is_rate_limited(user.id):
@@ -841,6 +964,7 @@ class VerificationService:
             campus_role_name = info.campus_role
             level_code = info.level_code
             level_role_name = info.level_role
+            iso_expiry_date = parse_card_expiry_date(raw_expiry_date)
 
             id_hash = hash_student_id(student_id, self.secret)
 
@@ -849,9 +973,26 @@ class VerificationService:
             if existing_for_user:
                 stored_hash, stored_faculty, _ = existing_for_user
                 if stored_hash != id_hash:
-                    return (
-                        "ℹ️ This Discord account is already verified under a different student ID. "
-                        "If you need to change the ID on file (e.g. account transfer), contact an admin."
+                    # Academic Level Transition: check if new ID is claimed by another account
+                    existing_for_id = await self.db.get_verification_by_id_hash(id_hash)
+                    if existing_for_id and existing_for_id[0] != user.id:
+                        await self.db.log(
+                            "WARNING",
+                            "DUPLICATE_ID_ATTEMPT",
+                            f"{user} (ID: {user.id}) tried to transition to student ID (masked: {mask_student_id(student_id)}) already bound to account ID {existing_for_id[0]}",
+                            user_id=user.id,
+                            guild=guild_ctx,
+                        )
+                        return (
+                            "❌ This student ID has already been used to verify a different Discord "
+                            "account. If that wasn't you, contact an admin immediately."
+                        )
+
+                    return await self.transition_student_level(
+                        user=user,
+                        info=info,
+                        new_id_hash=id_hash,
+                        raw_expiry_date=raw_expiry_date,
                     )
 
                 mutual_guilds = await self.get_mutual_guilds_for_user(user.id)
@@ -868,6 +1009,7 @@ class VerificationService:
                         user.id,
                         campus_code=campus_code,
                         level_code=level_code,
+                        card_expiry_date=iso_expiry_date,
                     )
                 except Exception:
                     pass
@@ -911,6 +1053,7 @@ class VerificationService:
                         faculty_code,
                         campus_code=campus_code,
                         level_code=level_code,
+                        card_expiry_date=iso_expiry_date,
                     )
                     active_servers = [
                         entry[1] if len(entry) == 3 else entry[0]

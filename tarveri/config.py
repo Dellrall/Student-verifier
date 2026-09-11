@@ -354,6 +354,9 @@ class Settings:
     outage_timeout_seconds: int = 300
     outage_probe_interval_seconds: int = 15
     outage_alert_grace_seconds: int = 20
+    enable_graduation_watchdog: bool = True
+    graduation_check_interval_hours: int = 24
+    graduation_prompt_cooldown_days: int = 7
 
     @property
     def database_path(self) -> str:
@@ -513,6 +516,27 @@ class Settings:
         ).strip()
         outage_alert_grace_seconds = int(outage_grace_raw) if outage_grace_raw.isdigit() else 20
 
+        enable_grad_raw = (
+            os.getenv("TARVERI_ENABLE_GRADUATION_WATCHDOG")
+            or os.getenv("ENABLE_GRADUATION_WATCHDOG")
+            or "true"
+        ).lower().strip()
+        enable_graduation_watchdog = enable_grad_raw in ("true", "1", "yes")
+
+        grad_interval_raw = (
+            os.getenv("TARVERI_GRADUATION_CHECK_INTERVAL_HOURS")
+            or os.getenv("GRADUATION_CHECK_INTERVAL_HOURS")
+            or "24"
+        ).strip()
+        graduation_check_interval_hours = int(grad_interval_raw) if grad_interval_raw.isdigit() else 24
+
+        grad_cooldown_raw = (
+            os.getenv("TARVERI_GRADUATION_PROMPT_COOLDOWN_DAYS")
+            or os.getenv("GRADUATION_PROMPT_COOLDOWN_DAYS")
+            or "7"
+        ).strip()
+        graduation_prompt_cooldown_days = int(grad_cooldown_raw) if grad_cooldown_raw.isdigit() else 7
+
         if validate:
             if not bot_token:
                 raise RuntimeError(
@@ -546,6 +570,9 @@ class Settings:
             outage_timeout_seconds=outage_timeout_seconds,
             outage_probe_interval_seconds=outage_probe_interval_seconds,
             outage_alert_grace_seconds=outage_alert_grace_seconds,
+            enable_graduation_watchdog=enable_graduation_watchdog,
+            graduation_check_interval_hours=graduation_check_interval_hours,
+            graduation_prompt_cooldown_days=graduation_prompt_cooldown_days,
         )
 
 
@@ -784,6 +811,108 @@ def validate_student_id(raw_id: str) -> tuple[bool, str, str | None, str | None]
     """
     info = parse_student_id(raw_id)
     return info.is_valid, info.student_id, info.faculty_code, info.faculty_role
+
+
+import calendar
+
+
+def parse_card_expiry_date(raw_date: str | None) -> str | None:
+    """
+    Parses and normalizes student card expiry date strings into ISO format (YYYY-MM-DD).
+    Supports formats:
+    - MM/YY (e.g. '10/26' -> '2026-10-31')
+    - MM/YYYY (e.g. '10/2026' -> '2026-10-31')
+    - MM-YY / MM-YYYY
+    - YYYY-MM (e.g. '2026-10' -> '2026-10-31')
+    - YYYY-MM-DD (e.g. '2026-10-31')
+    - Month Year (e.g. 'OCT 2026' or 'October 2026')
+    """
+    if not raw_date:
+        return None
+
+    cleaned = raw_date.strip().upper()
+    if not cleaned:
+        return None
+
+    # 1. Check ISO full date YYYY-MM-DD
+    iso_full_match = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", cleaned)
+    if iso_full_match:
+        try:
+            year = int(iso_full_match.group(1))
+            month = int(iso_full_match.group(2))
+            day = int(iso_full_match.group(3))
+            max_days = calendar.monthrange(year, month)[1]
+            if 1 <= month <= 12 and 1 <= day <= max_days:
+                return f"{year:04d}-{month:02d}-{day:02d}"
+        except Exception:
+            return None
+
+    # 2. Check YYYY-MM
+    iso_year_month = re.match(r"^(\d{4})[-/](\d{1,2})$", cleaned)
+    if iso_year_month:
+        try:
+            year = int(iso_year_month.group(1))
+            month = int(iso_year_month.group(2))
+            if 1 <= month <= 12:
+                last_day = calendar.monthrange(year, month)[1]
+                return f"{year:04d}-{month:02d}-{last_day:02d}"
+        except Exception:
+            return None
+
+    # 3. Check MM/YY or MM/YYYY (or with hyphens/dots)
+    m_y_match = re.match(r"^(\d{1,2})[-/\.](\d{2}|\d{4})$", cleaned)
+    if m_y_match:
+        try:
+            month = int(m_y_match.group(1))
+            raw_year = int(m_y_match.group(2))
+            year = 2000 + raw_year if raw_year < 100 else raw_year
+            if 1 <= month <= 12 and 2000 <= year <= 2100:
+                last_day = calendar.monthrange(year, month)[1]
+                return f"{year:04d}-{month:02d}-{last_day:02d}"
+        except Exception:
+            return None
+
+    # 4. Check Month Name Year (e.g. 'OCT 2026', 'OCTOBER 26')
+    month_names = {
+        "JAN": 1, "JANUARY": 1,
+        "FEB": 2, "FEBRUARY": 2,
+        "MAR": 3, "MARCH": 3,
+        "APR": 4, "APRIL": 4,
+        "MAY": 5,
+        "JUN": 6, "JUNE": 6,
+        "JUL": 7, "JULY": 7,
+        "AUG": 8, "AUGUST": 8,
+        "SEP": 9, "SEPT": 9, "SEPTEMBER": 9,
+        "OCT": 10, "OCTOBER": 10,
+        "NOV": 11, "NOVEMBER": 11,
+        "DEC": 12, "DECEMBER": 12,
+    }
+    month_text_match = re.match(r"^([A-Z]{3,9})\s+(\d{2}|\d{4})$", cleaned)
+    if month_text_match:
+        m_str = month_text_match.group(1)
+        raw_year = int(month_text_match.group(2))
+        month = month_names.get(m_str)
+        year = 2000 + raw_year if raw_year < 100 else raw_year
+        if month and 2000 <= year <= 2100:
+            last_day = calendar.monthrange(year, month)[1]
+            return f"{year:04d}-{month:02d}-{last_day:02d}"
+
+    return None
+
+
+def format_card_expiry_display(iso_date: str | None) -> str | None:
+    """Formats an ISO date (YYYY-MM-DD) as 'MM/YY' for card rendering."""
+    if not iso_date:
+        return None
+    try:
+        parts = iso_date.split("-")
+        if len(parts) >= 2:
+            year_short = parts[0][-2:]
+            month = parts[1].zfill(2)
+            return f"{month}/{year_short}"
+    except Exception:
+        pass
+    return None
 
 
 
