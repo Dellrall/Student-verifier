@@ -992,6 +992,186 @@ async def test_restore_src_roles_creates_all_8_roles(tmp_path):
         await db.close()
 
 
+@pytest.mark.asyncio
+async def test_perform_verification_when_student_already_has_target_faculty_role(tmp_path):
+    """
+    Ensures that when a student manually self-assigned their target faculty role in Discord,
+    perform_verification still records their verification in the DB and renders as verified on their card.
+    """
+    from tarveri.services.card_service import CardService
+
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 12345
+    guild.name = "Pre-assigned Role Guild"
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    guild.me.top_role = MagicMock()
+
+    # Pre-existing faculty role in member.roles
+    fac_role = MagicMock(spec=discord.Role)
+    fac_role.name = "FOCS"
+    fac_role.position = 5
+    fac_role.__ge__.return_value = False
+    guild.roles = [fac_role]
+
+    camp_role = MagicMock(spec=discord.Role)
+    camp_role.name = "KL Main Campus"
+    camp_role.position = 4
+    camp_role.__ge__.return_value = False
+
+    lvl_role = MagicMock(spec=discord.Role)
+    lvl_role.name = "Diploma"
+    lvl_role.position = 3
+    lvl_role.__ge__.return_value = False
+
+    def _create_role_side_effect(**kwargs):
+        name = kwargs.get("name")
+        if name == "KL Main Campus":
+            return camp_role
+        elif name == "Diploma":
+            return lvl_role
+        r = MagicMock(spec=discord.Role)
+        r.name = name
+        r.__ge__.return_value = False
+        return r
+
+    guild.create_role = AsyncMock(side_effect=_create_role_side_effect)
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 55555
+    member.display_name = "Alex"
+    member.name = "alex_student"
+    member.roles = [fac_role]  # already has FOCS manually assigned
+    member.add_roles = AsyncMock()
+    member.remove_roles = AsyncMock()
+    member.guild_permissions.administrator = False
+    member.premium_since = None
+    member.joined_at = None
+
+    guild.get_member.return_value = member
+    bot.guilds = [guild]
+
+    db = Database(str(tmp_path / "manual_assign_test.db"))
+    await db.connect()
+    try:
+        rate_limiter = RateLimiter()
+        service = VerificationService(bot, db, "secret_key", rate_limiter)
+        card_service = CardService(db)
+
+        # 1. Before verification: card data is UNVERIFIED
+        card_before = await card_service.get_user_card_data(guild, member)
+        assert card_before["is_student"] is False
+        assert "○ UNVERIFIED" in card_before["badges"]
+
+        # 2. Perform verification with valid student ID
+        response = await service.perform_verification(member, "23WMD09867")
+        assert "KL Main Campus" in response or "officially verified" in response
+
+        # 3. Missing campus & level roles were assigned
+        member.add_roles.assert_called_once_with(camp_role, lvl_role, reason="TARVeri: Student verification role assignment")
+
+        # 4. Database MUST record verification
+        record = await db.get_verification_by_user(55555)
+        assert record is not None
+        assert record[1] == "M"
+
+        # 5. After verification: card is VERIFIED
+        card_after = await card_service.get_user_card_data(guild, member)
+        assert card_after["is_student"] is True
+        assert card_after["faculty_name"] == "FOCS"
+        assert "✓ VERIFIED" in card_after["badges"]
+        assert "✦ FOCS" in card_after["badges"]
+        assert card_after["hash_preview"].startswith("TRV-")
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_perform_verification_when_student_has_conflicting_faculty_role(tmp_path):
+    """
+    Ensures that when a student manually self-assigned the WRONG faculty role (e.g. FAFB),
+    perform_verification removes FAFB and assigns the correct FOCS role.
+    """
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 67890
+    guild.name = "Conflicting Role Guild"
+    guild.me = MagicMock()
+    guild.me.guild_permissions.manage_roles = True
+    guild.me.top_role = MagicMock()
+
+    # Wrong faculty role manually self-assigned earlier
+    wrong_role = MagicMock(spec=discord.Role)
+    wrong_role.name = "FAFB"
+    wrong_role.position = 5
+    wrong_role.__ge__.return_value = False
+
+    focs_role = MagicMock(spec=discord.Role)
+    focs_role.name = "FOCS"
+    focs_role.position = 5
+    focs_role.__ge__.return_value = False
+
+    camp_role = MagicMock(spec=discord.Role)
+    camp_role.name = "KL Main Campus"
+    camp_role.position = 4
+    camp_role.__ge__.return_value = False
+
+    lvl_role = MagicMock(spec=discord.Role)
+    lvl_role.name = "Diploma"
+    lvl_role.position = 3
+    lvl_role.__ge__.return_value = False
+
+    guild.roles = [wrong_role]
+
+    def _create_role_side_effect(**kwargs):
+        name = kwargs.get("name")
+        if name == "FOCS":
+            return focs_role
+        elif name == "KL Main Campus":
+            return camp_role
+        elif name == "Diploma":
+            return lvl_role
+        r = MagicMock(spec=discord.Role)
+        r.name = name
+        r.__ge__.return_value = False
+        return r
+
+    guild.create_role = AsyncMock(side_effect=_create_role_side_effect)
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 77777
+    member.roles = [wrong_role]
+    member.add_roles = AsyncMock()
+    member.remove_roles = AsyncMock()
+
+    guild.get_member.return_value = member
+    bot.guilds = [guild]
+
+    db = Database(str(tmp_path / "conflict_assign_test.db"))
+    await db.connect()
+    try:
+        rate_limiter = RateLimiter()
+        service = VerificationService(bot, db, "secret_key", rate_limiter)
+
+        response = await service.perform_verification(member, "23WMD09867")
+        assert "FOCS" in response
+
+        # Conflicting wrong role removed
+        member.remove_roles.assert_called_once_with(wrong_role, reason="TARVeri: Reconcile faculty role mismatch")
+
+        # Correct roles added
+        member.add_roles.assert_called_once_with(focs_role, camp_role, lvl_role, reason="TARVeri: Student verification role assignment")
+
+        # Recorded in DB
+        record = await db.get_verification_by_user(77777)
+        assert record is not None
+        assert record[1] == "M"
+    finally:
+        await db.close()
+
+
+
 
 
 

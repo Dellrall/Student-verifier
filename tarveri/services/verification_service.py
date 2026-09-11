@@ -635,21 +635,17 @@ class VerificationService:
             return
 
         member_roles = getattr(member, "roles", [])
-        already_has_faculty = False
-        existing_faculty_name = None
-        if isinstance(member_roles, (list, tuple)):
-            for r in member_roles:
-                for fac in FACULTY_ROLE_NAMES:
-                    if self._match_faculty_role_in_list([r], fac) is not None:
-                        already_has_faculty = True
-                        existing_faculty_name = getattr(r, "name", fac)
-                        break
-                if already_has_faculty:
-                    break
+        if not isinstance(member_roles, (list, tuple)):
+            member_roles = []
 
-        if already_has_faculty and not campus_role_name and not level_role_name:
-            result.already_had_role_in.append((guild.id, guild.name, existing_faculty_name or role_name))
-            return
+        # Check if member already holds the target faculty role
+        has_target_faculty = self._match_faculty_role_in_list(member_roles, role_name) is not None
+
+        # Check for any conflicting faculty roles (e.g. manually selected a different faculty role prior)
+        conflicting_faculty_roles = [
+            r for r in member_roles
+            if any(self._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES if fac != role_name)
+        ]
 
         me = getattr(guild, "me", None)
         can_manage = (
@@ -661,10 +657,11 @@ class VerificationService:
         bot_pos = getattr(bot_top_role, "position", 0) if bot_top_role else 0
 
         roles_to_add: list[discord.Role] = []
+        roles_to_remove: list[discord.Role] = []
         assigned_names: list[str] = []
 
         # 1. Primary faculty role
-        if not already_has_faculty:
+        if not has_target_faculty:
             fac_role = await self.get_or_create_faculty_role(guild, role_name)
             if not fac_role:
                 result.missing_role_in.append(guild.name)
@@ -677,7 +674,13 @@ class VerificationService:
             fac_name = getattr(fac_role, "name", None)
             assigned_names.append(fac_name if isinstance(fac_name, str) and fac_name else role_name)
         else:
-            assigned_names.append(existing_faculty_name if isinstance(existing_faculty_name, str) and existing_faculty_name else role_name)
+            assigned_names.append(role_name)
+
+        # Queue removal of conflicting faculty roles if bot has permission
+        for conf_r in conflicting_faculty_roles:
+            conf_pos = getattr(conf_r, "position", 0)
+            if can_manage and not (isinstance(bot_pos, int) and isinstance(conf_pos, int) and conf_pos >= bot_pos):
+                roles_to_remove.append(conf_r)
 
         # 2. Branch Campus role (if provided)
         if campus_role_name:
@@ -690,6 +693,8 @@ class VerificationService:
                         roles_to_add.append(camp_role)
                         camp_name = getattr(camp_role, "name", None)
                         assigned_names.append(camp_name if isinstance(camp_name, str) and camp_name else campus_role_name)
+            else:
+                assigned_names.append(campus_role_name)
 
         # 3. Study Level role (if provided)
         if level_role_name:
@@ -702,13 +707,22 @@ class VerificationService:
                         roles_to_add.append(lvl_role)
                         lvl_name = getattr(lvl_role, "name", None)
                         assigned_names.append(lvl_name if isinstance(lvl_name, str) and lvl_name else level_role_name)
+            else:
+                assigned_names.append(level_role_name)
 
-        # Perform role additions
+        # Perform role modifications
+        roles_modified = False
+        if roles_to_remove:
+            try:
+                await member.remove_roles(*roles_to_remove, reason="TARVeri: Reconcile faculty role mismatch")
+                roles_modified = True
+            except discord.HTTPException as e:
+                logger.warning(f"Failed to remove conflicting roles for user {user_id} in '{guild.name}': {e}")
+
         if roles_to_add:
             try:
                 await member.add_roles(*roles_to_add, reason="TARVeri: Student verification role assignment")
-                summary_label = ", ".join(assigned_names)
-                result.verified_in.append((guild.id, guild.name, summary_label))
+                roles_modified = True
             except discord.HTTPException as e:
                 result.failed_in.append(guild.name)
                 await self.db.log(
@@ -718,8 +732,13 @@ class VerificationService:
                     guild=guild,
                     user_id=user_id,
                 )
-        elif already_has_faculty:
-            result.already_had_role_in.append((guild.id, guild.name, existing_faculty_name or role_name))
+                return
+
+        summary_label = ", ".join(dict.fromkeys(assigned_names))
+        if roles_modified:
+            result.verified_in.append((guild.id, guild.name, summary_label))
+        elif has_target_faculty:
+            result.already_had_role_in.append((guild.id, guild.name, summary_label))
 
     async def assign_role_across_guilds(
         self,
@@ -765,6 +784,8 @@ class VerificationService:
                 f"   • **{item[1] if len(item) == 3 else item[0]}** → {item[2] if len(item) == 3 else item[1]} (unchanged)"
                 for item in result.already_had_role_in
             )
+            if not result.verified_in:
+                lines.append("✅ Your student status is now officially verified in our database.")
         if result.missing_role_in:
             lines.append("⚠️ I couldn't create/find the required role (contact an admin) in:")
             lines.extend(f"   • **{g}** (I likely need 'Manage Roles' permission there)" for g in result.missing_role_in)
@@ -881,8 +902,8 @@ class VerificationService:
                 level_role_name=level_role_name,
             )
 
-            # Only persist if role was successfully granted in at least one server
-            if sync_result.verified_in:
+            # Persist if role was granted or user already held the role in at least one server
+            if sync_result.verified_in or sync_result.already_had_role_in:
                 try:
                     await self.db.record_verification(
                         user.id,
@@ -891,11 +912,15 @@ class VerificationService:
                         campus_code=campus_code,
                         level_code=level_code,
                     )
+                    active_servers = [
+                        entry[1] if len(entry) == 3 else entry[0]
+                        for entry in (sync_result.verified_in + sync_result.already_had_role_in)
+                    ]
                     await self.db.log(
                         "INFO",
                         "VERIFIED",
                         f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}) "
-                        f"→ roles in {[entry[1] if len(entry) == 3 else entry[0] for entry in sync_result.verified_in]}",
+                        f"→ active in {active_servers}",
                         user_id=user.id,
                         guild=guild_ctx,
                     )
@@ -987,13 +1012,20 @@ class VerificationService:
             target_role_name = FACULTY_ROLES.get(faculty_code)
             has_faculty_role = False
             if target_role_name and isinstance(member_roles, (list, tuple)):
-                for r in member_roles:
-                    for fac in FACULTY_ROLE_NAMES:
-                        if self._match_faculty_role_in_list([r], fac) is not None:
-                            has_faculty_role = True
-                            break
-                    if has_faculty_role:
-                        break
+                has_faculty_role = self._match_faculty_role_in_list(member_roles, target_role_name) is not None
+
+                # Clean up any obsolete/conflicting other faculty roles
+                conflicting_fac_roles = [
+                    r for r in member_roles
+                    if any(self._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES if fac != target_role_name)
+                ]
+                for conf_r in conflicting_fac_roles:
+                    conf_pos = getattr(conf_r, "position", 0)
+                    if can_manage and not (isinstance(bot_pos, int) and isinstance(conf_pos, int) and conf_pos >= bot_pos):
+                        try:
+                            await member.remove_roles(conf_r, reason="TARVeri: Self-healing faculty role mismatch")
+                        except discord.HTTPException:
+                            pass
 
             if not has_faculty_role and target_role_name:
                 target_role = await self.get_or_create_faculty_role(guild, target_role_name)
