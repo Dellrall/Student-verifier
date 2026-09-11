@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import subprocess
 
 import discord
@@ -68,7 +69,10 @@ class UpdateCheckerService:
         Returns (is_update_available, behind_count, local_hash, remote_hash, target_stream).
         """
         loop = asyncio.get_running_loop()
-        stream_to_check = (custom_stream or self.update_stream or "auto").strip()
+        stream_raw = (custom_stream or self.update_stream or "auto").strip()
+        # Security: whitelist valid git branch / stream character sets (reject flags/leading dashes)
+        clean_stream = re.sub(r"[^a-zA-Z0-9_\-\./]", "", stream_raw).lstrip("-")
+        stream_to_check = clean_stream if clean_stream else "auto"
 
         def _git_check() -> tuple[bool, int, str, str, str]:
             target_branch = stream_to_check

@@ -43,22 +43,33 @@ def get_admin_role_or_fallback(guild: discord.Guild, configured_role_name: str =
                 return r
 
     aliases = (
+        "tarveri admin",
+        "server admin",
         "admin",
         "administrator",
         "administrators",
-        "staff",
+        "management",
         "moderator",
         "moderators",
         "mod",
         "mods",
-        "management",
-        "server admin",
-        "tarveri admin",
+        "staff",
     )
     for alias in aliases:
         for r in roles:
             if r.name.lower() == alias:
-                return r
+                perms = getattr(r, "permissions", None)
+                if perms and (
+                    getattr(perms, "administrator", False)
+                    or getattr(perms, "manage_guild", False)
+                    or getattr(perms, "manage_roles", False)
+                    or getattr(perms, "moderate_members", False)
+                    or getattr(perms, "kick_members", False)
+                    or getattr(perms, "ban_members", False)
+                ):
+                    return r
+                elif alias in ("tarveri admin", "server admin", "admin", "administrator"):
+                    return r
 
     for r in reversed(roles):
         if getattr(r, "is_default", lambda: False)():

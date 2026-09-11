@@ -424,13 +424,20 @@ class Database:
         """
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
-        if not os.path.isfile(backup_path):
+
+        candidate_path = backup_path
+        if not os.path.isabs(candidate_path) and not os.path.exists(candidate_path):
+            in_backup_dir = os.path.join("backups", candidate_path)
+            if os.path.exists(in_backup_dir):
+                candidate_path = in_backup_dir
+
+        if not os.path.isfile(candidate_path):
             raise FileNotFoundError(f"Backup file not found at '{backup_path}'.")
 
         restored_guilds = 0
         details: list[dict[str, Any]] = []
 
-        async with aiosqlite.connect(backup_path) as b_conn:
+        async with aiosqlite.connect(candidate_path) as b_conn:
             cursor = await b_conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='guild_settings';"
             )
