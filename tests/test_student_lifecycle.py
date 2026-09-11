@@ -200,3 +200,119 @@ async def test_on_message_expired_student_prompt(tmp_path):
     author.send.assert_not_called()
 
     await db.close()
+
+
+def test_estimate_student_card_expiry():
+    from tarveri.config import estimate_student_card_expiry
+
+    # Foundation: 1 yr -> May 31
+    assert estimate_student_card_expiry("24WMF12345") == "2025-05-31"
+    # Diploma: 2 yrs -> Oct 31
+    assert estimate_student_card_expiry("23WMD09867") == "2025-10-31"
+    # Degree: 3 yrs -> Oct 31
+    assert estimate_student_card_expiry("24WMR12345") == "2027-10-31"
+    # Postgrad: 2 yrs -> Oct 31
+    assert estimate_student_card_expiry("23WMP00001") == "2025-10-31"
+    # Invalid / short
+    assert estimate_student_card_expiry("123") is None
+    assert estimate_student_card_expiry(None) is None
+
+
+@pytest.mark.asyncio
+async def test_perform_verification_omitted_expiry_auto_estimates(tmp_path):
+    db_path = str(tmp_path / "auto_estimate.db")
+    db = Database(db_path)
+    await db.connect()
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 112233
+    guild.name = "Test Campus"
+    guild.roles = []
+    guild.get_member = MagicMock(return_value=MagicMock())
+
+    role_focs = MagicMock(spec=discord.Role)
+    role_focs.name = "FOCS"
+    role_kl = MagicMock(spec=discord.Role)
+    role_kl.name = "KL Main Campus"
+    role_deg = MagicMock(spec=discord.Role)
+    role_deg.name = "Degree"
+
+    guild.create_role = AsyncMock(side_effect=[role_focs, role_kl, role_deg])
+
+    bot = MagicMock()
+    bot.guilds = [guild]
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 445566
+    member.guild = guild
+    member.roles = []
+    member.add_roles = AsyncMock()
+    guild.get_member.return_value = member
+
+    service = VerificationService(bot, db, "secret", RateLimiter())
+
+    # Verify student WITHOUT specifying raw_expiry_date (omitted / None)
+    result = await service.perform_verification(
+        user=member,
+        raw_student_id="24WMR12345",
+        raw_expiry_date=None,
+    )
+    assert "You've been given the following role(s)" in result
+
+    # Check database: card_expiry_date should be automatically set to 2027-10-31
+    details = await db.get_verification_details(member.id)
+    assert details["card_expiry_date"] == "2027-10-31"
+    assert details["level_code"] == "R"
+    assert details["campus_code"] == "W"
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_database_startup_backfills_legacy_card_expiry(tmp_path):
+    import aiosqlite
+
+    db_path = str(tmp_path / "legacy_backfill.db")
+    # Manually create legacy table with no card_expiry_date populated
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute(
+            """
+            CREATE TABLE verifications (
+                discord_user_id INTEGER PRIMARY KEY,
+                student_id_hash TEXT UNIQUE NOT NULL,
+                faculty_code TEXT NOT NULL,
+                verified_at TEXT NOT NULL,
+                campus_code TEXT,
+                level_code TEXT,
+                is_alumni INTEGER DEFAULT 0
+            );
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO verifications (discord_user_id, student_id_hash, faculty_code, verified_at, campus_code, level_code, is_alumni)
+            VALUES (101, 'hash1', 'M', '2023-06-15 10:00:00', 'W', 'D', 0),
+                   (102, 'hash2', 'A', '2024-03-01 12:00:00', 'W', 'R', 0),
+                   (103, 'hash3', 'M', '2022-01-01 00:00:00', 'W', 'R', 1);
+            """
+        )
+        await conn.commit()
+
+    # Now open with Database class, which runs connect() migrations and backfill
+    db = Database(db_path)
+    await db.connect()
+
+    # User 101 (Diploma verified in 2023): should be backfilled to 2025-10-31
+    d1 = await db.get_verification_details(101)
+    assert d1["card_expiry_date"] == "2025-10-31"
+
+    # User 102 (Degree verified in 2024): should be backfilled to 2027-10-31
+    d2 = await db.get_verification_details(102)
+    assert d2["card_expiry_date"] == "2027-10-31"
+
+    # User 103 (Alumni): should remain None since is_alumni = 1
+    d3 = await db.get_verification_details(103)
+    assert d3["card_expiry_date"] is None
+
+    await db.close()
+

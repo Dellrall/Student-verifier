@@ -36,6 +36,7 @@ from tarveri.config import (
     STUDY_LEVEL_ROLE_NAMES,
     STUDY_LEVEL_ROLES,
     StudentIdInfo,
+    estimate_student_card_expiry,
     hash_student_id,
     mask_student_id,
     parse_card_expiry_date,
@@ -887,7 +888,7 @@ class VerificationService:
         to_faculty_role = info.faculty_role or FACULTY_ROLES.get(to_faculty, "FOCS")
         to_campus_role = info.campus_role or CAMPUS_ROLES.get(to_campus, "KL Main Campus")
         to_level_role = info.level_role or STUDY_LEVEL_ROLES.get(to_level, "Degree")
-        to_expiry_date = parse_card_expiry_date(raw_expiry_date)
+        to_expiry_date = parse_card_expiry_date(raw_expiry_date) or estimate_student_card_expiry(to_student_id, to_level)
 
         from_faculty_name = FACULTY_ROLES.get(from_faculty, from_faculty)
         from_level_name = STUDY_LEVEL_ROLES.get(from_level, from_level)
@@ -1008,7 +1009,9 @@ class VerificationService:
             campus_role_name = info.campus_role
             level_code = info.level_code
             level_role_name = info.level_role
-            iso_expiry_date = parse_card_expiry_date(raw_expiry_date)
+            iso_expiry_date = parse_card_expiry_date(raw_expiry_date) or estimate_student_card_expiry(
+                student_id, level_code
+            )
 
             id_hash = hash_student_id(student_id, self.secret)
 

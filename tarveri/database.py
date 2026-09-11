@@ -306,6 +306,51 @@ class Database:
         except Exception as e:
             logger.debug(f"Legacy campus_code migration notice: {e}")
 
+        # 6. One-time data migration: Backfill legacy active student verifications missing card_expiry_date
+        try:
+            cursor = await self._conn.execute(
+                """SELECT discord_user_id, verified_at, level_code
+                   FROM verifications
+                   WHERE card_expiry_date IS NULL AND is_alumni = 0"""
+            )
+            rows = await cursor.fetchall()
+            backfilled_count = 0
+            for u_id, v_at, lvl_code in rows:
+                calc_year = None
+                if v_at:
+                    try:
+                        dt = datetime.fromisoformat(v_at.replace(" ", "T"))
+                        calc_year = dt.year
+                    except Exception:
+                        pass
+                if not calc_year:
+                    calc_year = datetime.now().year
+
+                lvl = (lvl_code or "R").upper()
+                if lvl == "F":
+                    est_date = f"{calc_year + 1:04d}-05-31"
+                elif lvl == "D":
+                    est_date = f"{calc_year + 2:04d}-10-31"
+                elif lvl == "R":
+                    est_date = f"{calc_year + 3:04d}-10-31"
+                elif lvl == "P":
+                    est_date = f"{calc_year + 2:04d}-10-31"
+                else:
+                    est_date = f"{calc_year + 3:04d}-10-31"
+
+                await self._conn.execute(
+                    "UPDATE verifications SET card_expiry_date = ? WHERE discord_user_id = ?",
+                    (est_date, u_id),
+                )
+                backfilled_count += 1
+
+            if backfilled_count > 0:
+                logger.info(
+                    f"Backfilled estimated card_expiry_date for {backfilled_count} legacy student verification record(s)."
+                )
+        except Exception as e:
+            logger.debug(f"Legacy card_expiry_date migration notice: {e}")
+
         cursor = await self._conn.execute("PRAGMA user_version;")
         row = await cursor.fetchone()
         current_version = row[0] if row else 0

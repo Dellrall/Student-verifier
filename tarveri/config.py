@@ -935,4 +935,37 @@ def format_card_expiry_display(iso_date: str | None) -> str | None:
     return None
 
 
+def estimate_student_card_expiry(student_id: str | None, level_code: str | None = None) -> str | None:
+    """
+    Intelligently estimates student card expiry date from the Student ID intake year and study level.
+    Zero-effort automated fallback when the student does not provide an explicit card expiry date.
+    Examples:
+    - 23WMD09867 (Diploma, 2 yrs): Intake 2023 -> 2025-10-31
+    - 24WMR12345 (Degree, 3 yrs): Intake 2024 -> 2027-10-31
+    - 25WMF01234 (Foundation, 1 yr): Intake 2025 -> 2026-05-31
+    - 23WMP00111 (Postgrad, 2 yrs): Intake 2023 -> 2025-10-31
+    """
+    if not student_id or len(student_id) < 5:
+        return None
+    raw_yy = student_id[:2]
+    if not raw_yy.isdigit():
+        return None
+    intake_yy = int(raw_yy)
+    intake_year = 2000 + intake_yy if intake_yy < 70 else 1900 + intake_yy
+
+    lvl = (level_code or (student_id[4] if len(student_id) > 4 else "R")).upper()
+    if lvl == "F":  # Foundation (1 year)
+        return f"{intake_year + 1:04d}-05-31"
+    elif lvl == "D":  # Diploma (2 years)
+        return f"{intake_year + 2:04d}-10-31"
+    elif lvl == "R":  # Degree (3 years typical)
+        return f"{intake_year + 3:04d}-10-31"
+    elif lvl == "P":  # Postgraduate (2 years typical)
+        return f"{intake_year + 2:04d}-10-31"
+    else:
+        # Default 3 years
+        return f"{intake_year + 3:04d}-10-31"
+
+
+
 
