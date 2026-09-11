@@ -119,8 +119,26 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
         resp = await self.verification_service.perform_verification(
             interaction.user, self.student_id.value.strip(), raw_expiry_date=raw_expiry
         )
-        await interaction.followup.send(resp, ephemeral=True)
-        schedule_ttl_delete(interaction, delay=60.0)
+        view = None
+        db = getattr(self.verification_service, "db", None)
+        if db and isinstance(getattr(interaction.user, "id", None), int):
+            try:
+                details = await db.get_verification_details(interaction.user.id)
+                if details and details.get("is_alumni") == 0:
+                    card_exp = details.get("card_expiry_date")
+                    from datetime import datetime, timezone
+                    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    if card_exp and card_exp < today_iso:
+                        from tarveri.cogs.verification_cog import StudentLifecycleResolutionView
+                        view = StudentLifecycleResolutionView(self.verification_service, db)
+            except Exception:
+                pass
+
+        if view:
+            await interaction.followup.send(resp, view=view, ephemeral=True)
+        else:
+            await interaction.followup.send(resp, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=120.0 if view else 60.0)
 
 
 class ReferralEntryModal(discord.ui.Modal, title="🎟️ Enter Student Referral Code"):

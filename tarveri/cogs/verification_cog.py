@@ -30,19 +30,19 @@ from tarveri.utils import schedule_ttl_delete
 logger = logging.getLogger("tarveri")
 
 
-class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verification"):
-    student_id = discord.ui.TextInput(
-        label="Student ID",
-        placeholder="e.g. 23WMD09867",
-        min_length=7,
-        max_length=20,
+class AlumniClaimModal(discord.ui.Modal, title="TARUMT Alumni Transition"):
+    grad_year = discord.ui.TextInput(
+        label="Graduation Year",
+        placeholder="e.g. 2025",
+        min_length=4,
+        max_length=4,
         required=True,
     )
-    card_expiry = discord.ui.TextInput(
-        label="Student Card Expiry Date (MM/YY)",
-        placeholder="e.g. 10/26 (Optional)",
-        min_length=4,
-        max_length=10,
+    programme = discord.ui.TextInput(
+        label="Completed Programme (Optional)",
+        placeholder="e.g. Bachelor of Software Engineering (Honours)",
+        min_length=2,
+        max_length=80,
         required=False,
     )
 
@@ -51,15 +51,43 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
         self.service = service
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        raw_expiry = self.card_expiry.value.strip() if self.card_expiry.value else None
-        response_text = await self.service.perform_verification(
-            interaction.user,
-            self.student_id.value,
-            raw_expiry_date=raw_expiry,
+        await interaction.response.defer(ephemeral=False, thinking=True)
+        raw_year = self.grad_year.value.strip()
+        try:
+            year_int = int(raw_year)
+        except ValueError:
+            await interaction.followup.send(
+                "❌ Please enter a valid 4-digit graduation year (e.g. 2025).",
+                ephemeral=True,
+            )
+            return
+
+        result = await self.service.claim_alumni_status(
+            user_id=interaction.user.id,
+            user_display_name=interaction.user.display_name,
+            graduated_year=year_int,
+            programme=self.programme.value if self.programme.value else None,
+            current_guild=interaction.guild,
         )
-        await interaction.followup.send(response_text, ephemeral=True)
-        schedule_ttl_delete(interaction, delay=60.0)
+
+        if not result["success"]:
+            await interaction.followup.send(result["message"], ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=f"🎓 Congratulations on Graduating, {interaction.user.display_name}!",
+            description=(
+                f"🎉 **{interaction.user.mention}** has successfully registered their **TARUMT Alumni** status!\n\n"
+                f"• **Class Cohort**: Class of {result['graduated_year']}\n"
+                f"• **Faculty**: {result['faculty_name']}\n"
+                + (f"• **Programme**: {result['programme']}\n" if result['programme'] else "")
+                + f"\n🏷️ **`TARUMT Alumni`** role assigned in {result['guilds_updated']} server(s).\n"
+                f"🪪 **`❖ ALUMNI`** badge unlocked on your Digital Campus Card (`/card`)."
+            ),
+            color=discord.Color.from_rgb(212, 175, 55),
+        )
+        embed.set_footer(text="TARVeri Alumni Verification • Instant & Tamper-Proof")
+        await interaction.followup.send(embed=embed, ephemeral=False)
 
 
 class FurtherStudyTransitionModal(discord.ui.Modal, title="TARUMT Level Progression"):
@@ -193,19 +221,19 @@ class StudentLifecycleResolutionView(discord.ui.View):
         await interaction.response.send_modal(ExtendExpiryModal(self.db, self.service))
 
 
-class AlumniClaimModal(discord.ui.Modal, title="TARUMT Alumni Transition"):
-    grad_year = discord.ui.TextInput(
-        label="Graduation Year",
-        placeholder="e.g. 2025",
-        min_length=4,
-        max_length=4,
+class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verification"):
+    student_id = discord.ui.TextInput(
+        label="Student ID",
+        placeholder="e.g. 23WMD09867",
+        min_length=7,
+        max_length=20,
         required=True,
     )
-    programme = discord.ui.TextInput(
-        label="Completed Programme (Optional)",
-        placeholder="e.g. Bachelor of Software Engineering (Honours)",
-        min_length=2,
-        max_length=80,
+    card_expiry = discord.ui.TextInput(
+        label="Student Card Expiry Date (MM/YY)",
+        placeholder="e.g. 10/26 (Optional)",
+        min_length=4,
+        max_length=10,
         required=False,
     )
 
@@ -214,43 +242,31 @@ class AlumniClaimModal(discord.ui.Modal, title="TARUMT Alumni Transition"):
         self.service = service
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=False, thinking=True)
-        raw_year = self.grad_year.value.strip()
-        try:
-            year_int = int(raw_year)
-        except ValueError:
-            await interaction.followup.send(
-                "❌ Please enter a valid 4-digit graduation year (e.g. 2025).",
-                ephemeral=True,
-            )
-            return
-
-        result = await self.service.claim_alumni_status(
-            user_id=interaction.user.id,
-            user_display_name=interaction.user.display_name,
-            graduated_year=year_int,
-            programme=self.programme.value if self.programme.value else None,
-            current_guild=interaction.guild,
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        raw_expiry = self.card_expiry.value.strip() if self.card_expiry.value else None
+        response_text = await self.service.perform_verification(
+            interaction.user,
+            self.student_id.value,
+            raw_expiry_date=raw_expiry,
         )
+        view = None
+        if hasattr(self.service, "db") and self.service.db and isinstance(interaction.user.id, int):
+            try:
+                details = await self.service.db.get_verification_details(interaction.user.id)
+                if details and details.get("is_alumni") == 0:
+                    card_exp = details.get("card_expiry_date")
+                    from datetime import datetime, timezone
+                    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    if card_exp and card_exp < today_iso:
+                        view = StudentLifecycleResolutionView(self.service, self.service.db)
+            except Exception:
+                pass
 
-        if not result["success"]:
-            await interaction.followup.send(result["message"], ephemeral=True)
-            return
-
-        embed = discord.Embed(
-            title=f"🎓 Congratulations on Graduating, {interaction.user.display_name}!",
-            description=(
-                f"🎉 **{interaction.user.mention}** has successfully registered their **TARUMT Alumni** status!\n\n"
-                f"• **Class Cohort**: Class of {result['graduated_year']}\n"
-                f"• **Faculty**: {result['faculty_name']}\n"
-                + (f"• **Programme**: {result['programme']}\n" if result['programme'] else "")
-                + f"\n🏷️ **`TARUMT Alumni`** role assigned in {result['guilds_updated']} server(s).\n"
-                f"🪪 **`❖ ALUMNI`** badge unlocked on your Digital Campus Card (`/card`)."
-            ),
-            color=discord.Color.from_rgb(212, 175, 55),
-        )
-        embed.set_footer(text="TARVeri Alumni Verification • Instant & Tamper-Proof")
-        await interaction.followup.send(embed=embed, ephemeral=False)
+        if view:
+            await interaction.followup.send(response_text, view=view, ephemeral=True)
+        else:
+            await interaction.followup.send(response_text, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=120.0 if view else 60.0)
 
 
 class VerificationCog(commands.Cog, name="Verification"):
@@ -293,8 +309,24 @@ class VerificationCog(commands.Cog, name="Verification"):
             response_text = await self.service.perform_verification(
                 interaction.user, student_id, raw_expiry_date=expiry_date
             )
-            await interaction.followup.send(response_text, ephemeral=True)
-            schedule_ttl_delete(interaction, delay=60.0)
+            view = None
+            if self.db and isinstance(interaction.user.id, int):
+                try:
+                    details = await self.db.get_verification_details(interaction.user.id)
+                    if details and details.get("is_alumni") == 0:
+                        card_exp = details.get("card_expiry_date")
+                        from datetime import datetime, timezone
+                        today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                        if card_exp and card_exp < today_iso:
+                            view = StudentLifecycleResolutionView(self.service, self.db)
+                except Exception:
+                    pass
+
+            if view:
+                await interaction.followup.send(response_text, view=view, ephemeral=True)
+            else:
+                await interaction.followup.send(response_text, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=120.0 if view else 60.0)
             return
 
         # Check if already verified — if so, resync silently without modal
@@ -753,7 +785,22 @@ class VerificationCog(commands.Cog, name="Verification"):
                 else:
                     response = await self.service.perform_verification(message.author, student_id_input)
                 if response:
-                    await message.author.send(response)
+                    view = None
+                    if self.db and isinstance(message.author.id, int):
+                        try:
+                            details = await self.db.get_verification_details(message.author.id)
+                            if details and details.get("is_alumni") == 0:
+                                card_exp = details.get("card_expiry_date")
+                                from datetime import datetime, timezone
+                                today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                                if card_exp and card_exp < today_iso:
+                                    view = StudentLifecycleResolutionView(self.service, self.db)
+                        except Exception:
+                            pass
+                    if view:
+                        await message.author.send(response, view=view)
+                    else:
+                        await message.author.send(response)
         else:
             if isinstance(message.channel, discord.TextChannel) and await self.is_help_channel(message.channel):
                 await self.handle_help_channel_message(message)

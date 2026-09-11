@@ -37,6 +37,7 @@ from tarveri.config import (
     STUDY_LEVEL_ROLES,
     StudentIdInfo,
     estimate_student_card_expiry,
+    format_card_expiry_display,
     hash_student_id,
     mask_student_id,
     parse_card_expiry_date,
@@ -1162,8 +1163,22 @@ class VerificationService:
                         "Please contact an admin if this persists."
                     )
 
-            summary = self.format_role_summary(sync_result)
-            return summary or "⚠️ Verification completed, but no roles could be assigned."
+            summary = self.format_role_summary(sync_result) or "⚠️ Verification completed, but no roles could be assigned."
+
+            # Automatically detect if the student ID intake or expiry has already passed
+            from datetime import datetime, timezone
+            today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if iso_expiry_date and iso_expiry_date < today_iso:
+                expiry_disp = format_card_expiry_display(iso_expiry_date)
+                summary += (
+                    f"\n\n🎓 **Alumni / Academic Status Notice**:\n"
+                    f"Based on your student ID (study validity ended **{expiry_disp}**), you may have already graduated!\n"
+                    f"• Click **I have Graduated** below or run `/graduate` to claim your official **TARUMT Alumni** role & card badge.\n"
+                    f"• If you continued your studies (e.g. Diploma ➔ Degree), click **Further Studies** or run `/verify <new_id>`.\n"
+                    f"• If you are still completing your programme, click **Still Studying / Extension**."
+                )
+
+            return summary
         finally:
             async with self._lock:
                 self._in_flight_users.discard(user.id)

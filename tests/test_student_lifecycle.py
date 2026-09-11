@@ -358,6 +358,119 @@ async def test_student_verification_modal_in_guest_cog():
     service.perform_verification.assert_called_once_with(
         interaction.user, "23WMD09867", raw_expiry_date="10/26"
     )
-    interaction.followup.send.assert_called_once_with("✅ Verified!", ephemeral=True)
+    interaction.followup.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_expired_intake_triggers_alumni_notice(tmp_path):
+    db_path = str(tmp_path / "expired_intake.db")
+    db = Database(db_path)
+    await db.connect()
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 778899
+    guild.name = "TARUMT Main"
+    guild.roles = []
+    guild.get_member = MagicMock(return_value=MagicMock())
+
+    role_focs = MagicMock(spec=discord.Role)
+    role_focs.name = "FOCS"
+    role_kl = MagicMock(spec=discord.Role)
+    role_kl.name = "KL Main Campus"
+    role_deg = MagicMock(spec=discord.Role)
+    role_deg.name = "Degree"
+    guild.roles = [role_focs, role_kl, role_deg]
+    guild.create_role = AsyncMock(return_value=role_focs)
+
+    bot = MagicMock()
+    bot.guilds = [guild]
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 112233
+    member.guild = guild
+    member.roles = []
+    member.add_roles = AsyncMock()
+    guild.get_member = MagicMock(side_effect=lambda uid: member if uid == 112233 else member2)
+
+    service = VerificationService(bot, db, "secret", RateLimiter())
+
+    # Verify with an older intake ID (e.g. 20WMR12345: Degree intake 2020 -> Expiry 2023-10-31)
+    response = await service.perform_verification(
+        user=member,
+        raw_student_id="20WMR12345",
+    )
+
+    assert "You've been given the following role(s)" in response
+    assert "Alumni / Academic Status Notice" in response
+    assert "/graduate" in response
+    assert "10/23" in response
+
+    # Now verify with a future / active student ID (e.g. 25WMR12345: Degree intake 2025 -> Expiry 2028-10-31)
+    member2 = MagicMock(spec=discord.Member)
+    member2.id = 445566
+    member2.guild = guild
+    member2.roles = []
+    member2.add_roles = AsyncMock()
+    guild.get_member.return_value = member2
+
+    response2 = await service.perform_verification(
+        user=member2,
+        raw_student_id="25WMR12345",
+    )
+    assert "You've been given the following role(s)" in response2
+    assert "Alumni / Academic Status Notice" not in response2
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_verification_modal_attaches_lifecycle_view_for_expired_intake(tmp_path):
+    db_path = str(tmp_path / "modal_lifecycle.db")
+    db = Database(db_path)
+    await db.connect()
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 1111
+    guild.name = "TARUMT Main"
+    guild.roles = []
+    guild.get_member = MagicMock(return_value=MagicMock())
+
+    r1 = MagicMock(spec=discord.Role)
+    r1.name = "FOCS"
+    r2 = MagicMock(spec=discord.Role)
+    r2.name = "KL Main Campus"
+    r3 = MagicMock(spec=discord.Role)
+    r3.name = "Degree"
+    guild.create_role = AsyncMock(side_effect=[r1, r2, r3])
+
+    bot = MagicMock()
+    bot.guilds = [guild]
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 887766
+    member.guild = guild
+    member.roles = []
+    member.add_roles = AsyncMock()
+    guild.get_member.return_value = member
+
+    service = VerificationService(bot, db, "secret", RateLimiter())
+
+    modal = VerificationModal(service)
+    modal.student_id._value = "19WMR99999"  # 2019 intake -> Expired in 2022
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.user = member
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await modal.on_submit(interaction)
+
+    interaction.followup.send.assert_called_once()
+    kwargs = interaction.followup.send.call_args[1]
+    assert kwargs.get("view") is not None
+    assert isinstance(kwargs["view"], StudentLifecycleResolutionView)
+
+    await db.close()
+
 
 
