@@ -257,4 +257,128 @@ def test_build_review_embed_alphanumeric_sequence():
     assert embed_series.title == "📋 Guest Review Ticket #B0001"
 
 
+def test_build_review_embed_closed_status():
+    guild = MagicMock(spec=discord.Guild)
+    applicant = MagicMock(spec=discord.Member)
+    applicant.mention = "<@12345>"
+    applicant.id = 12345
+
+    # Referral ticket closed
+    ticket_ref = {
+        "applicant_id": 12345,
+        "referrer_id": 6789,
+        "referral_code": "TAR-XYZ123",
+        "ticket_seq": 5,
+        "status": "CLOSED",
+        "closed_by_admin_id": 9999,
+        "close_reason": "Admin dismissal / spam check",
+    }
+    embed_ref = build_review_embed(ticket_ref, guild, applicant)
+    assert embed_ref.title == "📋 Guest Review Ticket #A0005"
+    assert embed_ref.color == discord.Color.dark_grey()
+    decision_field = [f for f in embed_ref.fields if "Admin Decision" in f.name][0]
+    assert "Closed / Dismissed" in decision_field.value
+    assert "<@9999>" in decision_field.value
+    assert "No kicking or role assigned" in decision_field.value
+
+    # Application ticket closed
+    ticket_app = {
+        "applicant_id": 12345,
+        "reason": "Speaker at conference",
+        "ticket_seq": 6,
+        "status": "CLOSED",
+        "closed_by_admin_id": 9999,
+        "close_reason": "Inquiries resolved",
+    }
+    embed_app = build_review_embed(ticket_app, guild, applicant)
+    verdict_field = [f for f in embed_app.fields if "Staff Verdict" in f.name][0]
+    assert "Closed / Dismissed" in verdict_field.value
+    assert "Inquiries resolved" in verdict_field.value
+
+
+@pytest.mark.asyncio
+async def test_guest_review_thread_close_button_flow(tmp_path):
+    from tarveri.cogs.guest_cog import CloseTicketModal
+
+    db_path = str(tmp_path / "close_btn_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    guest_service = GuestService(bot, db, admin_role_name="TARVeri Admin")
+    view = GuestReviewThreadView(guest_service)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 5566
+    guild.name = "Close Btn Guild"
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.id = 9988
+    admin_user.guild_permissions.administrator = True
+    admin_user.roles = []
+    admin_user.mention = "<@9988>"
+
+    applicant = MagicMock(spec=discord.Member)
+    applicant.id = 7766
+    applicant.mention = "<@7766>"
+    applicant.kick = AsyncMock()
+    applicant.add_roles = AsyncMock()
+    guild.get_member.return_value = applicant
+
+    ticket_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=applicant.id,
+        channel_id=3322,
+        reason="Testing close button",
+        ticket_seq=12,
+    )
+
+    channel = MagicMock(spec=discord.Thread)
+    channel.id = 3322
+    channel.send = AsyncMock()
+    channel.edit = AsyncMock()
+
+    message = MagicMock(spec=discord.Message)
+    message.edit = AsyncMock()
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.channel = channel
+    interaction.user = admin_user
+    interaction.message = message
+    interaction.response.send_modal = AsyncMock()
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # 1. Admin clicks Close Ticket button -> Opens modal
+    await view.close_btn.callback(interaction)
+    interaction.response.send_modal.assert_called_once()
+    modal = interaction.response.send_modal.call_args[0][0]
+    assert isinstance(modal, CloseTicketModal)
+
+    # 2. Submit modal with custom closure reason
+    modal.reason._value = "Duplicate ticket / Reconsidering later"
+    await modal.on_submit(interaction)
+
+    # Verify followup sent and thread archived
+    interaction.followup.send.assert_called_once()
+    channel.send.assert_called_once()
+    assert "Ticket manually closed" in channel.send.call_args[0][0]
+    assert "Duplicate ticket / Reconsidering later" in channel.send.call_args[0][0]
+    channel.edit.assert_awaited_once_with(locked=True, archived=True)
+
+    # Verify applicant was NOT kicked or given role
+    applicant.kick.assert_not_called()
+    applicant.add_roles.assert_not_called()
+
+    # Verify DB status
+    ticket_after = await db.get_guest_ticket_by_id(ticket_id)
+    assert ticket_after["status"] == "CLOSED"
+    assert ticket_after["closed_by_admin_id"] == admin_user.id
+    assert ticket_after["close_reason"] == "Duplicate ticket / Reconsidering later"
+
+    await db.close()
+
+
+
 

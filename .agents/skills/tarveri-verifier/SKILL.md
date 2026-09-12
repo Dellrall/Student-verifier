@@ -151,17 +151,27 @@ flowchart TD
 
 ---
 
-## 🎟️ Alphanumeric Ticket Sequencing & Smart Escalation
+---
 
-1. **Alphanumeric Ticket Codes**:
+## 🎟️ Alphanumeric Ticket Sequencing, Multi-Action Buttons & Smart Escalation
+
+1. **Interactive Review Thread Buttons (`GuestReviewThreadView`)**:
+   - **`Approve Guest`** (`tarveri:review:approve`): Confirms approval (satisfying double verification if referred), assigns the `Guest(Approved)` role, marks status `APPROVED`, notifies applicant via DM, logs to database, and archives/locks thread.
+   - **`Reject / Veto`** (`tarveri:review:reject`): Prompts admin for rejection reason, marks status `REJECTED`, sends rejection explanation DM, kicks the unapproved applicant from the guild, logs to database, and archives/locks thread.
+   - **`Close Ticket`** (`tarveri:review:close`): **Manual Ticket Closure without Kicking** — Prompts admin for closure/dismissal notes, marks status `CLOSED`, cleans up parent channel permissions, leaves the applicant in the server without role changes or expulsion, logs to database, and archives/locks thread. Ideal for spam suppression, duplicate entries, manual reconsiderations, or administrative dismissals.
+   - **`Confirm Vouch`** (`tarveri:review:vouch`): Allows referring students (or admins) to record their official vouch statement with context.
+
+2. **Alphanumeric Ticket Codes**:
    - Ticket sequence numbers are formatted using `format_ticket_seq()`:
      - `1` $\to$ `#A0001`
      - `9999` $\to$ `#A9999`
      - `10000` $\to$ `#B0001`
      - `260000` $\to$ `#AA0001`
-2. **Batch-of-2 Staff Tagging**:
+
+3. **Batch-of-2 Staff Tagging**:
    - Selects a batch of exactly 2 admins per notification, prioritizing active/online staff first, then highest-authority staff (Server Owner $\to$ Senior Admins).
-3. **1-Hour Ticket Escalation**:
+
+4. **1-Hour Ticket Escalation**:
    - Background task `_escalation_loop` checks open review tickets. If 1 hour passes without admin response, it tags the next 2 admins in the hierarchy.
 
 ---

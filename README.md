@@ -82,9 +82,12 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 ### Guests & Non-TARUMT Outsiders
 * **Referral Entry**: Outsiders with a referral code click **"Enter Referral Code"** on the gateway panel or use the modal to enter the code.
 * **Direct Application**: Outsiders without a code click **"Apply as Guest"** to submit their name and reason for joining.
-* **Double Verification Process**:
-  1. **Step 1 (Voucher)**: The referring student submits their vouch statement/context.
-  2. **Step 2 (Admin Team)**: Server admins review the context and click **`[Approve Guest]`** or **`[Reject / Veto]`**.
+* **Double Verification Process & Multi-Action Review Panel**:
+  1. **Step 1 (Voucher)**: The referring student submits their vouch statement/context via **`[Confirm Vouch]`**.
+  2. **Step 2 (Admin Team Actions)**: Server admins review the context and can:
+     * **`[Approve Guest]`**: Admits the applicant, assigns the `Guest(Approved)` role, and locks/archives the thread.
+     * **`[Reject / Veto]`**: Rejects the application with a reason notice, kicks the applicant from the server, and locks/archives the thread.
+     * **`[Close Ticket]`**: **Manual Close / Dismissal Without Kicking** — Closes and archives the review ticket with custom notes while leaving the applicant in the server (no role changes or expulsion). Ideal for spam suppression, duplicate applications, inquiries, or manual reconsideration.
 * **Alphanumeric Ticket Tracking**: Private review threads and audit records use alphanumeric sequence numbers (`#A0001`, `#A0002` ... `#Z9999` $\to$ `#AA0001`).
 * **User-Accessible Thread Channel Discovery**: Always spawns private review threads in parent channels accessible to normal/unverified users (e.g. `#ask-for-help`, `#help`, `#support`). Automatically creates a public `#ask-for-help` channel with pinned guidance if no accessible parent channel exists, avoiding inaccessible admin/staff-locked channels.
 * **Intelligent Staff Tagging & 1-Hour Escalation**: The bot tags a batch of 2 admins (active/online moderators first, then highest authority). If 1 hour passes without admin response, it automatically escalates by tagging the next 2 admins.

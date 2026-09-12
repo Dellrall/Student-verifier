@@ -1075,3 +1075,70 @@ async def test_find_parent_review_channel_auto_creates_ask_for_help_channel(tmp_
     created_ch.send.assert_called_once()
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_close_guest_ticket_manually_without_kicking(tmp_path):
+    db_path = str(tmp_path / "manual_close.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = GuestService(bot, db)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 7788
+    guild.name = "Manual Close Guild"
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.id = 9001
+    admin_user.mention = "<@9001>"
+
+    applicant = MagicMock(spec=discord.Member)
+    applicant.id = 5001
+    applicant.send = AsyncMock()
+    applicant.kick = AsyncMock()
+    applicant.add_roles = AsyncMock()
+    guild.get_member.return_value = applicant
+
+    # Create referral code and open ticket
+    await db.create_referral_code("TAR-MANUAL", guild.id, 4001, "2099-01-01 00:00:00")
+    ticket_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=applicant.id,
+        referrer_id=4001,
+        channel_id=8888,
+        referral_code="TAR-MANUAL",
+        reason="Testing manual close",
+        ticket_seq=42,
+    )
+
+    ticket = await db.get_guest_ticket_by_id(ticket_id)
+    assert ticket["status"] == "OPEN"
+
+    success, msg = await service.close_guest_ticket_manually(
+        ticket=ticket,
+        guild=guild,
+        admin_user=admin_user,
+        reason="Spam dismissal / Manual review without action",
+    )
+
+    assert success is True
+    assert "manually closed" in msg
+
+    # Verify applicant was NEVER kicked and NEVER assigned roles
+    applicant.kick.assert_not_called()
+    applicant.add_roles.assert_not_called()
+
+    # Verify DB record updated
+    closed_ticket = await db.get_guest_ticket_by_id(ticket_id)
+    assert closed_ticket["status"] == "CLOSED"
+    assert closed_ticket["closed_by_admin_id"] == admin_user.id
+    assert closed_ticket["close_reason"] == "Spam dismissal / Manual review without action"
+
+    # Verify referral code was marked CLOSED
+    ref = await db.get_referral_code("TAR-MANUAL", guild.id)
+    assert ref["status"] == "CLOSED"
+
+    await db.close()
+

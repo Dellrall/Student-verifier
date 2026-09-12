@@ -378,6 +378,65 @@ class RejectReasonModal(discord.ui.Modal, title="🛑 Rejection Reason"):
                 pass
 
 
+class CloseTicketModal(discord.ui.Modal, title="🔒 Close Ticket (Without Kicking)"):
+    reason = discord.ui.TextInput(
+        label="Reason / Note for Closure",
+        placeholder="e.g. Duplicate request, inquiries resolved, manual review, spam dismissal",
+        style=discord.TextStyle.paragraph,
+        max_length=300,
+        required=False,
+    )
+
+    def __init__(self, guest_service: GuestService, ticket: dict[str, Any], message: discord.Message) -> None:
+        super().__init__()
+        self.guest_service = guest_service
+        self.ticket = ticket
+        self.message = message
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            return
+        await interaction.response.defer(ephemeral=True)
+        success, reply_msg = await self.guest_service.close_guest_ticket_manually(
+            ticket=self.ticket,
+            guild=interaction.guild,
+            admin_user=interaction.user,
+            reason=self.reason.value,
+        )
+
+        if success:
+            updated_ticket = await self.guest_service.db.get_guest_ticket_by_id(self.ticket["ticket_id"])
+            applicant_member = interaction.guild.get_member(self.ticket["applicant_id"])
+            if updated_ticket:
+                embed = build_review_embed(updated_ticket, interaction.guild, applicant_member, status_override="CLOSED")
+                disabled_view = discord.ui.View()
+                try:
+                    await self.message.edit(embed=embed, view=disabled_view)
+                except discord.HTTPException:
+                    pass
+
+            await interaction.followup.send(reply_msg, ephemeral=True)
+
+            if isinstance(interaction.channel, discord.Thread):
+                reason_note = (
+                    f"\n> **Reason:** *\"{self.reason.value.strip()}\"*"
+                    if self.reason.value and self.reason.value.strip()
+                    else ""
+                )
+                await interaction.channel.send(
+                    f"🔒 **Ticket manually closed by {interaction.user.mention}.**\n"
+                    f"*(Applicant remains in the server; no role changes or kicks executed)*{reason_note}\n\n"
+                    f"This thread will be locked and archived."
+                )
+                await asyncio.sleep(5)
+                try:
+                    await interaction.channel.edit(locked=True, archived=True)
+                except discord.HTTPException:
+                    pass
+        else:
+            await interaction.followup.send(reply_msg, ephemeral=True)
+
+
 class VouchModal(discord.ui.Modal, title="🤝 Confirm Referral Vouch"):
     vouch_note = discord.ui.TextInput(
         label="Vouch Statement / Context for Staff",
@@ -440,6 +499,8 @@ def build_review_embed(
         color = discord.Color.green()
     elif status in ("REJECTED", "EXPIRED", "BANNED", "LEFT_SERVER"):
         color = discord.Color.red()
+    elif status in ("CLOSED", "DISMISSED", "CANCELLED"):
+        color = discord.Color.dark_grey()
 
     is_referral = bool(ticket.get("referrer_id") or ticket.get("referral_code"))
     verification_mode = "Double Verification (Voucher + Admin Required)" if is_referral else "Admin Staff Review"
@@ -475,6 +536,11 @@ def build_review_embed(
             admin_str = f" by <@{admin_id}>" if admin_id else " by Admin"
             reason_str = f": *\"{ticket['close_reason']}\"*" if ticket.get("close_reason") else ""
             admin_status = f"✅ Approved{admin_str}{reason_str}"
+        elif status in ("CLOSED", "DISMISSED", "CANCELLED"):
+            admin_id = ticket.get("closed_by_admin_id")
+            admin_str = f" by <@{admin_id}>" if admin_id else ""
+            reason_str = f": *\"{ticket.get('close_reason')}\"*" if ticket.get("close_reason") else ""
+            admin_status = f"🔒 Closed / Dismissed{admin_str}{reason_str} *(No kicking or role assigned)*"
         elif status in ("REJECTED", "BANNED", "LEFT_SERVER"):
             admin_id = ticket.get("closed_by_admin_id")
             admin_str = f" by <@{admin_id}>" if admin_id else ""
@@ -491,6 +557,11 @@ def build_review_embed(
             admin_str = f" by <@{admin_id}>" if admin_id else ""
             reason_str = f": *\"{ticket['close_reason']}\"*" if ticket.get("close_reason") else ""
             embed.add_field(name="Staff Verdict", value=f"✅ Approved{admin_str}{reason_str}", inline=False)
+        elif status in ("CLOSED", "DISMISSED", "CANCELLED"):
+            admin_id = ticket.get("closed_by_admin_id")
+            admin_str = f" by <@{admin_id}>" if admin_id else ""
+            reason_str = f": *\"{ticket.get('close_reason')}\"*" if ticket.get("close_reason") else ""
+            embed.add_field(name="Staff Verdict", value=f"🔒 Closed / Dismissed{admin_str}{reason_str} *(No kicking or role assigned)*", inline=False)
         elif status != "OPEN":
             admin_id = ticket.get("closed_by_admin_id")
             admin_str = f" by <@{admin_id}>" if admin_id else ""
@@ -573,7 +644,7 @@ class GuestReviewThreadView(discord.ui.View):
             await interaction.response.send_message(
                 f"⚠️ **Double Verification Required:** The referring student (<@{ticket['referrer_id']}>) has not confirmed their vouch yet.\n"
                 f"Both the voucher and Admin team must agree before the guest can be admitted.\n"
-                f"*(You can click **`Reject / Veto`** at any time to veto and reject this request).* ",
+                f"*(You can click **`Reject / Veto`** or **`Close Ticket`** at any time to reject or dismiss this request).* ",
                 ephemeral=True,
             )
             schedule_ttl_delete(interaction, delay=60.0)
@@ -630,6 +701,32 @@ class GuestReviewThreadView(discord.ui.View):
             return
 
         modal = RejectReasonModal(self.guest_service, ticket, interaction.message)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(
+        label="Close Ticket",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔒",
+        custom_id="tarveri:review:close",
+    )
+    async def close_btn(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not is_admin_or_has_role(interaction, self.guest_service.admin_role_name):
+            await interaction.response.send_message(
+                "❌ Only server administrators can close review tickets.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        if not interaction.guild or not interaction.channel:
+            return
+
+        ticket = await self.guest_service.db.get_guest_ticket_by_channel(interaction.channel.id)
+        if not ticket or ticket["status"] != "OPEN":
+            await interaction.response.send_message("⚠️ This ticket is already resolved or not found.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        modal = CloseTicketModal(self.guest_service, ticket, interaction.message)
         await interaction.response.send_modal(modal)
 
     @discord.ui.button(

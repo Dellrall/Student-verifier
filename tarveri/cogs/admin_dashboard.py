@@ -703,8 +703,12 @@ class AdminDashboardView(ui.View):
                 "OPEN": "⏳",
                 "APPROVED": "✅",
                 "REJECTED": "🛑",
+                "CLOSED": "🔒",
+                "DISMISSED": "📁",
+                "CANCELLED": "⚪",
                 "EXPIRED": "⏰",
                 "LEFT_SERVER": "🚪",
+                "BANNED": "🔨",
             }.get(t_status, "📄")
 
             thread_mention = f"<#{t['channel_id']}>"

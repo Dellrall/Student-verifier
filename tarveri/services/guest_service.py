@@ -967,6 +967,53 @@ class GuestService:
 
         return True, f"🛑 Guest application rejected and applicant removed from the server by {admin_user.mention}."
 
+    async def close_guest_ticket_manually(
+        self,
+        ticket: dict[str, Any],
+        guild: discord.Guild,
+        admin_user: discord.User | discord.Member,
+        reason: str | None = None,
+    ) -> tuple[bool, str]:
+        """
+        Manually closes a guest review ticket without granting guest roles or kicking/banning the user.
+        Useful for spam handling, inquiry resolutions, administrative dismissals, or manual reconsideration.
+        """
+        ticket_id = ticket["ticket_id"]
+        applicant_id = ticket["applicant_id"]
+        referral_code = ticket.get("referral_code")
+        seq = ticket.get("ticket_seq") or ticket_id
+        seq_code = format_ticket_seq(seq)
+        close_reason = reason.strip() if reason and reason.strip() else "Manually closed by administrator (No action taken)"
+
+        # 0. Atomic DB transition check to ensure idempotency across concurrent admin actions
+        closed = await self.db.close_guest_ticket(
+            ticket_id, "CLOSED", closed_by_admin_id=admin_user.id, close_reason=close_reason, only_if_open=True
+        )
+        if not closed:
+            latest = await self.db.get_guest_ticket_by_id(ticket_id)
+            status_str = latest.get("status") if latest else "UNKNOWN"
+            return False, f"⚠️ Ticket #{seq_code} is already resolved ({status_str})."
+
+        # 1. Update referral code status if applicable
+        if referral_code:
+            await self.db.update_referral_code_status(
+                referral_code, guild.id, "CLOSED", used_by_discord_id=applicant_id
+            )
+
+        # 2. Cleanup temporary channel overwrites
+        await self._cleanup_channel_overwrites(guild, ticket)
+
+        # 3. Log administrative action
+        await self.db.log(
+            "INFO",
+            "GUEST_TICKET_CLOSED_MANUAL",
+            f"Admin {admin_user} (ID: {admin_user.id}) manually closed guest ticket #{seq_code} (DB ID: {ticket_id}) for applicant ID {applicant_id} in '{guild.name}' without kicking. Reason: {close_reason}",
+            guild=guild,
+            user_id=applicant_id,
+        )
+
+        return True, f"🔒 Guest review ticket #{seq_code} manually closed by {admin_user.mention} (Applicant remains in server, no roles altered)."
+
     async def _cleanup_channel_overwrites(self, guild: discord.Guild, ticket: dict[str, Any]) -> None:
         """Cleans up temporary channel permission overwrites granted to applicant/referrer."""
         channel_id = ticket.get("channel_id")
