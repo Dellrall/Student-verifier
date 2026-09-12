@@ -558,10 +558,11 @@ echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is li
   3. ⚡ **`[Auto-Calculate for Me]`**: Automatically applies `estimate_student_card_expiry()` based on the student's intake year.
 
 ### 4. Dynamic Intake Detection & Interactive Lifecycle Resolution UI
-- **Real-Time Past Intake Detection**: When a student verifies with an ID whose intake year or estimated expiry date has passed, the verification response automatically attaches the interactive `StudentLifecycleResolutionView` with 3 resolution paths:
+- **Real-Time Past Intake Detection**: When a student verifies with an ID whose intake year or estimated expiry date has passed, the verification response automatically attaches the interactive `StudentLifecycleResolutionView` with 4 resolution paths:
   1. 🎓 **"I have Graduated"**: Claims `TARUMT Alumni` role + card badge (discovers existing server alumni roles or creates official `#D4AF37` role).
   2. 📚 **"Further Studies at TARUMT"**: Opens `FurtherStudyTransitionModal` for new Student ID & study level.
   3. ⏳ **"Still Studying / Extension"**: Opens `ExtendExpiryModal` to update expiry date.
+  4. 🚪 **"Discontinue Studies / Dropout"**: Opens `StudentDropoutConfirmModal` requiring explicit confirmation text (`"Yes, I am dropping out."`). Strips student academic roles and automatically grants the `Guest(Approved)` role across mutual servers so the user preserves guest permissions and community channel access.
 - **Background Daemon (`GraduationWatchdogService`)**: Periodic sweeps (every 24h) scan `get_expired_student_verifications()`, dispatching direct message prompts with a 7-day cooldown.
 - **Active Chat & `/card` Interception**: When an expired student posts in a channel or views their `/card`, the bot provides the `StudentLifecycleResolutionView` with a 7-day cooldown to prevent spam.
 
