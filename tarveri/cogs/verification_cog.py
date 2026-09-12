@@ -103,6 +103,8 @@ def build_expiry_anomaly_embed(
 ) -> discord.Embed:
     """Builds a helpful confirmation embed when an entered expiry date exceeds the anomaly threshold."""
     display_str = format_card_expiry_display(parsed_iso)
+    current_year = datetime.now().year
+    current_yy = str(current_year)[-2:]
     embed = discord.Embed(
         title="⚠️ Please Confirm Student Card Expiry Date",
         description=(
@@ -110,7 +112,7 @@ def build_expiry_anomaly_embed(
             f"Interpreted as: **`{display_str}`** (`{parsed_iso}`)\n\n"
             f"🔍 **Notice**: {anomaly_reason}\n\n"
             f"💡 **Common Typo**: Did you enter **Day/Month** (e.g. `06/07` for 6th July) "
-            f"instead of **Month/Year** (e.g. `07/26` or `06/07/2026`)?\n\n"
+            f"instead of **Month/Year** (e.g. `07/{current_yy}` or `06/07/{current_year}`)?\n\n"
             f"Please choose an action below to proceed:"
         ),
         color=discord.Color.gold(),

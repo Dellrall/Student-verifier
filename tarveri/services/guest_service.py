@@ -117,35 +117,73 @@ class GuestService:
 
         return True, "", record
 
+    def is_channel_accessible_for_guest_threads(self, ch: discord.TextChannel | None, guild: discord.Guild) -> bool:
+        """
+        Validates that a text channel is appropriate for guest verification threads:
+        1. Channel exists and is a TextChannel.
+        2. Bot has permission to view channel, send messages, and create/manage threads.
+        3. Channel is NOT an admin/mod/staff-only locked channel (normal unverified users must be able to view threads).
+        """
+        if not ch or not isinstance(ch, discord.TextChannel):
+            return False
+
+        # 1. Bot permissions check
+        bot_member = getattr(guild, "me", None)
+        if hasattr(ch, "permissions_for") and bot_member:
+            bot_perms = ch.permissions_for(bot_member)
+            can_view = getattr(bot_perms, "view_channel", True)
+            can_thread = (
+                getattr(bot_perms, "create_private_threads", False)
+                or getattr(bot_perms, "create_public_threads", False)
+                or getattr(bot_perms, "manage_threads", False)
+            )
+            can_send = getattr(bot_perms, "send_messages", True) or getattr(bot_perms, "send_messages_in_threads", True)
+            if not (can_view and can_thread and can_send):
+                return False
+
+        # 2. Exclude staff/mod/admin restricted channels where normal users are not allowed
+        staff_keywords = (
+            "admin", "mod", "staff", "audit", "log", "backups", "database",
+            "secret", "private", "mgmt", "management", "officer", "council"
+        )
+        ch_name_lower = ch.name.lower()
+        if any(kw in ch_name_lower for kw in staff_keywords):
+            # If name indicates staff/mod/admin channel, verify if @everyone is locked out
+            if hasattr(ch, "permissions_for") and hasattr(guild, "default_role") and guild.default_role:
+                everyone_perms = ch.permissions_for(guild.default_role)
+                if not getattr(everyone_perms, "view_channel", True):
+                    return False
+            else:
+                return False
+
+        # 3. Check @everyone visibility (normal users must have view_channel to access threads)
+        if hasattr(ch, "permissions_for") and hasattr(guild, "default_role") and guild.default_role:
+            everyone_perms = ch.permissions_for(guild.default_role)
+            if hasattr(everyone_perms, "view_channel") and not everyone_perms.view_channel:
+                return False
+
+        return True
+
     async def find_parent_review_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         """
-        Finds the best parent text channel in which to spawn private guest review threads.
-        Automatically heals deleted or stale channel configurations.
+        Finds or auto-creates the best user-accessible parent text channel in which to spawn
+        private guest review threads, ensuring normal applicants and referring students can be
+        pulled into and participate in the thread.
+
+        Priority:
+        1. Configured help channel (if accessible to normal users)
+        2. Configured review channel (if accessible to normal users)
+        3. Public/User-accessible help, support, or verification channels
+        4. Any public text channel where normal users have view permissions and bot can spawn threads
+        5. Auto-creation of '#ask-for-help' channel (bound to default usage in DB)
+        6. Fallback to any channel where bot has thread permissions
         """
         settings = await self.db.get_guild_settings(guild.id)
-        # 1. Configured review channel
-        if settings and settings[3]:
-            ch = guild.get_channel(settings[3])
-            if isinstance(ch, discord.TextChannel):
-                perms = ch.permissions_for(guild.me)
-                if perms.view_channel and (perms.create_private_threads or perms.manage_threads):
-                    return ch
-            else:
-                # Stale or deleted review channel in DB
-                await self.db.clear_stale_channel_setting(guild.id, "review")
-                await self.db.log(
-                    "WARNING",
-                    "STALE_CHANNEL_HEALED",
-                    f"Configured review channel ID {settings[3]} no longer exists in '{guild.name}'. Setting cleared.",
-                    guild=guild,
-                )
-
-        # 2. Configured help channel
+        # 1. Configured help channel (highest priority for user accessibility)
         if settings and settings[1]:
             ch = guild.get_channel(settings[1])
             if isinstance(ch, discord.TextChannel):
-                perms = ch.permissions_for(guild.me)
-                if perms.view_channel and (perms.create_private_threads or perms.manage_threads):
+                if self.is_channel_accessible_for_guest_threads(ch, guild):
                     return ch
             else:
                 # Stale or deleted help channel in DB
@@ -157,20 +195,111 @@ class GuestService:
                     guild=guild,
                 )
 
-        # 3. Autodetect channel by keywords: approval, review, tickets, verify, help
-        keywords = ("approval", "review", "ticket", "mod", "admin", "staff", "verify", "help")
-        for kw in keywords:
-            for ch in guild.text_channels:
-                if kw in ch.name.lower():
-                    perms = ch.permissions_for(guild.me)
-                    if perms.view_channel and (perms.create_private_threads or perms.manage_threads):
-                        return ch
+        # 2. Configured review channel
+        if settings and settings[3]:
+            ch = guild.get_channel(settings[3])
+            if isinstance(ch, discord.TextChannel):
+                if self.is_channel_accessible_for_guest_threads(ch, guild):
+                    return ch
+            else:
+                # Stale or deleted review channel in DB
+                await self.db.clear_stale_channel_setting(guild.id, "review")
+                await self.db.log(
+                    "WARNING",
+                    "STALE_CHANNEL_HEALED",
+                    f"Configured review channel ID {settings[3]} no longer exists in '{guild.name}'. Setting cleared.",
+                    guild=guild,
+                )
 
-        # 4. First channel where bot can create private threads
-        for ch in guild.text_channels:
-            perms = ch.permissions_for(guild.me)
-            if perms.view_channel and (perms.create_private_threads or perms.manage_threads):
+        # 3. Autodetect public user-accessible channels by helpful keywords in priority order
+        keywords = ("ask-for-help", "help", "support", "bantuan", "verification", "verify", "guest", "inquiries", "inquiry", "questions", "general")
+        for kw in keywords:
+            for ch in getattr(guild, "text_channels", []):
+                if kw in ch.name.lower() and self.is_channel_accessible_for_guest_threads(ch, guild):
+                    return ch
+
+        # 4. Check any other public text channel where @everyone can view and bot can thread
+        for ch in getattr(guild, "text_channels", []):
+            if self.is_channel_accessible_for_guest_threads(ch, guild):
                 return ch
+
+        # 5. Auto-create '#ask-for-help' channel and tie it to default usage in database
+        bot_member = getattr(guild, "me", None)
+        can_create_ch = False
+        if bot_member:
+            guild_perms = getattr(bot_member, "guild_permissions", None)
+            if guild_perms and (getattr(guild_perms, "manage_channels", False) or getattr(guild_perms, "administrator", False)):
+                can_create_ch = True
+
+        if can_create_ch and hasattr(guild, "create_text_channel"):
+            try:
+                overwrites = {}
+                if hasattr(guild, "default_role") and guild.default_role:
+                    overwrites[guild.default_role] = discord.PermissionOverwrite(
+                        view_channel=True,
+                        read_message_history=True,
+                        send_messages=True,
+                        send_messages_in_threads=True,
+                        add_reactions=True,
+                    )
+                if bot_member:
+                    overwrites[bot_member] = discord.PermissionOverwrite(
+                        view_channel=True,
+                        manage_channels=True,
+                        manage_threads=True,
+                        create_private_threads=True,
+                        create_public_threads=True,
+                        send_messages=True,
+                        send_messages_in_threads=True,
+                        embed_links=True,
+                        attach_files=True,
+                    )
+
+                new_ch = await guild.create_text_channel(
+                    name="ask-for-help",
+                    overwrites=overwrites,
+                    topic="💬 TARVeri Help & Guest Verification • Ask questions or track your verification review threads here.",
+                    reason="TARVeri: Auto-created help channel for user-accessible verification and guest review threads",
+                )
+
+                # Tie newly created channel to default usage in database
+                await self.db.set_guild_help_channel(guild.id, new_ch.id)
+
+                # Send pinned welcome & guidance message
+                embed = discord.Embed(
+                    title="💬 Welcome to #ask-for-help",
+                    description=(
+                        "This channel is dedicated to **TARUMT student verification help**, inquiries, and private guest verification review threads.\n\n"
+                        "• 🎓 **Students**: Run `/verify` to receive your faculty and campus roles.\n"
+                        "• 🎟️ **Guests**: Use your referral code or submit a guest application.\n"
+                        "• ❓ **Need Assistance?**: Ask here and our staff or moderators will assist you."
+                    ),
+                    color=discord.Color.blue(),
+                )
+                embed.set_footer(text="TARVeri Automated Server Assistance")
+                try:
+                    msg = await new_ch.send(embed=embed)
+                    if hasattr(msg, "pin"):
+                        await msg.pin(reason="TARVeri: Pinned help channel guidance")
+                except Exception:
+                    pass
+
+                await self.db.log(
+                    "INFO",
+                    "AUTO_CHANNEL_CREATED",
+                    f"Auto-created user-accessible #{new_ch.name} (ID: {new_ch.id}) for verification help and guest review threads",
+                    guild=guild,
+                )
+                return new_ch
+            except (discord.HTTPException, discord.Forbidden) as e:
+                logger.warning(f"Failed to auto-create #ask-for-help channel in '{guild.name}': {e}")
+
+        # 6. Fallback to any channel where bot can create private threads if auto-creation wasn't possible
+        for ch in getattr(guild, "text_channels", []):
+            if hasattr(ch, "permissions_for") and bot_member:
+                perms = ch.permissions_for(bot_member)
+                if getattr(perms, "view_channel", False) and (getattr(perms, "create_private_threads", False) or getattr(perms, "manage_threads", False)):
+                    return ch
 
         return None
 
@@ -604,6 +733,7 @@ class GuestService:
             if hasattr(parent_ch, "set_permissions"):
                 try:
                     app_overwrite = parent_ch.overwrites_for(applicant)
+                    app_overwrite.view_channel = True
                     app_overwrite.send_messages_in_threads = True
                     app_overwrite.read_message_history = True
                     app_overwrite.attach_files = True
@@ -612,7 +742,7 @@ class GuestService:
                     res = parent_ch.set_permissions(
                         applicant,
                         overwrite=app_overwrite,
-                        reason=f"TARVeri: Allow guest applicant {applicant} to chat in review thread",
+                        reason=f"TARVeri: Allow guest applicant {applicant} to view and chat in review thread",
                     )
                     if inspect.isawaitable(res):
                         await res
@@ -632,6 +762,7 @@ class GuestService:
                     if hasattr(parent_ch, "set_permissions"):
                         try:
                             ref_overwrite = parent_ch.overwrites_for(referrer_member)
+                            ref_overwrite.view_channel = True
                             ref_overwrite.send_messages_in_threads = True
                             ref_overwrite.read_message_history = True
                             ref_overwrite.attach_files = True
@@ -640,7 +771,7 @@ class GuestService:
                             res = parent_ch.set_permissions(
                                 referrer_member,
                                 overwrite=ref_overwrite,
-                                reason=f"TARVeri: Allow referring student {referrer_member} to chat in review thread",
+                                reason=f"TARVeri: Allow referring student {referrer_member} to view and chat in review thread",
                             )
                             if inspect.isawaitable(res):
                                 await res

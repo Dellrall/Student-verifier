@@ -69,11 +69,13 @@ flowchart TD
 - Executes `PRAGMA wal_checkpoint(TRUNCATE)` on startup and shutdown to keep disk space minimal and SQLite WAL clean.
 - Uses `Database.clear_stale_channel_setting(guild_id, channel_type)` to wipe invalid Discord channel IDs from `guild_settings`.
 
-### 2. Channel Self-Healing
+### 2. Channel Self-Healing & User-Accessible Thread Channel Discovery
 - When `find_parent_review_channel`, `get_welcome_or_verify_channel`, or `is_help_channel` encounters a configured channel ID that no longer exists on Discord, it:
   1. Clears the stale setting from SQLite.
-  2. Scans for candidate channels matching keywords (`review`, `approval`, `ticket`, `help`, `welcome`).
-  3. Verifies bot permissions (`view_channel`, `create_private_threads`, `send_messages`).
+  2. Prioritizes user-accessible public channels (`#ask-for-help`, `#help`, `#support`, `#verify`, `#guest`) where normal/unverified users have `view_channel=True`, preventing threads from being spawned in admin/staff-locked channels where applicants cannot see or join the thread.
+  3. Verifies bot permissions (`view_channel`, `create_private_threads`, `send_messages_in_threads`, `send_messages`).
+  4. **Auto-Channel Creation Fallback**: If no user-accessible parent channel exists and the bot possesses `manage_channels`, TARVeri automatically provisions `#ask-for-help` with correct `@everyone` read/write permissions, binds it to SQLite default usage, and posts a pinned welcome guidance embed.
+  5. Explicitly grants `view_channel=True`, `send_messages_in_threads=True`, `read_message_history=True` to the applicant and referring student on the parent channel so they can seamlessly view and interact in private review threads.
 
 ### 3. Dynamic Faculty Role Re-Creation
 - If an admin deletes a faculty or guest role, the service detects `role is None` and automatically recreates it with standard server design colors:

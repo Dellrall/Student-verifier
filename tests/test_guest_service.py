@@ -955,3 +955,123 @@ async def test_reconcile_downtime_state_handles_manual_guest_grant(tmp_path):
     thread.edit.assert_awaited_once_with(archived=True, locked=True)
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_find_parent_review_channel_skips_admin_locked_channels(tmp_path):
+    db_path = str(tmp_path / "admin_skip.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = GuestService(bot, db)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 1122
+    guild.name = "Locked Guild"
+    guild.roles = []
+    guild.get_channel.return_value = None
+
+    default_role = MagicMock(spec=discord.Role)
+    default_role.id = guild.id
+    guild.default_role = default_role
+
+    bot_member = MagicMock(spec=discord.Member)
+    bot_member.id = 999000
+    guild.me = bot_member
+
+    # Admin only channel
+    admin_ch = MagicMock(spec=discord.TextChannel)
+    admin_ch.id = 1001
+    admin_ch.name = "admin-secret"
+    admin_perms = MagicMock()
+    admin_perms.view_channel = True
+    admin_perms.create_private_threads = True
+    admin_perms.manage_threads = True
+
+    # Everyone perms: view_channel is False
+    everyone_locked = MagicMock()
+    everyone_locked.view_channel = False
+
+    def admin_perms_for(target):
+        if target == bot_member:
+            return admin_perms
+        return everyone_locked
+
+    admin_ch.permissions_for.side_effect = admin_perms_for
+
+    # Public help channel
+    help_ch = MagicMock(spec=discord.TextChannel)
+    help_ch.id = 1002
+    help_ch.name = "ask-for-help"
+    help_bot_perms = MagicMock()
+    help_bot_perms.view_channel = True
+    help_bot_perms.create_private_threads = True
+    help_bot_perms.manage_threads = True
+
+    everyone_open = MagicMock()
+    everyone_open.view_channel = True
+
+    def help_perms_for(target):
+        if target == bot_member:
+            return help_bot_perms
+        return everyone_open
+
+    help_ch.permissions_for.side_effect = help_perms_for
+
+    guild.text_channels = [admin_ch, help_ch]
+
+    resolved_ch = await service.find_parent_review_channel(guild)
+    # Must pick help_ch, NOT admin_ch
+    assert resolved_ch == help_ch
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_find_parent_review_channel_auto_creates_ask_for_help_channel(tmp_path):
+    db_path = str(tmp_path / "auto_create_ch.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = GuestService(bot, db)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 3344
+    guild.name = "No Help Channel Guild"
+    guild.roles = []
+    guild.get_channel.return_value = None
+
+    default_role = MagicMock(spec=discord.Role)
+    default_role.id = guild.id
+    guild.default_role = default_role
+
+    bot_member = MagicMock(spec=discord.Member)
+    bot_member.id = 999000
+    bot_member.guild_permissions.manage_channels = True
+    guild.me = bot_member
+
+    # Guild has no text channels currently accessible to users
+    guild.text_channels = []
+
+    # Mock create_text_channel
+    created_ch = MagicMock(spec=discord.TextChannel)
+    created_ch.id = 778899
+    created_ch.name = "ask-for-help"
+    created_ch.send = AsyncMock()
+    guild.create_text_channel = AsyncMock(return_value=created_ch)
+
+    resolved_ch = await service.find_parent_review_channel(guild)
+    assert resolved_ch == created_ch
+    guild.create_text_channel.assert_called_once()
+    assert guild.create_text_channel.call_args[1]["name"] == "ask-for-help"
+
+    # Verify new channel ID was tied to guild help channel in DB
+    settings = await db.get_guild_settings(guild.id)
+    assert settings[1] == created_ch.id
+
+    # Verify welcome message was sent to the new channel
+    created_ch.send.assert_called_once()
+
+    await db.close()

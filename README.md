@@ -86,13 +86,14 @@ To safely pull upstream updates with automatic database backup (10-file rotation
   1. **Step 1 (Voucher)**: The referring student submits their vouch statement/context.
   2. **Step 2 (Admin Team)**: Server admins review the context and click **`[Approve Guest]`** or **`[Reject / Veto]`**.
 * **Alphanumeric Ticket Tracking**: Private review threads and audit records use alphanumeric sequence numbers (`#A0001`, `#A0002` ... `#Z9999` $\to$ `#AA0001`).
+* **User-Accessible Thread Channel Discovery**: Always spawns private review threads in parent channels accessible to normal/unverified users (e.g. `#ask-for-help`, `#help`, `#support`). Automatically creates a public `#ask-for-help` channel with pinned guidance if no accessible parent channel exists, avoiding inaccessible admin/staff-locked channels.
 * **Intelligent Staff Tagging & 1-Hour Escalation**: The bot tags a batch of 2 admins (active/online moderators first, then highest authority). If 1 hour passes without admin response, it automatically escalates by tagging the next 2 admins.
 * **Audit Trail**: All reason notes, comments, voucher IDs, and admin verdicts are stored with timestamps in the database.
 * **Automatic Revocation**: Guest access and active tickets are automatically revoked if a member leaves, is kicked, or is banned from the server.
 
 ### 🛡️ Self-Healing & Auto-Recovery Engine
 * **Database Auto-Healing**: Executes `PRAGMA integrity_check` on connection startup and truncates SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) on startup/shutdown.
-* **Channel Drift & Deleted Channel Recovery**: If configured review, help, or welcome channels are deleted, TARVeri clears stale database IDs and falls back smoothly to keyword-matched channels (`review`, `approval`, `ticket`, `help`, `welcome`).
+* **Channel Drift & Deleted Channel Recovery**: If configured review, help, or welcome channels are deleted, TARVeri clears stale database IDs, falls back smoothly to user-accessible channels, or auto-creates `#ask-for-help`.
 * **Dynamic Role Auto-Creation & Fuzzy Discovery**: If faculty, campus, study level, or guest roles are deleted from Discord, the bot automatically recreates them with official palette colors without failing verifications.
 * **Duplicate Role Cleanup & Migration**: Scans servers for duplicate faculty roles, migrates members to the primary role, and deletes bot-created duplicates while strictly protecting admin-created roles.
 * **SRC & Council Role Protection**: Functional student council roles (`FAFB SRC`, `FOCS SRC`, etc.) are protected from deduplication and automatically recreated if missing.
