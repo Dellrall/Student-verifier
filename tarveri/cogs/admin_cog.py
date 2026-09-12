@@ -348,10 +348,10 @@ class AdminCog(commands.Cog, name="Admin"):
             roles_to_remove = [
                 r
                 for r in getattr(member, "roles", [])
-                if self.service._match_faculty_role_in_list([r], r.name) is not None
-                or self.service._match_campus_role_in_list([r], r.name) is not None
-                or self.service._match_study_level_role_in_list([r], r.name) is not None
-                or r.name.strip().lower() in ("tarumt alumni", "alumni")
+                if any(self.service._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES)
+                or any(self.service._match_campus_role_in_list([r], camp) is not None for camp in CAMPUS_ROLE_NAMES)
+                or any(self.service._match_study_level_role_in_list([r], lvl) is not None for lvl in STUDY_LEVEL_ROLE_NAMES)
+                or self.service._match_alumni_role_in_list([r]) is not None
             ]
 
             me = getattr(guild, "me", None)

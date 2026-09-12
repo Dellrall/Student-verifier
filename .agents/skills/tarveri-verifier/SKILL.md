@@ -100,7 +100,15 @@ flowchart TD
 - `VerificationService.reconcile_alumni_members(guild)` checks all claimed alumni in the database and restores the `TARUMT Alumni` role across mutual servers during bot startup and `/diagnose`.
 
 ### 6. Duplicate Role Reconciliation & Cleanup Engine
-- `VerificationService.reconcile_duplicate_roles(guild)` automatically scans guilds for duplicate faculty or guest roles (e.g. `FOCS` vs `focs` or newly spawned bottom duplicates).
+- `VerificationService.reconcile_duplicate_roles(guild)` automatically scans guilds for duplicate roles partitioned across strict domain categories:
+  - **Faculty Roles**: `FACULTY_ROLE_NAMES` (`FAFB`, `CPUS`, `FOCS`, `FCCI`, `FOAS`, `FOBE`, `FSSH`, `FOET`).
+  - **Study Level Roles**: `STUDY_LEVEL_ROLE_NAMES` (`Diploma`, `Degree`, `Foundation`, `Postgraduate`).
+  - **Branch Campus Roles**: `CAMPUS_ROLE_NAMES` (`KL Main Campus`, `Penang Branch`, etc.).
+  - **Guest Roles**: Configured or regex-matched guest roles.
+- **Cross-Domain Separation (CPUS vs Foundation)**:
+  - **CPUS** is strictly matched as an academic faculty (`Centre for Pre-University Studies`), never as a study level.
+  - **Foundation** is strictly matched as a study level, never as a faculty.
+  - Reconciliation groups are fully isolated so `CPUS` and `Foundation` roles never collide, misidentify, or trigger mutual deletion during self-healing.
 - Identifies the primary role (highest position in role hierarchy and member count).
 - Migrates all members on redundant duplicate role(s) to the primary role (`add_roles` + `remove_roles`).
 - **Strict Bot-Created Protection**: ONLY deletes redundant duplicate role(s) that were created by the bot (tracked via SQLite `bot_created_roles` and Discord audit logs). Admin-created roles are strictly preserved.

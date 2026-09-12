@@ -53,8 +53,6 @@ FACULTY_ALIASES: Final[dict[str, list[str]]] = {
         "Pre-University",
         "Pre-U Studies",
         "Pre-U",
-        "Foundation Studies",
-        "Foundation",
         "CPUS",
     ],
     "FOCS": [
@@ -285,8 +283,12 @@ STUDY_LEVEL_ALIASES: Final[dict[str, list[str]]] = {
     "Foundation": [
         "Foundation",
         "Foundation Student",
-        "Pre-U",
-        "Pre-University",
+        "Foundation Students",
+        "Foundation Studies",
+        "Foundation Programme",
+        "Foundation Program",
+        "Pre-U Student",
+        "Pre-University Student",
     ],
     "Postgraduate": [
         "Postgraduate",

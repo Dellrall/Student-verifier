@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord import ui
 
-from tarveri.config import FACULTY_ROLES
+from tarveri.config import (
+    CAMPUS_ROLE_NAMES,
+    FACULTY_ROLE_NAMES,
+    FACULTY_ROLES,
+    STUDY_LEVEL_ROLE_NAMES,
+)
 from tarveri.services.log_service import archive_old_logs, list_daily_logs, list_log_archives
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.utils import format_ticket_seq, schedule_ttl_delete
@@ -76,10 +81,10 @@ class UnverifyModal(ui.Modal, title="❌ Unverify Student"):
             roles_to_remove = [
                 r
                 for r in getattr(member, "roles", [])
-                if self.cog.service._match_faculty_role_in_list([r], r.name) is not None
-                or self.cog.service._match_campus_role_in_list([r], r.name) is not None
-                or self.cog.service._match_study_level_role_in_list([r], r.name) is not None
-                or r.name.strip().lower() in ("tarumt alumni", "alumni")
+                if any(self.cog.service._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES)
+                or any(self.cog.service._match_campus_role_in_list([r], camp) is not None for camp in CAMPUS_ROLE_NAMES)
+                or any(self.cog.service._match_study_level_role_in_list([r], lvl) is not None for lvl in STUDY_LEVEL_ROLE_NAMES)
+                or (self.cog.service._match_alumni_role_in_list([r]) is not None if hasattr(self.cog.service, "_match_alumni_role_in_list") else r.name.strip().lower() in ("tarumt alumni", "alumni"))
             ]
 
             me = getattr(guild, "me", None)

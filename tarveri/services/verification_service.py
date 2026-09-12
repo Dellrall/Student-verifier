@@ -140,6 +140,15 @@ class VerificationService:
         def _is_safe_role(r_name: str) -> bool:
             if not target_has_qualifier and ROLE_QUALIFIER_PATTERN.search(r_name):
                 return False
+            # Cross-domain guard: Never match study level, campus, or alumni roles as faculty roles
+            r_upper = r_name.strip().upper()
+            if target_name in FACULTY_ROLE_NAMES:
+                if any(r_upper == lvl.upper() for lvl in STUDY_LEVEL_ROLE_NAMES):
+                    return False
+                if any(r_upper == c.upper() for c in CAMPUS_ROLE_NAMES):
+                    return False
+                if r_upper == ALUMNI_ROLE_NAME.upper():
+                    return False
             return True
 
         # Tier 1: Exact match
@@ -477,21 +486,37 @@ class VerificationService:
         target_alnum = re.sub(r"[^A-Za-z0-9]", "", target_upper)
         aliases = CAMPUS_ALIASES.get(target_name, [target_name])
 
+        # Tier 1: Exact match
         for r in roles:
             if getattr(r, "name", None) == target_name:
                 return r
 
-        for r in roles:
+        def _is_safe_campus_role(r_name: str) -> bool:
+            if ROLE_QUALIFIER_PATTERN.search(r_name):
+                return False
+            r_upper = r_name.strip().upper()
+            if target_name in CAMPUS_ROLE_NAMES:
+                if any(r_upper == fac.upper() for fac in FACULTY_ROLE_NAMES):
+                    return False
+                if any(r_upper == lvl.upper() for lvl in STUDY_LEVEL_ROLE_NAMES):
+                    return False
+                if r_upper == ALUMNI_ROLE_NAME.upper():
+                    return False
+            return True
+
+        safe_roles = [r for r in roles if _is_safe_campus_role(getattr(r, "name", ""))]
+
+        for r in safe_roles:
             if getattr(r, "name", "").strip().upper() == target_upper:
                 return r
 
         for alias in aliases:
             alias_upper = alias.strip().upper()
-            for r in roles:
+            for r in safe_roles:
                 if getattr(r, "name", "").strip().upper() == alias_upper:
                     return r
 
-        for r in roles:
+        for r in safe_roles:
             r_alnum = re.sub(r"[^A-Za-z0-9]", "", getattr(r, "name", "").upper())
             if r_alnum == target_alnum and r_alnum:
                 return r
@@ -578,21 +603,37 @@ class VerificationService:
         target_alnum = re.sub(r"[^A-Za-z0-9]", "", target_upper)
         aliases = STUDY_LEVEL_ALIASES.get(target_name, [target_name])
 
+        # Tier 1: Exact match
         for r in roles:
             if getattr(r, "name", None) == target_name:
                 return r
 
-        for r in roles:
+        def _is_safe_level_role(r_name: str) -> bool:
+            if ROLE_QUALIFIER_PATTERN.search(r_name):
+                return False
+            r_upper = r_name.strip().upper()
+            if target_name in STUDY_LEVEL_ROLE_NAMES:
+                if any(r_upper == fac.upper() for fac in FACULTY_ROLE_NAMES):
+                    return False
+                if any(r_upper == c.upper() for c in CAMPUS_ROLE_NAMES):
+                    return False
+                if r_upper == ALUMNI_ROLE_NAME.upper():
+                    return False
+            return True
+
+        safe_roles = [r for r in roles if _is_safe_level_role(getattr(r, "name", ""))]
+
+        for r in safe_roles:
             if getattr(r, "name", "").strip().upper() == target_upper:
                 return r
 
         for alias in aliases:
             alias_upper = alias.strip().upper()
-            for r in roles:
+            for r in safe_roles:
                 if getattr(r, "name", "").strip().upper() == alias_upper:
                     return r
 
-        for r in roles:
+        for r in safe_roles:
             r_alnum = re.sub(r"[^A-Za-z0-9]", "", getattr(r, "name", "").upper())
             if r_alnum == target_alnum and r_alnum:
                 return r
@@ -1698,18 +1739,51 @@ class VerificationService:
             exact_match = 1 if getattr(role, "name", "").strip().lower() == target_name.strip().lower() else 0
             return (exact_match, pos, member_count)
 
-        # 1. Group by faculty (strictly ignoring SRC, Council, Committee, and staff roles)
+        # 1. Group by faculty (strictly ignoring SRC, Council, Committee, study level, campus, and staff roles)
         category_roles: dict[str, list[discord.Role]] = {}
         for r in guild_roles:
             r_name = getattr(r, "name", "")
             if not r_name or ROLE_QUALIFIER_PATTERN.search(r_name):
+                continue
+            r_upper = r_name.strip().upper()
+            if any(r_upper == lvl.upper() for lvl in STUDY_LEVEL_ROLE_NAMES):
+                continue
+            if any(r_upper == c.upper() for c in CAMPUS_ROLE_NAMES):
+                continue
+            if r_upper == ALUMNI_ROLE_NAME.upper():
                 continue
             for fac in FACULTY_ROLE_NAMES:
                 if self._match_faculty_role_in_list([r], fac) is not None:
                     category_roles.setdefault(fac, []).append(r)
                     break
 
-        # 2. Group guest roles
+        # 2. Group study level roles (strictly partitioned)
+        for r in guild_roles:
+            r_name = getattr(r, "name", "")
+            if not r_name or ROLE_QUALIFIER_PATTERN.search(r_name):
+                continue
+            r_upper = r_name.strip().upper()
+            if any(r_upper == fac.upper() for fac in FACULTY_ROLE_NAMES):
+                continue
+            for lvl in STUDY_LEVEL_ROLE_NAMES:
+                if self._match_study_level_role_in_list([r], lvl) is not None:
+                    category_roles.setdefault(lvl, []).append(r)
+                    break
+
+        # 3. Group campus roles (strictly partitioned)
+        for r in guild_roles:
+            r_name = getattr(r, "name", "")
+            if not r_name or ROLE_QUALIFIER_PATTERN.search(r_name):
+                continue
+            r_upper = r_name.strip().upper()
+            if any(r_upper == fac.upper() for fac in FACULTY_ROLE_NAMES):
+                continue
+            for camp in CAMPUS_ROLE_NAMES:
+                if self._match_campus_role_in_list([r], camp) is not None:
+                    category_roles.setdefault(camp, []).append(r)
+                    break
+
+        # 4. Group guest roles
         settings = await self.db.get_guild_settings(guild.id)
         configured_guest_name = settings[2].strip() if settings and len(settings) > 2 and settings[2] else None
         guest_roles: list[discord.Role] = []
@@ -1725,7 +1799,7 @@ class VerificationService:
         if guest_roles:
             category_roles["Guest"] = guest_roles
 
-        # 3. Process categories with duplicates
+        # 5. Process categories with duplicates
         for cat_name, roles_found in category_roles.items():
             stats["checked_categories"] += 1
             if len(roles_found) <= 1:
@@ -1840,6 +1914,15 @@ class VerificationService:
         seen_faculties: dict[str, list[discord.Role]] = {}
         for r in guild_roles:
             r_name = getattr(r, "name", "")
+            if not r_name or ROLE_QUALIFIER_PATTERN.search(r_name):
+                continue
+            r_upper = r_name.strip().upper()
+            if any(r_upper == lvl.upper() for lvl in STUDY_LEVEL_ROLE_NAMES):
+                continue
+            if any(r_upper == c.upper() for c in CAMPUS_ROLE_NAMES):
+                continue
+            if r_upper == ALUMNI_ROLE_NAME.upper():
+                continue
             for fac in FACULTY_ROLE_NAMES:
                 if self._match_faculty_role_in_list([r], fac) is not None:
                     seen_faculties.setdefault(fac, []).append(r)

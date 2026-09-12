@@ -1191,6 +1191,179 @@ async def test_perform_verification_when_student_has_conflicting_faculty_role(tm
         await db.close()
 
 
+@pytest.mark.asyncio
+async def test_cpus_faculty_and_foundation_level_domain_isolation():
+    """Verifies that CPUS (faculty) and Foundation (study level) roles never match or collide."""
+    bot = MagicMock()
+    db = MagicMock()
+    service = VerificationService(bot, db, "secret_key", RateLimiter())
+
+    # Faculty matcher tests for CPUS
+    role_foundation = MagicMock(spec=discord.Role, name="Foundation")
+    role_foundation.name = "Foundation"
+    role_foundation.position = 10
+
+    role_foundation_studies = MagicMock(spec=discord.Role, name="Foundation Studies")
+    role_foundation_studies.name = "Foundation Studies"
+    role_foundation_studies.position = 10
+
+    role_cpus = MagicMock(spec=discord.Role, name="CPUS")
+    role_cpus.name = "CPUS"
+    role_cpus.position = 10
+
+    role_cpus_full = MagicMock(spec=discord.Role, name="Centre for Pre-University Studies")
+    role_cpus_full.name = "Centre for Pre-University Studies"
+    role_cpus_full.position = 10
+
+    # _match_faculty_role_in_list for CPUS must NOT match Foundation roles
+    assert service._match_faculty_role_in_list([role_foundation], "CPUS") is None
+    assert service._match_faculty_role_in_list([role_foundation_studies], "CPUS") is None
+    assert service._match_faculty_role_in_list([role_cpus], "CPUS") == role_cpus
+    assert service._match_faculty_role_in_list([role_cpus_full], "CPUS") == role_cpus_full
+
+    # _match_study_level_role_in_list for Foundation must NOT match CPUS roles
+    assert service._match_study_level_role_in_list([role_cpus], "Foundation") is None
+    assert service._match_study_level_role_in_list([role_cpus_full], "Foundation") is None
+    assert service._match_study_level_role_in_list([role_foundation], "Foundation") == role_foundation
+    assert service._match_study_level_role_in_list([role_foundation_studies], "Foundation") == role_foundation_studies
+
+
+@pytest.mark.asyncio
+async def test_reconcile_duplicate_roles_does_not_delete_foundation_when_cpus_exists(tmp_path):
+    """Verifies that self-healing deduplication treats CPUS and Foundation as separate categories and never deletes either."""
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 12345
+    guild.name = "TARUMT Test Server"
+
+    # CPUS role (Faculty)
+    cpus_role = MagicMock(spec=discord.Role)
+    cpus_role.id = 101
+    cpus_role.name = "CPUS"
+    cpus_role.position = 10
+    cpus_role.managed = False
+    cpus_role.is_default.return_value = False
+    cpus_role.delete = AsyncMock()
+    cpus_role.members = []
+
+    # Foundation role (Study Level)
+    foundation_role = MagicMock(spec=discord.Role)
+    foundation_role.id = 102
+    foundation_role.name = "Foundation"
+    foundation_role.position = 8
+    foundation_role.managed = False
+    foundation_role.is_default.return_value = False
+    foundation_role.delete = AsyncMock()
+    foundation_role.members = []
+
+    guild.roles = [cpus_role, foundation_role]
+    me = MagicMock(spec=discord.Member)
+    me.guild_permissions.manage_roles = True
+    me.top_role.position = 20
+    guild.me = me
+
+    db = Database(str(tmp_path / "dedup_cpus_foundation.db"))
+    await db.connect()
+    try:
+        # Mark both as bot-created roles
+        await db.record_bot_created_role(guild.id, cpus_role.id, "CPUS")
+        await db.record_bot_created_role(guild.id, foundation_role.id, "Foundation")
+
+        service = VerificationService(bot, db, "secret_key", RateLimiter())
+        stats = await service.reconcile_duplicate_roles(guild)
+
+        # Neither role was deleted!
+        assert stats["deleted_roles"] == 0
+        assert stats["migrated_members"] == 0
+        cpus_role.delete.assert_not_called()
+        foundation_role.delete.assert_not_called()
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_verified_members_for_cpus_and_foundation_students(tmp_path):
+    """Verifies that self-healing role sync maintains both CPUS faculty and Foundation level roles simultaneously."""
+    bot = MagicMock()
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 88888
+    guild.name = "TARUMT Sync Guild"
+
+    cpus_role = MagicMock(spec=discord.Role)
+    cpus_role.id = 201
+    cpus_role.name = "CPUS"
+    cpus_role.position = 10
+
+    focs_role = MagicMock(spec=discord.Role)
+    focs_role.id = 202
+    focs_role.name = "FOCS"
+    focs_role.position = 10
+
+    camp_role = MagicMock(spec=discord.Role)
+    camp_role.id = 203
+    camp_role.name = "KL Main Campus"
+    camp_role.position = 9
+
+    foundation_role = MagicMock(spec=discord.Role)
+    foundation_role.id = 204
+    foundation_role.name = "Foundation"
+    foundation_role.position = 8
+
+    guild.roles = [cpus_role, focs_role, camp_role, foundation_role]
+    me = MagicMock(spec=discord.Member)
+    me.guild_permissions.manage_roles = True
+    me.top_role.position = 20
+    guild.me = me
+
+    # Member 1: CPUS + Foundation (25WPF01234)
+    m1 = MagicMock(spec=discord.Member)
+    m1.id = 11111
+    m1.roles = [cpus_role, camp_role, foundation_role]
+    m1.add_roles = AsyncMock()
+    m1.remove_roles = AsyncMock()
+
+    # Member 2: FOCS + Foundation (25WMF01234)
+    m2 = MagicMock(spec=discord.Member)
+    m2.id = 22222
+    m2.roles = [focs_role, camp_role, foundation_role]
+    m2.add_roles = AsyncMock()
+    m2.remove_roles = AsyncMock()
+
+    def _get_member(uid):
+        if uid == 11111:
+            return m1
+        elif uid == 22222:
+            return m2
+        return None
+
+    guild.get_member.side_effect = _get_member
+    bot.guilds = [guild]
+
+    db = Database(str(tmp_path / "sync_cpus_foundation.db"))
+    await db.connect()
+    try:
+        # Record member 1: CPUS ('P'), campus 'W', level 'F'
+        hash_1 = hash_student_id("25WPF01234", "secret_key")
+        await db.record_verification(11111, hash_1, "P", campus_code="W", level_code="F")
+
+        # Record member 2: FOCS ('M'), campus 'W', level 'F'
+        hash_2 = hash_student_id("25WMF01234", "secret_key")
+        await db.record_verification(22222, hash_2, "M", campus_code="W", level_code="F")
+
+        service = VerificationService(bot, db, "secret_key", RateLimiter())
+        summary = await service.reconcile_verified_members(guild)
+
+        assert summary["checked"] == 2
+        assert summary["failed"] == 0
+
+        # Neither member had Foundation role removed as a conflicting faculty role!
+        m1.remove_roles.assert_not_called()
+        m2.remove_roles.assert_not_called()
+    finally:
+        await db.close()
+
+
+
 
 
 
