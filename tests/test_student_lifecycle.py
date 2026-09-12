@@ -17,6 +17,7 @@ from tarveri.cogs.verification_cog import (
     ExtendExpiryModal,
     FurtherStudyTransitionModal,
     ReEnterExpiryModal,
+    StudentDropoutConfirmModal,
     StudentLifecycleResolutionView,
     VerificationCog,
     VerificationModal,
@@ -206,6 +207,11 @@ async def test_student_lifecycle_resolution_view_buttons():
     # Test Extend Button Callback
     interaction.response.send_modal.reset_mock()
     await view.children[2].callback(interaction)
+    interaction.response.send_modal.assert_called_once()
+
+    # Test Dropout Button Callback
+    interaction.response.send_modal.reset_mock()
+    await view.children[3].callback(interaction)
     interaction.response.send_modal.assert_called_once()
 
 
@@ -775,6 +781,148 @@ async def test_guest_cog_student_verification_modal_anomalous_expiry(tmp_path):
     assert isinstance(kwargs.get("view"), ExpiryAnomalyConfirmView)
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_student_dropout_confirm_modal_validation(tmp_path):
+    db_path = str(tmp_path / "dropout_validation.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = VerificationService(bot, db, "secret", RateLimiter())
+
+    user_id = 998800
+    await db.record_verification(user_id, "hash_drop", "M", campus_code="W", level_code="R")
+
+    modal = StudentDropoutConfirmModal(service, db)
+
+    # 1. Invalid confirmation phrase should be rejected
+    modal.confirmation._value = "I am quitting"
+    interaction = MagicMock(spec=discord.Interaction)
+    user = MagicMock(spec=discord.Member)
+    user.id = user_id
+    interaction.user = user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await modal.on_submit(interaction)
+
+    interaction.followup.send.assert_called_once()
+    msg = interaction.followup.send.call_args[0][0]
+    assert "Confirmation phrase did not match" in msg
+    # DB record should still exist
+    assert await db.get_verification_by_user(user_id) is not None
+
+    # 2. Valid confirmation phrase "Yes, I am dropping out." succeeds
+    interaction.followup.send.reset_mock()
+    modal.confirmation._value = "Yes, I am dropping out."
+    modal.reason._value = "Transferred to overseas uni"
+
+    await modal.on_submit(interaction)
+
+    interaction.followup.send.assert_called_once()
+    success_msg = interaction.followup.send.call_args[0][0]
+    assert "Student verification removed" in success_msg
+    # DB record should be deleted
+    assert await db.get_verification_by_user(user_id) is None
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_process_student_dropout_service_lifecycle(tmp_path):
+    db_path = str(tmp_path / "dropout_service.db")
+    db = Database(db_path)
+    await db.connect()
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 1234
+    guild.name = "TARUMT Main Campus"
+
+    fac_role = MagicMock(spec=discord.Role)
+    fac_role.name = "FOCS"
+    fac_role.position = 5
+    camp_role = MagicMock(spec=discord.Role)
+    camp_role.name = "KL Main Campus"
+    camp_role.position = 4
+    lvl_role = MagicMock(spec=discord.Role)
+    lvl_role.name = "Degree"
+    lvl_role.position = 3
+
+    bot = MagicMock()
+    bot.guilds = [guild]
+    rate_limiter = RateLimiter()
+    service = VerificationService(bot, db, "secret", rate_limiter)
+
+    user_id = 554433
+    await db.record_verification(user_id, "hash_drop_2", "M", campus_code="W", level_code="R")
+
+    member = MagicMock(spec=discord.Member)
+    member.id = user_id
+    member.roles = [fac_role, camp_role, lvl_role]
+    member.remove_roles = AsyncMock()
+    guild.get_member.return_value = member
+
+    me = MagicMock()
+    me.guild_permissions.manage_roles = True
+    me.top_role.position = 10
+    guild.me = me
+
+    # Process dropout
+    result = await service.process_student_dropout(member, reason="Gap year")
+    assert result["success"] is True
+    assert result["faculty_name"] == "FOCS"
+    assert result["campus_name"] == "KL Main Campus"
+    assert result["level_name"] == "Degree"
+
+    # Verify roles removal called
+    assert member.remove_roles.call_count >= 1
+
+    # Verify DB record deleted
+    assert await db.get_verification_by_user(user_id) is None
+
+    # Test unverfied user calling dropout returns error
+    err_res = await service.process_student_dropout(member)
+    assert err_res["success"] is False
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_dropout_slash_command(tmp_path):
+    db_path = str(tmp_path / "dropout_slash.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = VerificationService(bot, db, "secret", RateLimiter())
+    cog = VerificationCog(bot, db, service, RateLimiter())
+
+    interaction = MagicMock(spec=discord.Interaction)
+    user = MagicMock()
+    user.id = 887766
+    interaction.user = user
+    interaction.response.send_message = AsyncMock()
+    interaction.response.send_modal = AsyncMock()
+
+    # 1. Unverified user running /dropout
+    await cog.dropout_slash.callback(cog, interaction)
+    interaction.response.send_message.assert_called_once()
+    assert "You do not have an active student verification" in interaction.response.send_message.call_args[0][0]
+
+    # 2. Verified user running /dropout opens modal
+    await db.record_verification(user.id, "hash_drop_3", "M")
+    interaction.response.send_message.reset_mock()
+    interaction.response.send_modal.reset_mock()
+
+    await cog.dropout_slash.callback(cog, interaction)
+    interaction.response.send_modal.assert_called_once()
+    modal_arg = interaction.response.send_modal.call_args[0][0]
+    assert isinstance(modal_arg, StudentDropoutConfirmModal)
+
+    await db.close()
+
 
 
 

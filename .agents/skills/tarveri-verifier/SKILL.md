@@ -163,7 +163,8 @@ flowchart TD
   - **`Confirm Date`**: Proceeds with the input date and assigns roles or triggers alumni transition.
   - **`Re-enter Date`**: Launches a 1-click re-input modal (`ExpiryReentryModal`) with dynamic formatting hints.
   - **`Auto-Calculate`**: Computes standard graduation expiry based on study level (`F`: +1y, `D`: +2y, `R`: +3y, `P`: +2y).
-- **Active-Chat Graduation Prompts**: When a student with an expired card participates in server channels, TARVeri delivers an interactive lifecycle resolution menu (🎓 Graduated Alumni / 📚 Further Studies / ⏳ Extend Expiry).
+- **Active-Chat Graduation Prompts**: When a student with an expired card participates in server channels, TARVeri delivers an interactive lifecycle resolution menu (🎓 Graduated Alumni / 📚 Further Studies / ⏳ Extend Expiry / 🚪 Discontinue Studies).
+- **Discontinuation & Dropout Self-Service (`StudentDropoutConfirmModal`)**: Students who discontinue their studies can voluntarily withdraw verification via the resolution prompt or `/dropout`. Requires typing an explicit confirmation phrase (`"Yes, I am dropping out."`) to prevent accidental clicks before revoking student roles across mutual guilds and clearing SQLite records.
 - **Graduation Watchdog Daemon (`GraduationWatchdogService`)**: Runs daily background sweeps to identify expired cards and send courteous DM notices with a 7-day cooldown.
 
 ### 14. Real-Time Member Departure, Ban, & Downtime Ticket Auto-Cleanup
@@ -198,10 +199,7 @@ flowchart TD
      - `10000` $\to$ `#B0001`
      - `260000` $\to$ `#AA0001`
 
-3. **Batch-of-2 Staff Tagging**:
-   - Selects a batch of exactly 2 admins per notification, prioritizing active/online staff first, then highest-authority staff (Server Owner $\to$ Senior Admins).
-
-4. **1-Hour Ticket Escalation**:
+3. **Smart Tiered Escalation**:
    - Background task `_escalation_loop` checks open review tickets. If 1 hour passes without admin response, it tags the next 2 admins in the hierarchy.
 
 ---
@@ -211,6 +209,7 @@ flowchart TD
 ### Student & Member Commands
 - `/verify [student_id]` — Submit student ID via private modal or direct argument.
 - `/graduate [year] [programme]` — Instant graduation claim for verified students to receive `TARUMT Alumni` role and card badge.
+- `/dropout` — Discontinue student verification and withdraw faculty/campus/level roles with mandatory confirmation phrase (`"Yes, I am dropping out."`).
 - `/card [member] [hidden]` — Generate and render high-DPI digital student/guest/alumni ID card with glassmorphism design and achievement badges (public by default, or `hidden: True`).
 - `View Campus Card` (User Context Menu) — Inspect and share member's campus card via Discord user menu.
 - `/referral generate [ttl_hours]` — Generate single-use guest referral code (max 3 active).

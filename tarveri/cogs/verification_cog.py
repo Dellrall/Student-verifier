@@ -541,6 +541,64 @@ class ExtendExpiryModal(discord.ui.Modal, title="Extend Student Card Validity"):
         schedule_ttl_delete(interaction, delay=60.0)
 
 
+class StudentDropoutConfirmModal(discord.ui.Modal, title="⚠️ Confirm Studies Discontinuation"):
+    confirmation = discord.ui.TextInput(
+        label="Type 'Yes, I am dropping out.' to confirm",
+        placeholder="Yes, I am dropping out.",
+        min_length=15,
+        max_length=40,
+        required=True,
+    )
+    reason = discord.ui.TextInput(
+        label="Reason for Discontinuation (Optional)",
+        placeholder="e.g. Transferred universities, career shift, taking a gap year",
+        min_length=0,
+        max_length=200,
+        required=False,
+        style=discord.TextStyle.paragraph,
+    )
+
+    def __init__(self, service: VerificationService, db: Database):
+        super().__init__()
+        self.service = service
+        self.db = db
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        confirm_text = self.confirmation.value.strip()
+        expected = "Yes, I am dropping out."
+
+        if confirm_text.rstrip(".").lower() != expected.rstrip(".").lower():
+            await interaction.followup.send(
+                f"❌ **Confirmation phrase did not match.**\n\n"
+                f"To confirm discontinuation of studies and remove your student verification, you must type exactly:\n"
+                f"`{expected}`\n\n"
+                f"*(Your verification status and server roles remain unchanged.)*",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=30.0)
+            return
+
+        reason_text = self.reason.value.strip() if self.reason.value else "Self-reported dropout"
+        result = await self.service.process_student_dropout(interaction.user, reason=reason_text)
+        if not result["success"]:
+            await interaction.followup.send(
+                f"❌ {result.get('error_message', 'Could not process dropout request.')}",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=30.0)
+            return
+
+        await interaction.followup.send(
+            "🚪 **Student verification removed.**\n\n"
+            "Your student verification and corresponding faculty, campus, and study level roles have been withdrawn across all mutual servers.\n"
+            "If you ever resume your studies at TARUMT in the future, you are welcome to run `/verify` again anytime.\n\n"
+            "We wish you the very best in your future endeavors! 🌟",
+            ephemeral=True,
+        )
+        schedule_ttl_delete(interaction, delay=60.0)
+
+
 class StudentLifecycleResolutionView(discord.ui.View):
     """Interactive persistent view presented to students whose card expiry is reached."""
 
@@ -583,6 +641,16 @@ class StudentLifecycleResolutionView(discord.ui.View):
     )
     async def on_extend(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await interaction.response.send_modal(ExtendExpiryModal(self.db, self.service))
+
+    @discord.ui.button(
+        label="Discontinue Studies / Dropout",
+        style=discord.ButtonStyle.danger,
+        emoji="🚪",
+        custom_id="tarveri_lifecycle_dropout",
+        row=1,
+    )
+    async def on_dropout(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(StudentDropoutConfirmModal(self.service, self.db))
 
 
 class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verification"):
@@ -866,6 +934,23 @@ class VerificationCog(commands.Cog, name="Verification"):
         )
         embed.set_footer(text="TARVeri Alumni Verification • Instant & Tamper-Proof")
         await interaction.followup.send(embed=embed, ephemeral=False)
+
+    @app_commands.command(
+        name="dropout",
+        description="Discontinue your student status and withdraw student verification roles.",
+    )
+    async def dropout_slash(self, interaction: discord.Interaction) -> None:
+        """Slash command for a verified student to withdraw and remove their student verification."""
+        existing = await self.db.get_verification_by_user(interaction.user.id)
+        if not existing:
+            await interaction.response.send_message(
+                "❌ You do not have an active student verification record in the database.",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=30.0)
+            return
+
+        await interaction.response.send_modal(StudentDropoutConfirmModal(self.service, self.db))
 
     def invalidate_guild_cache(self, guild_id: int | None = None) -> None:
         """Clears cached channel settings for a guild or all guilds."""
@@ -1214,7 +1299,8 @@ class VerificationCog(commands.Cog, name="Verification"):
                 "Please confirm your current academic status:\n\n"
                 "• 🎓 **I have Graduated:** Claim your official **TARUMT Alumni** role & card badge.\n"
                 "• 📚 **Further Studies at TARUMT:** Progressing to Degree / Masters? Update your student ID & study level.\n"
-                "• ⏳ **Still Studying / Extension:** Extending semester or final year project? Update your card expiry date."
+                "• ⏳ **Still Studying / Extension:** Extending semester or final year project? Update your card expiry date.\n"
+                "• 🚪 **Discontinue Studies / Dropout:** Discontinuing studies? Withdraw your student verification."
             ),
             color=discord.Color.from_rgb(212, 175, 55),
         )

@@ -127,7 +127,8 @@ class GraduationWatchdogService:
                     "Please confirm your current academic status using the options below:\n\n"
                     "• 🎓 **I have Graduated:** Claim your official **TARUMT Alumni** role & card badge.\n"
                     "• 📚 **Further Studies at TARUMT:** Progressing to Degree / Masters? Enter your new Student ID to update your study level.\n"
-                    "• ⏳ **Still Studying / Extension:** Extending a semester or final year project? Update your student card expiry date."
+                    "• ⏳ **Still Studying / Extension:** Extending a semester or final year project? Update your student card expiry date.\n"
+                    "• 🚪 **Discontinue Studies / Dropout:** Discontinuing studies? Withdraw your student verification."
                 ),
                 color=discord.Color.from_rgb(212, 175, 55),
             )

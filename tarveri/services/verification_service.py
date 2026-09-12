@@ -1043,6 +1043,100 @@ class VerificationService:
         lines.append("🪪 Your Digital Campus Card (`/card`) has been updated to reflect your new study level.")
         return "\n".join(lines)
 
+    async def process_student_dropout(
+        self,
+        user: discord.User | discord.Member,
+        reason: str = "Self-reported dropout",
+    ) -> dict[str, Any]:
+        """
+        Processes a student self-initiated dropout / withdrawal:
+        1. Checks existing verification record in database.
+        2. Records dropout event in audit log and deletes verification record.
+        3. Strips all faculty, campus, study level, and alumni roles across mutual guilds.
+        """
+        user_id = user.id
+        verif = await self.db.get_verification_by_user(user_id)
+        if not verif:
+            return {
+                "success": False,
+                "error_message": "You do not have an active student verification record in the database.",
+            }
+
+        details = await self.db.get_verification_details(user_id)
+        stored_hash = details.get("student_id_hash") if details else verif[0]
+        stored_faculty = details.get("faculty_code") if details else verif[1]
+        stored_campus = (details.get("campus_code") if details else None) or "W"
+        stored_level = (details.get("level_code") if details else None) or "R"
+
+        faculty_name = FACULTY_ROLES.get(stored_faculty, stored_faculty)
+        campus_name = CAMPUS_ROLES.get(stored_campus, "KL Main Campus")
+        level_name = STUDY_LEVEL_ROLES.get(stored_level, "Degree")
+
+        # 1. Delete verification from DB
+        await self.db.delete_verification(user_id)
+
+        # 2. Reset rate limit if available
+        if hasattr(self, "rate_limiter") and self.rate_limiter:
+            self.rate_limiter.reset(user_id)
+
+        # 3. Strip faculty, campus, study level, and alumni roles across mutual guilds
+        mutual_guilds = await self.get_mutual_guilds_for_user(user_id)
+        roles_removed_servers: list[str] = []
+
+        for guild in mutual_guilds:
+            member = await self.get_or_fetch_member(guild, user_id)
+            if not member:
+                continue
+
+            roles_to_remove = [
+                r
+                for r in getattr(member, "roles", [])
+                if any(self._match_faculty_role_in_list([r], fac) is not None for fac in FACULTY_ROLE_NAMES)
+                or any(self._match_campus_role_in_list([r], camp) is not None for camp in CAMPUS_ROLE_NAMES)
+                or any(self._match_study_level_role_in_list([r], lvl) is not None for lvl in STUDY_LEVEL_ROLE_NAMES)
+                or self._match_alumni_role_in_list([r]) is not None
+            ]
+
+            me = getattr(guild, "me", None)
+            can_manage = (
+                getattr(me.guild_permissions, "manage_roles", False)
+                if me and hasattr(me, "guild_permissions")
+                else False
+            )
+            bot_top = getattr(me, "top_role", None)
+            bot_pos = getattr(bot_top, "position", 0) if bot_top else 0
+
+            for role in roles_to_remove:
+                role_pos = getattr(role, "position", 0)
+                if can_manage and isinstance(bot_pos, int) and isinstance(role_pos, int) and role_pos < bot_pos:
+                    try:
+                        await member.remove_roles(
+                            role,
+                            reason=f"TARVeri: Student discontinuation/dropout ({reason})",
+                        )
+                        if guild.name not in roles_removed_servers:
+                            roles_removed_servers.append(guild.name)
+                    except discord.HTTPException as e:
+                        logger.warning(f"Could not remove role {role.name} from {member} in {guild.name}: {e}")
+
+        # 4. Log audit event
+        guild_ctx = getattr(user, "guild", None)
+        await self.db.log(
+            "INFO",
+            "STUDENT_DROPOUT",
+            f"Student {user} (ID: {user_id}) confirmed dropout / withdrawal from [{faculty_name} • {campus_name} • {level_name}]. Reason: '{reason}'. Revoked roles across {len(roles_removed_servers)} servers.",
+            user_id=user_id,
+            guild=guild_ctx,
+        )
+
+        return {
+            "success": True,
+            "faculty_name": faculty_name,
+            "campus_name": campus_name,
+            "level_name": level_name,
+            "guilds_updated": len(roles_removed_servers),
+        }
+
     async def perform_verification(
         self,
         user: discord.User | discord.Member,
