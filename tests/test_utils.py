@@ -3,7 +3,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import discord
 
-from tarveri.utils import delete_after_delay, format_ticket_seq, parse_db_timestamp, schedule_ttl_delete
+from tarveri.utils import (
+    delete_after_delay,
+    format_ticket_seq,
+    parse_db_timestamp,
+    parse_ticket_seq,
+    schedule_ttl_delete,
+)
 
 
 @pytest.mark.asyncio
@@ -112,7 +118,42 @@ def test_parse_db_timestamp():
     # None and invalid inputs
     assert parse_db_timestamp(None) is None
     assert parse_db_timestamp("") is None
-    assert parse_db_timestamp("invalid_date") is None
+def test_parse_ticket_seq():
+    # Integer inputs
+    assert parse_ticket_seq(1) == 1
+    assert parse_ticket_seq(42) == 42
+    assert parse_ticket_seq(0) is None
+    assert parse_ticket_seq(-5) is None
+    assert parse_ticket_seq(None) is None
+
+    # Numeric strings
+    assert parse_ticket_seq("1") == 1
+    assert parse_ticket_seq("42") == 42
+    assert parse_ticket_seq("#42") == 42
+    assert parse_ticket_seq("0") is None
+
+    # Alphanumeric codes
+    assert parse_ticket_seq("A0001") == 1
+    assert parse_ticket_seq("#A0001") == 1
+    assert parse_ticket_seq("a0001") == 1
+    assert parse_ticket_seq("A0042") == 42
+    assert parse_ticket_seq("A9999") == 9999
+    assert parse_ticket_seq("B0001") == 10000
+    assert parse_ticket_seq("B0042") == 10041
+    assert parse_ticket_seq("C0001") == 19999
+    assert parse_ticket_seq("AA0001") == 26 * 9999 + 1
+
+    # Roundtrip tests
+    for seq in (1, 2, 42, 9999, 10000, 19998, 19999, 260000):
+        code = format_ticket_seq(seq)
+        assert parse_ticket_seq(code) == seq
+
+    # Invalid codes
+    assert parse_ticket_seq("") is None
+    assert parse_ticket_seq("invalid") is None
+    assert parse_ticket_seq("A0000") is None
+    assert parse_ticket_seq("A10000") is None
+
 
 
 

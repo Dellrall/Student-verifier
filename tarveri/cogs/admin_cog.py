@@ -32,7 +32,7 @@ from tarveri.services.log_service import (
 )
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
-from tarveri.utils import format_ticket_seq, schedule_ttl_delete
+from tarveri.utils import format_ticket_seq, parse_ticket_seq, schedule_ttl_delete
 
 logger = logging.getLogger("tarveri")
 
@@ -1282,13 +1282,13 @@ class AdminCog(commands.Cog, name="Admin"):
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         reason="Reason for closing the ticket (e.g. duplicate request, inquiries resolved, spam dismissal)",
-        ticket_number="Optional ticket sequence number or DB ID (defaults to current thread ticket)",
+        ticket="Optional ticket code (e.g. A0001, 1, #A0001) or DB ID (defaults to current thread ticket)",
     )
     async def close_ticket(
         self,
         interaction: discord.Interaction,
         reason: str | None = None,
-        ticket_number: int | None = None,
+        ticket: str | None = None,
     ) -> None:
         """Manually closes a guest review ticket without granting guest roles or kicking/banning."""
         if not self._check_admin(interaction):
@@ -1311,37 +1311,39 @@ class AdminCog(commands.Cog, name="Admin"):
 
         await interaction.response.defer(ephemeral=True)
 
-        ticket = None
-        if ticket_number is not None:
-            # 1. Search by guild-scoped sequence or DB ID
-            ticket = await self.db.get_guest_ticket_by_seq(interaction.guild.id, ticket_number)
-            if not ticket:
-                ticket = await self.db.get_guest_ticket_by_id(ticket_number)
-                if ticket and ticket.get("guild_id") != interaction.guild.id:
-                    ticket = None
+        ticket_data = None
+        if ticket is not None:
+            parsed_seq = parse_ticket_seq(ticket)
+            if parsed_seq is not None:
+                # 1. Search by guild-scoped sequence or DB ID
+                ticket_data = await self.db.get_guest_ticket_by_seq(interaction.guild.id, parsed_seq)
+                if not ticket_data:
+                    ticket_data = await self.db.get_guest_ticket_by_id(parsed_seq)
+                    if ticket_data and ticket_data.get("guild_id") != interaction.guild.id:
+                        ticket_data = None
         else:
             # 2. Default to current thread / channel
             if interaction.channel:
-                ticket = await self.db.get_guest_ticket_by_channel(interaction.channel.id)
+                ticket_data = await self.db.get_guest_ticket_by_channel(interaction.channel.id)
 
-        if not ticket:
-            if ticket_number is not None:
+        if not ticket_data:
+            if ticket is not None:
                 await interaction.followup.send(
-                    f"❌ No guest review ticket found matching #{ticket_number}.", ephemeral=True
+                    f"❌ No guest review ticket found matching `{ticket}`.", ephemeral=True
                 )
             else:
                 await interaction.followup.send(
                     "❌ This channel is not an active guest review ticket thread. "
-                    "Please run this command inside a ticket thread or specify `ticket_number`.",
+                    "Please run this command inside a ticket thread or specify `ticket`.",
                     ephemeral=True,
                 )
             schedule_ttl_delete(interaction, delay=60.0)
             return
 
-        if ticket.get("status") != "OPEN":
-            seq = ticket.get("ticket_seq") or ticket["ticket_id"]
+        if ticket_data.get("status") != "OPEN":
+            seq = ticket_data.get("ticket_seq") or ticket_data["ticket_id"]
             seq_code = format_ticket_seq(seq)
-            status_str = ticket.get("status", "UNKNOWN")
+            status_str = ticket_data.get("status", "UNKNOWN")
             await interaction.followup.send(
                 f"⚠️ Ticket #{seq_code} is already resolved ({status_str}).", ephemeral=True
             )
@@ -1350,14 +1352,14 @@ class AdminCog(commands.Cog, name="Admin"):
 
         # Execute manual closure
         success, reply_msg = await guest_svc.close_guest_ticket_manually(
-            ticket=ticket,
+            ticket=ticket_data,
             guild=interaction.guild,
             admin_user=interaction.user,
             reason=reason,
         )
 
         if success:
-            ticket_ch_id = ticket.get("channel_id")
+            ticket_ch_id = ticket_data.get("channel_id")
             thread = None
             if ticket_ch_id:
                 if hasattr(interaction.guild, "get_thread"):
@@ -1383,8 +1385,8 @@ class AdminCog(commands.Cog, name="Admin"):
 
                 # Try to update the review embed on the root message if found in guest_cog
                 try:
-                    updated_ticket = await self.db.get_guest_ticket_by_id(ticket["ticket_id"])
-                    applicant_member = interaction.guild.get_member(ticket["applicant_id"])
+                    updated_ticket = await self.db.get_guest_ticket_by_id(ticket_data["ticket_id"])
+                    applicant_member = interaction.guild.get_member(ticket_data["applicant_id"])
                     if updated_ticket:
                         from tarveri.cogs.guest_cog import build_review_embed
                         embed = build_review_embed(

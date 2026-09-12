@@ -84,6 +84,45 @@ def format_ticket_seq(seq: int | str | None) -> str:
     return f"{prefix}{num:04d}"
 
 
+def parse_ticket_seq(seq: int | str | None) -> int | None:
+    """
+    Parses a ticket sequence or alphanumeric tracking code back to its integer sequence number.
+    Handles:
+    - Integers: 1 -> 1, 42 -> 42
+    - Numeric strings: "1" -> 1, "#42" -> 42
+    - Alphanumeric tracking codes: "A0001" -> 1, "#A0002" -> 2, "B0001" -> 10000, "b0042" -> 10041
+    - Returns None if input cannot be parsed.
+    """
+    if seq is None:
+        return None
+    if isinstance(seq, int):
+        return seq if seq > 0 else None
+
+    if isinstance(seq, str):
+        cleaned = seq.strip().lstrip("#").strip()
+        if not cleaned:
+            return None
+        if cleaned.isdigit():
+            val = int(cleaned)
+            return val if val > 0 else None
+
+        import re
+
+        match = re.match(r"^([A-Za-z]+)(\d+)$", cleaned)
+        if match:
+            letters = match.group(1).upper()
+            num_part = int(match.group(2))
+            if num_part < 1 or num_part > 9999:
+                return None
+            series_idx = 0
+            for ch in letters:
+                series_idx = series_idx * 26 + (ord(ch) - ord("A") + 1)
+            series_idx -= 1
+            return series_idx * 9999 + num_part
+
+    return None
+
+
 def parse_db_timestamp(ts_str: str | None, tz: tzinfo | None = None) -> datetime | None:
     """Parses a database timestamp string into a timezone-aware datetime object."""
     if not ts_str:

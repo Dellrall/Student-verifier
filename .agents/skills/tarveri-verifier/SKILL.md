@@ -227,7 +227,7 @@ flowchart TD
 - `/admin set_role [type] [role/name]` — Configure or reset custom guest role name or reviewer/admin role.
 - `/admin panel [channel]` — Deploy the persistent 3-button verification gateway panel.
 - `/admin tickets [status] [limit]` — Query guest review tickets with links to threads and resolution notes.
-- `/admin close_ticket [reason] [ticket_number]` — Manually close and archive current guest review thread ticket (or specify `ticket_number`) without kicking the user.
+- `/admin close_ticket [reason] [ticket]` — Manually close and archive current guest review thread ticket (or specify `ticket` e.g. `A0001`, `42`, `#A0001`) without kicking the user.
 - `/admin backup [action] [backup_file]` — Create backups, list snapshots, or restore previous latest server settings.
 - `/admin logs [action]` — Inspect active daily logs in `logs/`, list 10-day compressed archives, or trigger immediate `.tar.gz` rotation.
 - `/admin audit [limit] [event_type]` — Inspect database audit logs with event type filtering.

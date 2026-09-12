@@ -666,7 +666,7 @@ async def test_admin_close_ticket_with_ticket_number(tmp_path):
     service = MagicMock()
     guest_service = MagicMock()
     guest_service.close_guest_ticket_manually = AsyncMock(
-        return_value=(True, "🔒 Guest review ticket #0042 manually closed.")
+        return_value=(True, "🔒 Guest review ticket #A0042 manually closed.")
     )
     rate_limiter = MagicMock()
     cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin", guest_service=guest_service)
@@ -693,11 +693,46 @@ async def test_admin_close_ticket_with_ticket_number(tmp_path):
     interaction.response.defer = AsyncMock()
     interaction.followup.send = AsyncMock()
 
-    await cog.close_ticket.callback(cog, interaction, reason="Duplicate request", ticket_number=42)
+    # 1. Close using alphanumeric code "A0042"
+    await cog.close_ticket.callback(cog, interaction, reason="Duplicate request", ticket="A0042")
 
     guest_service.close_guest_ticket_manually.assert_called_once()
     interaction.followup.send.assert_called_once()
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_close_ticket_invalid_ticket(tmp_path):
+    db_path = str(tmp_path / "admin_close_ticket_inv_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = MagicMock()
+    guest_service = MagicMock()
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin", guest_service=guest_service)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 54321
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.channel = MagicMock(spec=discord.TextChannel)
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # Close using non-existent ticket code
+    await cog.close_ticket.callback(cog, interaction, reason="Spam", ticket="Z9999")
+    interaction.followup.send.assert_called_once()
+    assert "No guest review ticket found" in interaction.followup.send.call_args[0][0]
+
+    await db.close()
+
 
 
