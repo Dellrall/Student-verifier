@@ -735,4 +735,63 @@ async def test_admin_close_ticket_invalid_ticket(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_admin_close_ticket_already_left_server_archives_unarchived_thread(tmp_path):
+    db_path = str(tmp_path / "admin_close_ticket_left_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = MagicMock()
+    guest_service = MagicMock()
+    guest_service._cleanup_channel_overwrites = AsyncMock()
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin", guest_service=guest_service)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 54321
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 888777
+    thread.archived = False
+    thread.locked = False
+    thread.send = AsyncMock()
+    thread.edit = AsyncMock()
+    guild.get_thread.return_value = thread
+
+    # Create ticket already in LEFT_SERVER status
+    ticket_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=333444,
+        channel_id=888777,
+        ticket_seq=2,
+        reason="Danial Wong Kai Ze (MMU)",
+    )
+    await db.close_guest_ticket(ticket_id, status="LEFT_SERVER", close_reason="Member left the server")
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+    admin_user.mention = "<@999>"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.channel = thread
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # Run /admin close_ticket inside the thread
+    await cog.close_ticket.callback(cog, interaction)
+
+    thread.send.assert_called_once()
+    assert "Ticket thread archived" in thread.send.call_args[0][0]
+    thread.edit.assert_called_once_with(
+        locked=True, archived=True, reason=f"TARVeri: Archived by {admin_user} (status: LEFT_SERVER)"
+    )
+    interaction.followup.send.assert_called_once()
+    assert "Cleaned up and archived the thread" in interaction.followup.send.call_args[0][0]
+
+    await db.close()
+
+
+
 

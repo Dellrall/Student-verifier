@@ -5,6 +5,7 @@ Admin Commands, Interactive Dashboard & Audit Tools for TARVeri.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import Literal
 
@@ -1344,8 +1345,80 @@ class AdminCog(commands.Cog, name="Admin"):
             seq = ticket_data.get("ticket_seq") or ticket_data["ticket_id"]
             seq_code = format_ticket_seq(seq)
             status_str = ticket_data.get("status", "UNKNOWN")
+            ticket_ch_id = ticket_data.get("channel_id")
+
+            thread = None
+            if isinstance(interaction.channel, discord.Thread) and interaction.channel.id == ticket_ch_id:
+                thread = interaction.channel
+            elif ticket_ch_id:
+                if hasattr(interaction.guild, "get_thread"):
+                    thread = interaction.guild.get_thread(ticket_ch_id)
+                if not thread and hasattr(guest_svc, "_get_or_fetch_thread"):
+                    res = guest_svc._get_or_fetch_thread(interaction.guild, ticket_ch_id)
+                    thread = await res if inspect.isawaitable(res) else res
+                if not thread and hasattr(interaction.guild, "get_channel"):
+                    thread = interaction.guild.get_channel(ticket_ch_id)
+
+            # If the thread exists and is unarchived or unlocked, cleanly archive it!
+            if thread and (isinstance(thread, discord.Thread) or hasattr(thread, "send")) and (
+                not getattr(thread, "archived", False) or not getattr(thread, "locked", False)
+            ):
+                reason_note = (
+                    f"\n> **Reason:** *\"{reason.strip()}\"*"
+                    if reason and reason.strip()
+                    else ""
+                )
+                try:
+                    res = thread.send(
+                        f"🔒 **Ticket thread archived by {interaction.user.mention} via `/admin close_ticket`.**\n"
+                        f"*(Ticket was previously recorded as `{status_str}`)*{reason_note}\n\n"
+                        f"This thread is now locked and archived."
+                    )
+                    if inspect.isawaitable(res):
+                        await res
+                except (discord.HTTPException, Exception):
+                    pass
+
+                # Try to update the review embed on the root message
+                try:
+                    from tarveri.cogs.guest_cog import build_review_embed
+                    applicant_member = interaction.guild.get_member(ticket_data["applicant_id"])
+                    embed = build_review_embed(
+                        ticket_data, interaction.guild, applicant_member, status_override=status_str
+                    )
+                    starter_msg = getattr(thread, "starter_message", None)
+                    if starter_msg and starter_msg.author.id == self.bot.user.id and hasattr(starter_msg, "edit"):
+                        res = starter_msg.edit(embed=embed, view=discord.ui.View())
+                        if inspect.isawaitable(res):
+                            await res
+                except Exception:
+                    pass
+
+                await asyncio.sleep(1)
+                try:
+                    if hasattr(thread, "edit"):
+                        res = thread.edit(
+                            locked=True,
+                            archived=True,
+                            reason=f"TARVeri: Archived by {interaction.user} (status: {status_str})",
+                        )
+                        if inspect.isawaitable(res):
+                            await res
+                except (discord.HTTPException, Exception):
+                    pass
+
+                if hasattr(guest_svc, "_cleanup_channel_overwrites"):
+                    await guest_svc._cleanup_channel_overwrites(interaction.guild, ticket_data)
+
+                await interaction.followup.send(
+                    f"🔒 Ticket #{seq_code} ({status_str}) was open as an unarchived thread. Cleaned up and archived the thread.",
+                    ephemeral=True,
+                )
+                schedule_ttl_delete(interaction, delay=60.0)
+                return
+
             await interaction.followup.send(
-                f"⚠️ Ticket #{seq_code} is already resolved ({status_str}).", ephemeral=True
+                f"⚠️ Ticket #{seq_code} is already resolved ({status_str}) and archived.", ephemeral=True
             )
             schedule_ttl_delete(interaction, delay=60.0)
             return
@@ -1361,26 +1434,33 @@ class AdminCog(commands.Cog, name="Admin"):
         if success:
             ticket_ch_id = ticket_data.get("channel_id")
             thread = None
-            if ticket_ch_id:
+            if isinstance(interaction.channel, discord.Thread) and interaction.channel.id == ticket_ch_id:
+                thread = interaction.channel
+            elif ticket_ch_id:
                 if hasattr(interaction.guild, "get_thread"):
                     thread = interaction.guild.get_thread(ticket_ch_id)
+                if not thread and hasattr(guest_svc, "_get_or_fetch_thread"):
+                    res = guest_svc._get_or_fetch_thread(interaction.guild, ticket_ch_id)
+                    thread = await res if inspect.isawaitable(res) else res
                 if not thread and hasattr(interaction.guild, "get_channel"):
                     thread = interaction.guild.get_channel(ticket_ch_id)
 
             # If inside the thread (or thread is accessible), post closure notice and lock/archive
-            if thread and isinstance(thread, discord.Thread):
+            if thread and (isinstance(thread, discord.Thread) or hasattr(thread, "send")):
                 reason_note = (
                     f"\n> **Reason:** *\"{reason.strip()}\"*"
                     if reason and reason.strip()
                     else ""
                 )
                 try:
-                    await thread.send(
+                    res = thread.send(
                         f"🔒 **Ticket manually closed by {interaction.user.mention} via `/admin close_ticket`.**\n"
                         f"*(Applicant remains in the server; no role changes or kicks executed)*{reason_note}\n\n"
                         f"This thread will be locked and archived."
                     )
-                except discord.HTTPException:
+                    if inspect.isawaitable(res):
+                        await res
+                except (discord.HTTPException, Exception):
                     pass
 
                 # Try to update the review embed on the root message if found in guest_cog
@@ -1393,15 +1473,20 @@ class AdminCog(commands.Cog, name="Admin"):
                             updated_ticket, interaction.guild, applicant_member, status_override="CLOSED"
                         )
                         starter_msg = getattr(thread, "starter_message", None)
-                        if starter_msg and starter_msg.author.id == self.bot.user.id:
-                            await starter_msg.edit(embed=embed, view=discord.ui.View())
+                        if starter_msg and starter_msg.author.id == self.bot.user.id and hasattr(starter_msg, "edit"):
+                            res = starter_msg.edit(embed=embed, view=discord.ui.View())
+                            if inspect.isawaitable(res):
+                                await res
                 except Exception:
                     pass
 
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
                 try:
-                    await thread.edit(locked=True, archived=True, reason=f"TARVeri: Ticket closed by {interaction.user}")
-                except discord.HTTPException:
+                    if hasattr(thread, "edit"):
+                        res = thread.edit(locked=True, archived=True, reason=f"TARVeri: Ticket closed by {interaction.user}")
+                        if inspect.isawaitable(res):
+                            await res
+                except (discord.HTTPException, Exception):
                     pass
 
             await interaction.followup.send(reply_msg, ephemeral=True)

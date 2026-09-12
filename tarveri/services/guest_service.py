@@ -1014,14 +1014,38 @@ class GuestService:
 
         return True, f"🔒 Guest review ticket #{seq_code} manually closed by {admin_user.mention} (Applicant remains in server, no roles altered)."
 
+    async def _get_or_fetch_thread(self, guild: discord.Guild, channel_id: int | None) -> discord.Thread | None:
+        """Helper to resolve a thread by ID from in-memory cache or Discord API fetch."""
+        if not channel_id:
+            return None
+        if hasattr(guild, "get_thread"):
+            thread = guild.get_thread(channel_id)
+            if thread:
+                return thread
+        if hasattr(guild, "get_channel"):
+            channel = guild.get_channel(channel_id)
+            if isinstance(channel, discord.Thread):
+                return channel
+        # Fetch directly from Discord API via bot.fetch_channel
+        bot = self.bot or getattr(guild, "_state", None) and getattr(guild._state, "_get_client", lambda: None)()
+        if bot and hasattr(bot, "fetch_channel"):
+            try:
+                res = bot.fetch_channel(channel_id)
+                fetched = await res if inspect.isawaitable(res) else res
+                if isinstance(fetched, discord.Thread):
+                    return fetched
+            except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                return None
+        return None
+
     async def _cleanup_channel_overwrites(self, guild: discord.Guild, ticket: dict[str, Any]) -> None:
         """Cleans up temporary channel permission overwrites granted to applicant/referrer."""
         channel_id = ticket.get("channel_id")
-        if not channel_id or not hasattr(guild, "get_thread"):
+        if not channel_id:
             return
 
         parent_ch = None
-        thread = guild.get_thread(channel_id)
+        thread = await self._get_or_fetch_thread(guild, channel_id)
         if thread and hasattr(thread, "parent"):
             parent_ch = thread.parent
         elif hasattr(guild, "get_channel"):
@@ -1071,22 +1095,31 @@ class GuestService:
             open_applicant_ticket = await self.db.get_open_guest_ticket_for_applicant(guild.id, user.id)
             if open_applicant_ticket:
                 thread_id = open_applicant_ticket.get("channel_id")
-                thread = guild.get_thread(thread_id) if hasattr(guild, "get_thread") else None
-                if not thread and hasattr(guild, "fetch_channel"):
-                    try:
-                        fetched = await guild.fetch_channel(thread_id)
-                        if isinstance(fetched, discord.Thread):
-                            thread = fetched
-                    except (discord.NotFound, discord.HTTPException, discord.Forbidden):
-                        thread = None
+                thread = await self._get_or_fetch_thread(guild, thread_id)
 
                 if thread and not getattr(thread, "archived", False):
+                    reason_msg = "banned from" if is_ban else "left"
                     try:
-                        reason_msg = "banned from" if is_ban else "left"
                         await thread.send(
                             f"🛑 **Guest applicant {reason_msg} the server.** This review ticket has been automatically closed and the thread is archived."
                         )
-                        await thread.edit(archived=True, locked=True)
+                    except (discord.HTTPException, discord.Forbidden):
+                        pass
+
+                    # Try to update starter review embed if found
+                    try:
+                        from tarveri.cogs.guest_cog import build_review_embed
+                        starter_msg = getattr(thread, "starter_message", None)
+                        if starter_msg and hasattr(starter_msg, "edit"):
+                            embed = build_review_embed(
+                                open_applicant_ticket, guild, None, status_override=revocation_status
+                            )
+                            await starter_msg.edit(embed=embed, view=discord.ui.View())
+                    except Exception:
+                        pass
+
+                    try:
+                        await thread.edit(archived=True, locked=True, reason=f"TARVeri: Applicant {reason_msg} server")
                     except (discord.HTTPException, discord.Forbidden):
                         pass
 
@@ -1097,22 +1130,31 @@ class GuestService:
             for t in open_referred:
                 if t.get("referrer_id") == user.id:
                     thread_id = t.get("channel_id")
-                    thread = guild.get_thread(thread_id) if hasattr(guild, "get_thread") else None
-                    if not thread and hasattr(guild, "fetch_channel"):
-                        try:
-                            fetched = await guild.fetch_channel(thread_id)
-                            if isinstance(fetched, discord.Thread):
-                                thread = fetched
-                        except (discord.NotFound, discord.HTTPException, discord.Forbidden):
-                            thread = None
+                    thread = await self._get_or_fetch_thread(guild, thread_id)
 
                     if thread and not getattr(thread, "archived", False):
+                        reason_msg = "banned from" if is_ban else "left"
                         try:
-                            reason_msg = "banned from" if is_ban else "left"
                             await thread.send(
                                 f"🛑 **Referring student (<@{user.id}>) {reason_msg} the server.** This referral ticket has been cancelled and the thread is archived."
                             )
-                            await thread.edit(archived=True, locked=True)
+                        except (discord.HTTPException, discord.Forbidden):
+                            pass
+
+                        try:
+                            from tarveri.cogs.guest_cog import build_review_embed
+                            starter_msg = getattr(thread, "starter_message", None)
+                            if starter_msg and hasattr(starter_msg, "edit"):
+                                applicant_member = guild.get_member(t["applicant_id"])
+                                embed = build_review_embed(
+                                    t, guild, applicant_member, status_override=revocation_status
+                                )
+                                await starter_msg.edit(embed=embed, view=discord.ui.View())
+                        except Exception:
+                            pass
+
+                        try:
+                            await thread.edit(archived=True, locked=True, reason=f"TARVeri: Referrer {reason_msg} server")
                         except (discord.HTTPException, discord.Forbidden):
                             pass
 
@@ -1195,7 +1237,7 @@ class GuestService:
                 summary["reconciled_tickets"] += 1
 
                 # Clean up thread if it exists
-                thread = guild.get_thread(t["channel_id"])
+                thread = await self._get_or_fetch_thread(guild, t["channel_id"])
                 if thread and not getattr(thread, "archived", False):
                     try:
                         await thread.send("🛑 **Guest applicant left or was removed from server during maintenance.** Thread archived.")
@@ -1222,14 +1264,7 @@ class GuestService:
                     await self.db.update_referral_code_status(
                         t["referral_code"], guild.id, "USED", used_by_discord_id=applicant_id
                     )
-                thread = guild.get_thread(t["channel_id"])
-                if not thread and hasattr(guild, "fetch_channel"):
-                    try:
-                        fetched = await guild.fetch_channel(t["channel_id"])
-                        if isinstance(fetched, discord.Thread):
-                            thread = fetched
-                    except (discord.NotFound, discord.HTTPException):
-                        thread = None
+                thread = await self._get_or_fetch_thread(guild, t["channel_id"])
 
                 if thread and not getattr(thread, "archived", False):
                     try:
@@ -1270,7 +1305,7 @@ class GuestService:
                     await self.handle_member_leave_or_ban(guild, discord.Object(id=referrer_id), is_ban=is_ban)
                     summary["reconciled_tickets"] += 1
 
-                    thread = guild.get_thread(t["channel_id"])
+                    thread = await self._get_or_fetch_thread(guild, t["channel_id"])
                     if thread and not getattr(thread, "archived", False):
                         try:
                             await thread.send("🛑 **Referring student left or was removed from server during maintenance.** Application cancelled.")
@@ -1280,14 +1315,7 @@ class GuestService:
                     continue
 
             # Check if thread was deleted during maintenance
-            thread = guild.get_thread(t["channel_id"])
-            if not thread and hasattr(guild, "fetch_channel"):
-                try:
-                    fetched = await guild.fetch_channel(t["channel_id"])
-                    if isinstance(fetched, discord.Thread):
-                        thread = fetched
-                except (discord.NotFound, discord.HTTPException):
-                    thread = None
+            thread = await self._get_or_fetch_thread(guild, t["channel_id"])
 
             if not thread:
                 await self.db.close_guest_ticket(
@@ -1365,14 +1393,7 @@ class GuestService:
             if not guild:
                 continue
 
-            thread = guild.get_thread(channel_id)
-            if not thread and hasattr(guild, "fetch_channel"):
-                try:
-                    fetched = await guild.fetch_channel(channel_id)
-                    if isinstance(fetched, discord.Thread):
-                        thread = fetched
-                except (discord.NotFound, discord.HTTPException):
-                    thread = None
+            thread = await self._get_or_fetch_thread(guild, channel_id)
 
             if not thread or getattr(thread, "archived", False) or getattr(thread, "locked", False):
                 continue

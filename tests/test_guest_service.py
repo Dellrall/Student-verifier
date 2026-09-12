@@ -265,6 +265,16 @@ async def test_handle_member_leave_or_ban_revokes_guest_access(tmp_path):
     member.id = 554433
     member.__str__.return_value = "GuestUser#1234"
 
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 999111
+    thread.archived = False
+    thread.locked = False
+    thread.send = AsyncMock()
+    thread.edit = AsyncMock()
+    thread.starter_message = MagicMock()
+    thread.starter_message.edit = AsyncMock()
+    guild.get_thread.return_value = thread
+
     # Create ticket and referral code
     ticket_id = await db.create_guest_ticket(
         guild_id=guild.id,
@@ -285,8 +295,19 @@ async def test_handle_member_leave_or_ban_revokes_guest_access(tmp_path):
 
     ref_code = await db.get_referral_code("TAR-LEAVE1", guild.id)
     assert ref_code["status"] == "LEFT_SERVER"
+    thread.send.assert_called_once()
+    assert "left the server" in thread.send.call_args[0][0]
+    thread.edit.assert_called_once_with(archived=True, locked=True, reason="TARVeri: Applicant left server")
 
     # 2. User gets banned
+    thread2 = MagicMock(spec=discord.Thread)
+    thread2.id = 999222
+    thread2.archived = False
+    thread2.locked = False
+    thread2.send = AsyncMock()
+    thread2.edit = AsyncMock()
+    guild.get_thread.return_value = thread2
+
     ticket_id2 = await db.create_guest_ticket(
         guild_id=guild.id,
         applicant_id=member.id,
@@ -297,6 +318,9 @@ async def test_handle_member_leave_or_ban_revokes_guest_access(tmp_path):
 
     ticket_after_ban = await db.get_guest_ticket_by_id(ticket_id2)
     assert ticket_after_ban["status"] == "BANNED"
+    thread2.send.assert_called_once()
+    assert "banned from the server" in thread2.send.call_args[0][0]
+    thread2.edit.assert_called_once_with(archived=True, locked=True, reason="TARVeri: Applicant banned from server")
 
     await db.close()
 
