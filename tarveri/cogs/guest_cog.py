@@ -14,7 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from tarveri.config import FACULTY_ROLE_NAMES, get_configured_tz
+from tarveri.config import FACULTY_ROLE_NAMES, get_configured_tz, is_expiry_date_anomalous, parse_card_expiry_date
 from tarveri.database import Database
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
@@ -117,7 +117,7 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
         label="Student Card Expiry Date (MM/YY)",
         placeholder="e.g. 10/26 (Optional)",
         min_length=4,
-        max_length=10,
+        max_length=12,
         required=False,
     )
 
@@ -129,10 +129,48 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
         self.card_expiry.placeholder = f"e.g. 10/{(int(current_yy) + 2) % 100:02d} (Optional)"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
         raw_expiry = self.card_expiry.value.strip() if self.card_expiry.value else None
+        student_id_val = self.student_id.value.strip()
+        if raw_expiry:
+            iso_expiry = parse_card_expiry_date(raw_expiry)
+            if not iso_expiry:
+                await interaction.response.defer(ephemeral=True)
+                current_yy = str(datetime.now().year)[-2:]
+                await interaction.followup.send(
+                    f"❌ Invalid student card expiry date format. Please use `MM/YY` (e.g. `10/{(int(current_yy) + 2) % 100:02d}`) "
+                    f"or `DD/MM/YYYY` (e.g. `31/10/{datetime.now().year + 2}`), or leave it blank to auto-calculate.",
+                    ephemeral=True,
+                )
+                schedule_ttl_delete(interaction, delay=30.0)
+                return
+
+            is_anomalous, anomaly_reason = is_expiry_date_anomalous(iso_expiry, student_id=student_id_val)
+            if is_anomalous:
+                await interaction.response.defer(ephemeral=True)
+                from tarveri.cogs.verification_cog import ExpiryAnomalyConfirmView, build_expiry_anomaly_embed
+
+                db = getattr(self.verification_service, "db", None)
+                embed = build_expiry_anomaly_embed(
+                    raw_input=raw_expiry,
+                    parsed_iso=iso_expiry,
+                    student_id=student_id_val,
+                    anomaly_reason=anomaly_reason or "",
+                )
+                view = ExpiryAnomalyConfirmView(
+                    service=self.verification_service,
+                    db=db,
+                    student_id=student_id_val,
+                    raw_expiry_input=raw_expiry,
+                    parsed_iso_date=iso_expiry,
+                    anomaly_reason=anomaly_reason or "",
+                )
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                schedule_ttl_delete(interaction, delay=180.0)
+                return
+
+        await interaction.response.defer(ephemeral=True)
         resp = await self.verification_service.perform_verification(
-            interaction.user, self.student_id.value.strip(), raw_expiry_date=raw_expiry
+            interaction.user, student_id_val, raw_expiry_date=raw_expiry
         )
         view = None
         db = getattr(self.verification_service, "db", None)
@@ -144,6 +182,7 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
                     today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                     if card_exp and card_exp < today_iso:
                         from tarveri.cogs.verification_cog import StudentLifecycleResolutionView
+
                         view = StudentLifecycleResolutionView(self.verification_service, db)
             except Exception:
                 pass

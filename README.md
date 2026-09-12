@@ -61,6 +61,8 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 
 ### Students & Members
 * **`/verify [student_id] [expiry_date]`** — Opens a private modal popup (or verifies directly via slash arguments).
+  * *Flexible Date Support*: Accepts `DD/MM/YYYY`, `DD-MM-YYYY`, `DD.MM.YYYY`, `DD/MM/YY`, `MM/YY`, `MM/YYYY`, `YYYY-MM-DD`, or `DD Month YYYY`.
+  * *8-Year Anomaly Guard*: Ambiguous entries (like `06/07` for 6th July interpreted as June 2007) or dates exceeding $\pm 8$ years prompt an interactive confirmation view (`[Confirm Date]`, `[Re-enter Date]`, `[Auto-Calculate]`) with a 1-click re-input modal to prevent false alumni triggers.
   * *Zero-Effort Card Expiry*: Leaving the expiry date blank automatically estimates card validity based on intake year and study level (`F`: +1y, `D`: +2y, `R`: +3y, `P`: +2y).
   * *Smart Academic Transition*: Progressing to Degree or Masters? Simply enter your new Student ID to atomically update your study level and roles with full audit history.
   * *Real-Time Lifecycle Detection*: If your intake year or card expiry date is in the past, TARVeri automatically attaches an interactive resolution menu (🎓 Graduated Alumni / 📚 Further Studies / ⏳ Extend Expiry).
@@ -73,6 +75,7 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 
 ### 🎓 Academic Lifecycle & Graduation Watchdog Engine
 * **Automated Expiry Sweeps (`GraduationWatchdogService`)**: Periodic background checks (every 24h) monitor card validity and send polite lifecycle resolution DMs with a 7-day cooldown.
+* **Smart Expiry Anomaly Interception**: Flags unusual expiry dates exceeding 8 years relative to current year/intake without prematurely modifying roles, allowing immediate interactive correction or confirmed graduation.
 * **Active-Chat Graduation Prompt**: When a student with an expired card participates in server channels, the bot delivers the interactive lifecycle resolution UI to guide their status update.
 * **Sliding Century Windowing**: Dynamically handles historical and future intake years (`1969 <= year <= datetime.now().year + 5`) with zero hardcoded time-locks.
 

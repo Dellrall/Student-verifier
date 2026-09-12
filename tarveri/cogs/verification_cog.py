@@ -20,6 +20,7 @@ from tarveri.config import (
     Settings,
     format_card_expiry_display,
     get_configured_tz,
+    is_expiry_date_anomalous,
     now_formatted,
     parse_card_expiry_date,
 )
@@ -94,6 +95,297 @@ class AlumniClaimModal(discord.ui.Modal, title="TARUMT Alumni Transition"):
         await interaction.followup.send(embed=embed, ephemeral=False)
 
 
+def build_expiry_anomaly_embed(
+    raw_input: str,
+    parsed_iso: str,
+    student_id: str,
+    anomaly_reason: str,
+) -> discord.Embed:
+    """Builds a helpful confirmation embed when an entered expiry date exceeds the anomaly threshold."""
+    display_str = format_card_expiry_display(parsed_iso)
+    embed = discord.Embed(
+        title="⚠️ Please Confirm Student Card Expiry Date",
+        description=(
+            f"You entered: **`{raw_input}`**\n"
+            f"Interpreted as: **`{display_str}`** (`{parsed_iso}`)\n\n"
+            f"🔍 **Notice**: {anomaly_reason}\n\n"
+            f"💡 **Common Typo**: Did you enter **Day/Month** (e.g. `06/07` for 6th July) "
+            f"instead of **Month/Year** (e.g. `07/26` or `06/07/2026`)?\n\n"
+            f"Please choose an action below to proceed:"
+        ),
+        color=discord.Color.gold(),
+    )
+    embed.add_field(
+        name="✅ Confirm This Date",
+        value="If this date is correct (e.g. you graduated in this year).",
+        inline=False,
+    )
+    embed.add_field(
+        name="✏️ Re-enter Expiry Date",
+        value="Open a new form to enter your corrected card expiry date.",
+        inline=False,
+    )
+    embed.add_field(
+        name="⚡ Auto-Calculate for Me",
+        value="Let TARVeri automatically calculate your standard study duration from your Student ID.",
+        inline=False,
+    )
+    embed.set_footer(text="TARVeri Dynamic Lifecycle Guard • Safe Date Validation")
+    return embed
+
+
+class ExpiryAnomalyConfirmView(discord.ui.View):
+    """
+    Interactive view presented when a card expiry date exceeds the 8-year threshold
+    or appears to be an ambiguous Day/Month entry (e.g. 06/07).
+    """
+
+    def __init__(
+        self,
+        service: VerificationService,
+        db: Database,
+        student_id: str,
+        raw_expiry_input: str,
+        parsed_iso_date: str,
+        anomaly_reason: str,
+        timeout: float = 180.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.service = service
+        self.db = db
+        self.student_id = student_id
+        self.raw_expiry_input = raw_expiry_input
+        self.parsed_iso_date = parsed_iso_date
+        self.anomaly_reason = anomaly_reason
+
+    @discord.ui.button(
+        label="Confirm This Date",
+        style=discord.ButtonStyle.secondary,
+        emoji="✅",
+        custom_id="tarveri_expiry_anomaly_confirm",
+        row=0,
+    )
+    async def on_confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        response_text = await self.service.perform_verification(
+            interaction.user,
+            self.student_id,
+            raw_expiry_date=self.parsed_iso_date,
+        )
+        lifecycle_view = None
+        if self.db and isinstance(interaction.user.id, int):
+            try:
+                details = await self.db.get_verification_details(interaction.user.id)
+                if details and details.get("is_alumni") == 0:
+                    card_exp = details.get("card_expiry_date")
+                    today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
+                    if card_exp and card_exp < today_iso:
+                        lifecycle_view = StudentLifecycleResolutionView(self.service, self.db)
+            except Exception:
+                pass
+
+        header = f"✅ **Expiry Date Confirmed**: Recorded as `{format_card_expiry_display(self.parsed_iso_date)}` (`{self.parsed_iso_date}`).\n\n"
+        final_msg = header + response_text
+        if lifecycle_view:
+            await interaction.followup.send(final_msg, view=lifecycle_view, ephemeral=True)
+        else:
+            await interaction.followup.send(final_msg, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=120.0 if lifecycle_view else 60.0)
+
+    @discord.ui.button(
+        label="Re-enter Expiry Date",
+        style=discord.ButtonStyle.primary,
+        emoji="✏️",
+        custom_id="tarveri_expiry_anomaly_reenter",
+        row=0,
+    )
+    async def on_reenter(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        modal = ReEnterExpiryModal(
+            service=self.service,
+            db=self.db,
+            student_id=self.student_id,
+        )
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(
+        label="Auto-Calculate for Me",
+        style=discord.ButtonStyle.success,
+        emoji="⚡",
+        custom_id="tarveri_expiry_anomaly_auto",
+        row=0,
+    )
+    async def on_auto_calculate(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        response_text = await self.service.perform_verification(
+            interaction.user,
+            self.student_id,
+            raw_expiry_date=None,
+        )
+        lifecycle_view = None
+        if self.db and isinstance(interaction.user.id, int):
+            try:
+                details = await self.db.get_verification_details(interaction.user.id)
+                if details and details.get("is_alumni") == 0:
+                    card_exp = details.get("card_expiry_date")
+                    today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
+                    if card_exp and card_exp < today_iso:
+                        lifecycle_view = StudentLifecycleResolutionView(self.service, self.db)
+            except Exception:
+                pass
+
+        if lifecycle_view:
+            await interaction.followup.send(response_text, view=lifecycle_view, ephemeral=True)
+        else:
+            await interaction.followup.send(response_text, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=120.0 if lifecycle_view else 60.0)
+
+
+class ReEnterExpiryModal(discord.ui.Modal, title="✏️ Re-enter Card Expiry Date"):
+    card_expiry = discord.ui.TextInput(
+        label="New Expiry Date (MM/YY or DD/MM/YYYY)",
+        placeholder="e.g. 10/26 or 06/07/2026",
+        min_length=3,
+        max_length=15,
+        required=True,
+    )
+
+    def __init__(
+        self,
+        service: VerificationService,
+        db: Database,
+        student_id: str,
+    ):
+        super().__init__()
+        self.service = service
+        self.db = db
+        self.student_id = student_id
+        current_yy = str(datetime.now().year)[-2:]
+        self.card_expiry.placeholder = f"e.g. 10/{(int(current_yy) + 2) % 100:02d} or 31/10/{datetime.now().year + 2}"
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw_val = self.card_expiry.value.strip()
+        new_iso = parse_card_expiry_date(raw_val)
+        if not new_iso:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            current_yy = str(datetime.now().year)[-2:]
+            await interaction.followup.send(
+                f"❌ Invalid date format. Please use `MM/YY` (e.g. `10/{(int(current_yy) + 2) % 100:02d}`) "
+                f"or `DD/MM/YYYY` (e.g. `31/10/{datetime.now().year + 2}`).",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=30.0)
+            return
+
+        is_anomalous, anomaly_reason = is_expiry_date_anomalous(new_iso, student_id=self.student_id)
+        if is_anomalous:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            embed = build_expiry_anomaly_embed(
+                raw_input=raw_val,
+                parsed_iso=new_iso,
+                student_id=self.student_id,
+                anomaly_reason=anomaly_reason or "",
+            )
+            view = ExpiryAnomalyConfirmView(
+                service=self.service,
+                db=self.db,
+                student_id=self.student_id,
+                raw_expiry_input=raw_val,
+                parsed_iso_date=new_iso,
+                anomaly_reason=anomaly_reason or "",
+            )
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=180.0)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        response_text = await self.service.perform_verification(
+            interaction.user,
+            self.student_id,
+            raw_expiry_date=new_iso,
+        )
+        lifecycle_view = None
+        if self.db and isinstance(interaction.user.id, int):
+            try:
+                details = await self.db.get_verification_details(interaction.user.id)
+                if details and details.get("is_alumni") == 0:
+                    card_exp = details.get("card_expiry_date")
+                    today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
+                    if card_exp and card_exp < today_iso:
+                        lifecycle_view = StudentLifecycleResolutionView(self.service, self.db)
+            except Exception:
+                pass
+
+        if lifecycle_view:
+            await interaction.followup.send(response_text, view=lifecycle_view, ephemeral=True)
+        else:
+            await interaction.followup.send(response_text, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=120.0 if lifecycle_view else 60.0)
+
+
+class ExtendExpiryAnomalyConfirmView(discord.ui.View):
+    """Interactive view presented when extending card expiry with an anomalous date."""
+
+    def __init__(
+        self,
+        db: Database,
+        service: VerificationService,
+        raw_expiry_input: str,
+        parsed_iso_date: str,
+        note: str,
+        anomaly_reason: str,
+        timeout: float = 180.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.db = db
+        self.service = service
+        self.raw_expiry_input = raw_expiry_input
+        self.parsed_iso_date = parsed_iso_date
+        self.note = note
+        self.anomaly_reason = anomaly_reason
+
+    @discord.ui.button(
+        label="Confirm This Date",
+        style=discord.ButtonStyle.secondary,
+        emoji="✅",
+        custom_id="tarveri_extend_expiry_confirm",
+        row=0,
+    )
+    async def on_confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self.db.update_verification_profile(
+            discord_user_id=interaction.user.id,
+            card_expiry_date=self.parsed_iso_date,
+            lifecycle_prompt_status="extended",
+        )
+        guild = interaction.guild
+        note_str = f" ({self.note})" if self.note else ""
+        await self.db.log(
+            "INFO",
+            "EXPIRY_EXTENDED",
+            f"{interaction.user} (ID: {interaction.user.id}) extended card expiry to {self.parsed_iso_date}{note_str}",
+            user_id=interaction.user.id,
+            guild=guild,
+        )
+        display_str = format_card_expiry_display(self.parsed_iso_date)
+        await interaction.followup.send(
+            f"✅ **Student Card Validity Extended!**\n"
+            f"Your new card expiry is set to **{display_str}**.\n"
+            f"Your Digital Campus Card (`/card`) has been updated.",
+            ephemeral=True,
+        )
+        schedule_ttl_delete(interaction, delay=60.0)
+
+    @discord.ui.button(
+        label="Re-enter Expiry Date",
+        style=discord.ButtonStyle.primary,
+        emoji="✏️",
+        custom_id="tarveri_extend_expiry_reenter",
+        row=0,
+    )
+    async def on_reenter(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ExtendExpiryModal(self.db, self.service))
+
+
 class FurtherStudyTransitionModal(discord.ui.Modal, title="TARUMT Level Progression"):
     student_id = discord.ui.TextInput(
         label="New Student ID",
@@ -106,7 +398,7 @@ class FurtherStudyTransitionModal(discord.ui.Modal, title="TARUMT Level Progress
         label="New Student Card Expiry (MM/YY)",
         placeholder="e.g. 10/28 (Optional)",
         min_length=4,
-        max_length=10,
+        max_length=12,
         required=False,
     )
 
@@ -118,11 +410,46 @@ class FurtherStudyTransitionModal(discord.ui.Modal, title="TARUMT Level Progress
         self.card_expiry.placeholder = f"e.g. 10/{(int(current_yy) + 3) % 100:02d} (Optional)"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
         raw_expiry = self.card_expiry.value.strip() if self.card_expiry.value else None
+        student_id_val = self.student_id.value.strip()
+        if raw_expiry:
+            iso_expiry = parse_card_expiry_date(raw_expiry)
+            if not iso_expiry:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                current_yy = str(datetime.now().year)[-2:]
+                await interaction.followup.send(
+                    f"❌ Invalid student card expiry date format. Please use `MM/YY` (e.g. `10/{(int(current_yy) + 2) % 100:02d}`) "
+                    f"or `DD/MM/YYYY` (e.g. `31/10/{datetime.now().year + 2}`), or leave it blank to auto-calculate.",
+                    ephemeral=True,
+                )
+                schedule_ttl_delete(interaction, delay=30.0)
+                return
+
+            is_anomalous, anomaly_reason = is_expiry_date_anomalous(iso_expiry, student_id=student_id_val)
+            if is_anomalous:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                embed = build_expiry_anomaly_embed(
+                    raw_input=raw_expiry,
+                    parsed_iso=iso_expiry,
+                    student_id=student_id_val,
+                    anomaly_reason=anomaly_reason or "",
+                )
+                view = ExpiryAnomalyConfirmView(
+                    service=self.service,
+                    db=self.service.db,
+                    student_id=student_id_val,
+                    raw_expiry_input=raw_expiry,
+                    parsed_iso_date=iso_expiry,
+                    anomaly_reason=anomaly_reason or "",
+                )
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                schedule_ttl_delete(interaction, delay=180.0)
+                return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
         response_text = await self.service.perform_verification(
             interaction.user,
-            self.student_id.value,
+            student_id_val,
             raw_expiry_date=raw_expiry,
         )
         await interaction.followup.send(response_text, ephemeral=True)
@@ -134,7 +461,7 @@ class ExtendExpiryModal(discord.ui.Modal, title="Extend Student Card Validity"):
         label="New Student Card Expiry Date (MM/YY)",
         placeholder="e.g. MM/YY",
         min_length=4,
-        max_length=10,
+        max_length=12,
         required=True,
     )
     note = discord.ui.TextInput(
@@ -152,17 +479,40 @@ class ExtendExpiryModal(discord.ui.Modal, title="Extend Student Card Validity"):
         self.expiry_date.placeholder = f"e.g. 10/{(int(current_yy) + 1) % 100:02d}"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
         raw_val = self.expiry_date.value.strip()
         iso_date = parse_card_expiry_date(raw_val)
         if not iso_date:
+            await interaction.response.defer(ephemeral=True, thinking=True)
             current_yy = str(datetime.now().year)[-2:]
             await interaction.followup.send(
                 f"❌ Invalid date format. Please use `MM/YY` (e.g. `10/{(int(current_yy) + 1) % 100:02d}`) or `YYYY-MM-DD`.",
                 ephemeral=True,
             )
+            schedule_ttl_delete(interaction, delay=30.0)
             return
 
+        is_anomalous, anomaly_reason = is_expiry_date_anomalous(iso_date)
+        if is_anomalous:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            embed = build_expiry_anomaly_embed(
+                raw_input=raw_val,
+                parsed_iso=iso_date,
+                student_id="",
+                anomaly_reason=anomaly_reason or "",
+            )
+            view = ExtendExpiryAnomalyConfirmView(
+                db=self.db,
+                service=self.service,
+                raw_expiry_input=raw_val,
+                parsed_iso_date=iso_date,
+                note=self.note.value.strip() if self.note.value else "",
+                anomaly_reason=anomaly_reason or "",
+            )
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            schedule_ttl_delete(interaction, delay=180.0)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await self.db.update_verification_profile(
             discord_user_id=interaction.user.id,
             card_expiry_date=iso_date,
@@ -243,7 +593,7 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
         label="Student Card Expiry Date (MM/YY)",
         placeholder="e.g. MM/YY (Optional)",
         min_length=4,
-        max_length=10,
+        max_length=12,
         required=False,
     )
 
@@ -255,11 +605,46 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
         self.card_expiry.placeholder = f"e.g. 10/{(int(current_yy) + 2) % 100:02d} (Optional)"
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
         raw_expiry = self.card_expiry.value.strip() if self.card_expiry.value else None
+        student_id_val = self.student_id.value.strip()
+        if raw_expiry:
+            iso_expiry = parse_card_expiry_date(raw_expiry)
+            if not iso_expiry:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                current_yy = str(datetime.now().year)[-2:]
+                await interaction.followup.send(
+                    f"❌ Invalid student card expiry date format. Please use `MM/YY` (e.g. `10/{(int(current_yy) + 2) % 100:02d}`) "
+                    f"or `DD/MM/YYYY` (e.g. `31/10/{datetime.now().year + 2}`), or leave it blank to auto-calculate.",
+                    ephemeral=True,
+                )
+                schedule_ttl_delete(interaction, delay=30.0)
+                return
+
+            is_anomalous, anomaly_reason = is_expiry_date_anomalous(iso_expiry, student_id=student_id_val)
+            if is_anomalous:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                embed = build_expiry_anomaly_embed(
+                    raw_input=raw_expiry,
+                    parsed_iso=iso_expiry,
+                    student_id=student_id_val,
+                    anomaly_reason=anomaly_reason or "",
+                )
+                view = ExpiryAnomalyConfirmView(
+                    service=self.service,
+                    db=self.service.db,
+                    student_id=student_id_val,
+                    raw_expiry_input=raw_expiry,
+                    parsed_iso_date=iso_expiry,
+                    anomaly_reason=anomaly_reason or "",
+                )
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                schedule_ttl_delete(interaction, delay=180.0)
+                return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
         response_text = await self.service.perform_verification(
             interaction.user,
-            self.student_id.value,
+            student_id_val,
             raw_expiry_date=raw_expiry,
         )
         view = None
@@ -317,9 +702,45 @@ class VerificationCog(commands.Cog, name="Verification"):
     ) -> None:
         """Slash command for verification with optional direct input or modal prompt."""
         if student_id:
+            raw_student_id = student_id.strip()
+            raw_expiry = expiry_date.strip() if expiry_date else None
+            if raw_expiry:
+                iso_expiry = parse_card_expiry_date(raw_expiry)
+                if not iso_expiry:
+                    await interaction.response.defer(ephemeral=True, thinking=True)
+                    current_yy = str(datetime.now().year)[-2:]
+                    await interaction.followup.send(
+                        f"❌ Invalid student card expiry date format. Please use `MM/YY` (e.g. `10/{(int(current_yy) + 2) % 100:02d}`) "
+                        f"or `DD/MM/YYYY` (e.g. `31/10/{datetime.now().year + 2}`), or leave it blank to auto-calculate.",
+                        ephemeral=True,
+                    )
+                    schedule_ttl_delete(interaction, delay=30.0)
+                    return
+
+                is_anomalous, anomaly_reason = is_expiry_date_anomalous(iso_expiry, student_id=raw_student_id)
+                if is_anomalous:
+                    await interaction.response.defer(ephemeral=True, thinking=True)
+                    embed = build_expiry_anomaly_embed(
+                        raw_input=raw_expiry,
+                        parsed_iso=iso_expiry,
+                        student_id=raw_student_id,
+                        anomaly_reason=anomaly_reason or "",
+                    )
+                    view = ExpiryAnomalyConfirmView(
+                        service=self.service,
+                        db=self.db,
+                        student_id=raw_student_id,
+                        raw_expiry_input=raw_expiry,
+                        parsed_iso_date=iso_expiry,
+                        anomaly_reason=anomaly_reason or "",
+                    )
+                    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                    schedule_ttl_delete(interaction, delay=180.0)
+                    return
+
             await interaction.response.defer(ephemeral=True, thinking=True)
             response_text = await self.service.perform_verification(
-                interaction.user, student_id, raw_expiry_date=expiry_date
+                interaction.user, raw_student_id, raw_expiry_date=raw_expiry
             )
             view = None
             if self.db and isinstance(interaction.user.id, int):

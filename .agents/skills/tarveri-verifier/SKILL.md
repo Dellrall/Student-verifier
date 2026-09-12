@@ -438,10 +438,24 @@ fi
   - Diploma (`D`): Intake Year + 2 (October 31)
   - Degree (`R`): Intake Year + 3 (October 31)
   - Postgraduate (`P`): Intake Year + 2 (October 31)
-- **Sliding Century Windowing (`parse_card_expiry_date`)**: Uses dynamic pivot threshold (`< 70 -> 20xx`, `>= 70 -> 19xx`), allowing valid institutional years from 1969 (TAR College founding) up to 2068+ with calendar leap-year calculations.
+- **Flexible Date Parsing Formats (`parse_card_expiry_date`)**:
+  - `DD/MM/YYYY`, `DD-MM-YYYY`, `DD.MM.YYYY` (e.g. `06/07/2026` -> `2026-07-06`, `31/10/2026` -> `2026-10-31`)
+  - `DD/MM/YY`, `DD-MM-YY` (e.g. `06/07/26` -> `2026-07-06`)
+  - `MM/YY`, `MM/YYYY`, `MM-YY`, `MM-YYYY` (e.g. `10/26` -> `2026-10-31`, `10/2026` -> `2026-10-31`)
+  - `YYYY-MM-DD`, `YYYY-MM` (e.g. `2026-10-31`, `2026-10`)
+  - `DD Month Year`, `Month Year` (e.g. `15 OCT 2026`, `OCTOBER 2026`)
+- **Sliding Century Windowing**: Uses dynamic pivot threshold (`< 70 -> 20xx`, `>= 70 -> 19xx`), allowing valid institutional years from 1969 (TAR College founding) up to 2068+ with calendar leap-year calculations.
 - **Zero Hardcoded Time-Locks**: All modules, services, watchdog sweeps, and alumni claim validations (`1969 <= year <= datetime.now().year + 5`) execute dynamically against the configured local timezone (`Asia/Kuala_Lumpur`).
 
-### 3. Dynamic Intake Detection & Interactive Lifecycle Resolution UI
+### 3. Smart 8-Year Expiry Anomaly Guard & Safe Confirmation Flow
+- **Ambiguity & Typo Detection (`is_expiry_date_anomalous`)**: Protects against common user typos such as entering Day/Month only (e.g. `06/07` for 6th of July being parsed as Month/Year June 2007).
+- **Dynamic Threshold Checking**: Flags dates exceeding $\pm 8$ years relative to dynamic `datetime.now().year` or prior to the student's intake year.
+- **Safe Interception UI (`ExpiryAnomalyConfirmView`)**: Does not prematurely grant alumni roles or mark records expired. Instead presents an interactive 3-button confirmation panel:
+  1. ✅ **`[Confirm This Date]`**: Verifies with the anomalous date (e.g. for past graduates from 2007) and validates lifecycle status upon confirmation.
+  2. ✏️ **`[Re-enter Expiry Date]`**: Opens `ReEnterExpiryModal` allowing the user to seamlessly submit a corrected date (e.g. `06/07/2026` or `07/26`).
+  3. ⚡ **`[Auto-Calculate for Me]`**: Automatically applies `estimate_student_card_expiry()` based on the student's intake year.
+
+### 4. Dynamic Intake Detection & Interactive Lifecycle Resolution UI
 - **Real-Time Past Intake Detection**: When a student verifies with an ID whose intake year or estimated expiry date has passed, the verification response automatically attaches the interactive `StudentLifecycleResolutionView` with 3 resolution paths:
   1. 🎓 **"I have Graduated"**: Claims `TARUMT Alumni` role + card badge (discovers existing server alumni roles or creates official `#D4AF37` role).
   2. 📚 **"Further Studies at TARUMT"**: Opens `FurtherStudyTransitionModal` for new Student ID & study level.

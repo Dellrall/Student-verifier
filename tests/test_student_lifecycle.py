@@ -12,15 +12,20 @@ import discord
 import pytest
 
 from tarveri.cogs.verification_cog import (
+    ExpiryAnomalyConfirmView,
+    ExtendExpiryAnomalyConfirmView,
     ExtendExpiryModal,
     FurtherStudyTransitionModal,
+    ReEnterExpiryModal,
     StudentLifecycleResolutionView,
     VerificationCog,
     VerificationModal,
+    build_expiry_anomaly_embed,
 )
 from tarveri.config import (
     format_card_expiry_display,
     hash_student_id,
+    is_expiry_date_anomalous,
     parse_card_expiry_date,
 )
 from tarveri.database import Database
@@ -29,16 +34,71 @@ from tarveri.services.verification_service import VerificationService
 
 
 def test_date_parsing_and_formatting():
+    # MM/YY and MM/YYYY
     assert parse_card_expiry_date("10/26") == "2026-10-31"
+    assert parse_card_expiry_date("10/2026") == "2026-10-31"
     assert parse_card_expiry_date("02/24") == "2024-02-29"  # 2024 is leap year
     assert parse_card_expiry_date("02/25") == "2025-02-28"
+
+    # DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY
+    assert parse_card_expiry_date("06/07/2026") == "2026-07-06"
+    assert parse_card_expiry_date("31/10/2026") == "2026-10-31"
+    assert parse_card_expiry_date("15-08-2027") == "2027-08-15"
+    assert parse_card_expiry_date("01.12.2025") == "2025-12-01"
+    assert parse_card_expiry_date("06/07/26") == "2026-07-06"
+
+    # YYYY-MM-DD and YYYY-MM
     assert parse_card_expiry_date("2026-10-15") == "2026-10-15"
+    assert parse_card_expiry_date("2026-10") == "2026-10-31"
+
+    # Month Names
+    assert parse_card_expiry_date("OCT 2026") == "2026-10-31"
+    assert parse_card_expiry_date("15 OCTOBER 2026") == "2026-10-15"
+    assert parse_card_expiry_date("15 OCT 26") == "2026-10-15"
+
+    # 2-part historical (e.g. 06/07 parsed as June 2007)
+    assert parse_card_expiry_date("06/07") == "2007-06-30"
+
+    # Invalid / None
     assert parse_card_expiry_date("invalid") is None
+    assert parse_card_expiry_date("99/99") is None
     assert parse_card_expiry_date(None) is None
 
+    # Display formatting
     assert format_card_expiry_display("2026-10-31") == "10/26"
     assert format_card_expiry_display("2024-02-29") == "02/24"
+    assert format_card_expiry_display("2007-06-30") == "06/07"
     assert format_card_expiry_display(None) is None
+
+
+def test_is_expiry_date_anomalous():
+    # 06/07 parsed as 2007-06-30 for an intake in 2024 (17 years before intake)
+    anom, reason = is_expiry_date_anomalous("2007-06-30", student_id="24WMD09867")
+    assert anom is True
+    assert "before your intake year (2024)" in reason
+
+    # Past threshold check relative to dynamic current year
+    anom2, reason2 = is_expiry_date_anomalous("2007-06-30")
+    assert anom2 is True
+    assert "years in the past" in reason2
+
+    # Future threshold (> 8 years)
+    anom3, reason3 = is_expiry_date_anomalous("2040-10-31", student_id="24WMD09867")
+    assert anom3 is True
+    assert "after your intake year (2024)" in reason3
+
+    # Normal valid date for 24WMD09867 (Degree/Diploma intake 2024, expiry 2026 or 2027)
+    anom4, reason4 = is_expiry_date_anomalous("2026-10-31", student_id="24WMD09867")
+    assert anom4 is False
+    assert reason4 is None
+
+    anom5, reason5 = is_expiry_date_anomalous("2026-07-06", student_id="24WMD09867")
+    assert anom5 is False
+    assert reason5 is None
+
+    # Edge cases
+    assert is_expiry_date_anomalous(None) == (False, None)
+    assert is_expiry_date_anomalous("invalid-format") == (False, None)
 
 
 @pytest.mark.asyncio
@@ -471,6 +531,251 @@ async def test_verification_modal_attaches_lifecycle_view_for_expired_intake(tmp
     assert isinstance(kwargs["view"], StudentLifecycleResolutionView)
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_verification_modal_anomalous_expiry_triggers_confirm_view(tmp_path):
+    db_path = str(tmp_path / "anomaly_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 1111
+    guild.name = "TARUMT Main"
+    guild.roles = []
+
+    bot = MagicMock()
+    bot.guilds = [guild]
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 123001
+    member.guild = guild
+    member.roles = []
+    guild.get_member.return_value = member
+
+    service = VerificationService(bot, db, "secret", RateLimiter())
+
+    # User enters 24WMD09867 (intake 2024) with '06/07' (which maps to 2007-06-30, 17 years before intake)
+    modal = VerificationModal(service)
+    modal.student_id._value = "24WMD09867"
+    modal.card_expiry._value = "06/07"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.user = member
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await modal.on_submit(interaction)
+
+    # Should NOT immediately verify or grant role; should send ExpiryAnomalyConfirmView
+    interaction.followup.send.assert_called_once()
+    kwargs = interaction.followup.send.call_args[1]
+    assert kwargs.get("embed") is not None
+    assert "Please Confirm Student Card Expiry Date" in kwargs["embed"].title
+    assert "06/07" in kwargs["embed"].description
+    assert isinstance(kwargs.get("view"), ExpiryAnomalyConfirmView)
+
+    # 1. Test clicking "Confirm This Date" on ExpiryAnomalyConfirmView
+    confirm_view = kwargs["view"]
+    r1 = MagicMock(spec=discord.Role)
+    r1.name = "FOCS"
+    r2 = MagicMock(spec=discord.Role)
+    r2.name = "KL Main Campus"
+    r3 = MagicMock(spec=discord.Role)
+    r3.name = "Diploma"
+    guild.create_role = AsyncMock(side_effect=[r1, r2, r3])
+    member.add_roles = AsyncMock()
+
+    confirm_interaction = MagicMock(spec=discord.Interaction)
+    confirm_interaction.user = member
+    confirm_interaction.response.defer = AsyncMock()
+    confirm_interaction.followup.send = AsyncMock()
+
+    # Children 0 is Confirm This Date
+    await confirm_view.children[0].callback(confirm_interaction)
+
+    confirm_interaction.followup.send.assert_called_once()
+    confirm_kwargs = confirm_interaction.followup.send.call_args[1]
+    # Because 2007 is in the past, it should attach the lifecycle resolution view
+    assert "Recorded as `06/07`" in confirm_interaction.followup.send.call_args[0][0]
+    assert isinstance(confirm_kwargs.get("view"), StudentLifecycleResolutionView)
+
+    # Check database stored 2007-06-30
+    details = await db.get_verification_details(member.id)
+    assert details["card_expiry_date"] == "2007-06-30"
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_expiry_anomaly_auto_calculate_and_reenter_flow(tmp_path):
+    db_path = str(tmp_path / "auto_calc_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 2222
+    guild.name = "TARUMT Main"
+    guild.roles = []
+
+    r1 = MagicMock(spec=discord.Role)
+    r1.name = "FOCS"
+    r2 = MagicMock(spec=discord.Role)
+    r2.name = "KL Main Campus"
+    r3 = MagicMock(spec=discord.Role)
+    r3.name = "Diploma"
+    guild.create_role = AsyncMock(side_effect=[r1, r2, r3, r1, r2, r3])
+
+    bot = MagicMock()
+    bot.guilds = [guild]
+
+    member1 = MagicMock(spec=discord.Member)
+    member1.id = 123002
+    member1.guild = guild
+    member1.roles = []
+    member1.add_roles = AsyncMock()
+
+    member2 = MagicMock(spec=discord.Member)
+    member2.id = 123003
+    member2.guild = guild
+    member2.roles = []
+    member2.add_roles = AsyncMock()
+
+    guild.get_member = MagicMock(side_effect=lambda uid: member1 if uid == member1.id else member2)
+
+    service = VerificationService(bot, db, "secret", RateLimiter())
+
+    # User 1 chooses "Auto-Calculate for Me" (children[2])
+    view1 = ExpiryAnomalyConfirmView(
+        service=service,
+        db=db,
+        student_id="24WMD09867",
+        raw_expiry_input="06/07",
+        parsed_iso_date="2007-06-30",
+        anomaly_reason="Year is in past",
+    )
+    interaction1 = MagicMock(spec=discord.Interaction)
+    interaction1.user = member1
+    interaction1.response.defer = AsyncMock()
+    interaction1.followup.send = AsyncMock()
+
+    await view1.children[2].callback(interaction1)
+    details1 = await db.get_verification_details(member1.id)
+    # Diploma (2 years) from 2024 -> 2026-10-31
+    assert details1["card_expiry_date"] == "2026-10-31"
+
+    # User 2 clicks "Re-enter Expiry Date" (children[1]) -> opens ReEnterExpiryModal
+    view2 = ExpiryAnomalyConfirmView(
+        service=service,
+        db=db,
+        student_id="24WMD09868",
+        raw_expiry_input="06/07",
+        parsed_iso_date="2007-06-30",
+        anomaly_reason="Year is in past",
+    )
+    interaction2 = MagicMock(spec=discord.Interaction)
+    interaction2.response.send_modal = AsyncMock()
+    await view2.children[1].callback(interaction2)
+    interaction2.response.send_modal.assert_called_once()
+    modal_opened = interaction2.response.send_modal.call_args[0][0]
+    assert isinstance(modal_opened, ReEnterExpiryModal)
+
+    # User 2 submits ReEnterExpiryModal with corrected DD/MM/YYYY date "06/07/2026"
+    modal_opened.card_expiry._value = "06/07/2026"
+    submit_interaction = MagicMock(spec=discord.Interaction)
+    submit_interaction.user = member2
+    submit_interaction.response.defer = AsyncMock()
+    submit_interaction.followup.send = AsyncMock()
+
+    await modal_opened.on_submit(submit_interaction)
+    details2 = await db.get_verification_details(member2.id)
+    assert details2["card_expiry_date"] == "2026-07-06"
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_verify_slash_command_with_anomalous_expiry(tmp_path):
+    db_path = str(tmp_path / "slash_anomaly.db")
+    db = Database(db_path)
+    await db.connect()
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 3333
+    guild.name = "TARUMT Main"
+    guild.roles = []
+
+    bot = MagicMock()
+    bot.guilds = [guild]
+    service = VerificationService(bot, db, "secret", RateLimiter())
+    cog = VerificationCog(bot, db, service, RateLimiter())
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 123004
+    member.guild = guild
+    member.roles = []
+    guild.get_member.return_value = member
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.user = member
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # Call /verify with student_id and anomalous expiry_date "06/07"
+    await cog.verify_slash.callback(
+        cog,
+        interaction=interaction,
+        student_id="24WMD11111",
+        expiry_date="06/07",
+    )
+
+    interaction.followup.send.assert_called_once()
+    kwargs = interaction.followup.send.call_args[1]
+    assert isinstance(kwargs.get("view"), ExpiryAnomalyConfirmView)
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_guest_cog_student_verification_modal_anomalous_expiry(tmp_path):
+    db_path = str(tmp_path / "guest_anomaly.db")
+    db = Database(db_path)
+    await db.connect()
+
+    from tarveri.cogs.guest_cog import StudentVerificationModal
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 4444
+    guild.name = "TARUMT Main"
+    guild.roles = []
+
+    bot = MagicMock()
+    bot.guilds = [guild]
+    service = VerificationService(bot, db, "secret", RateLimiter())
+
+    member = MagicMock(spec=discord.Member)
+    member.id = 123005
+    member.guild = guild
+    member.roles = []
+    guild.get_member.return_value = member
+
+    modal = StudentVerificationModal(service)
+    modal.student_id._value = "24WMD22222"
+    modal.card_expiry._value = "06/07"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.user = member
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await modal.on_submit(interaction)
+
+    interaction.followup.send.assert_called_once()
+    kwargs = interaction.followup.send.call_args[1]
+    assert isinstance(kwargs.get("view"), ExpiryAnomalyConfirmView)
+
+    await db.close()
+
 
 
 

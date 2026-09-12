@@ -840,11 +840,14 @@ def parse_card_expiry_date(raw_date: str | None) -> str | None:
     """
     Parses and normalizes student card expiry date strings into ISO format (YYYY-MM-DD).
     Supports formats:
+    - DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY (e.g. '06/07/2026' -> '2026-07-06')
+    - DD/MM/YY, DD-MM-YY (e.g. '06/07/26' -> '2026-07-06')
     - MM/YY (e.g. '10/26' -> '2026-10-31')
     - MM/YYYY (e.g. '10/2026' -> '2026-10-31')
     - MM-YY / MM-YYYY
     - YYYY-MM (e.g. '2026-10' -> '2026-10-31')
     - YYYY-MM-DD (e.g. '2026-10-31')
+    - DD Month Year (e.g. '15 OCT 2026' or '15 OCTOBER 2026')
     - Month Year (e.g. 'OCT 2026' or 'October 2026')
     """
     if not raw_date:
@@ -854,32 +857,70 @@ def parse_card_expiry_date(raw_date: str | None) -> str | None:
     if not cleaned:
         return None
 
-    # 1. Check ISO full date YYYY-MM-DD
-    iso_full_match = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", cleaned)
+    month_names = {
+        "JAN": 1, "JANUARY": 1,
+        "FEB": 2, "FEBRUARY": 2,
+        "MAR": 3, "MARCH": 3,
+        "APR": 4, "APRIL": 4,
+        "MAY": 5, "MAY": 5,
+        "JUN": 6, "JUNE": 6,
+        "JUL": 7, "JULY": 7,
+        "AUG": 8, "AUGUST": 8,
+        "SEP": 9, "SEPT": 9, "SEPTEMBER": 9,
+        "OCT": 10, "OCTOBER": 10,
+        "NOV": 11, "NOVEMBER": 11,
+        "DEC": 12, "DECEMBER": 12,
+    }
+
+    # 1. Check ISO full date YYYY-MM-DD or YYYY/MM/DD
+    iso_full_match = re.match(r"^(\d{4})[-/\.](\d{1,2})[-/\.](\d{1,2})$", cleaned)
     if iso_full_match:
         try:
             year = int(iso_full_match.group(1))
             month = int(iso_full_match.group(2))
             day = int(iso_full_match.group(3))
-            max_days = calendar.monthrange(year, month)[1]
-            if 1 <= month <= 12 and 1 <= day <= max_days:
-                return f"{year:04d}-{month:02d}-{day:02d}"
+            if 1969 <= year <= 2100 and 1 <= month <= 12:
+                max_days = calendar.monthrange(year, month)[1]
+                if 1 <= day <= max_days:
+                    return f"{year:04d}-{month:02d}-{day:02d}"
         except Exception:
             return None
 
-    # 2. Check YYYY-MM
+    # 2. Check 3-part date: DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY (or DD/MM/YY)
+    three_part_match = re.match(r"^(\d{1,2})[-/\.](\d{1,2})[-/\.](\d{2}|\d{4})$", cleaned)
+    if three_part_match:
+        try:
+            p1 = int(three_part_match.group(1))
+            p2 = int(three_part_match.group(2))
+            raw_year = int(three_part_match.group(3))
+            year = (2000 + raw_year if raw_year < 70 else 1900 + raw_year) if raw_year < 100 else raw_year
+            if 1969 <= year <= 2100:
+                # Primary check: Standard DD/MM/YYYY
+                if 1 <= p2 <= 12 and 1 <= p1 <= 31:
+                    max_days = calendar.monthrange(year, p2)[1]
+                    if 1 <= p1 <= max_days:
+                        return f"{year:04d}-{p2:02d}-{p1:02d}"
+                # Secondary check: MM/DD/YYYY fallback
+                if 1 <= p1 <= 12 and 1 <= p2 <= 31:
+                    max_days = calendar.monthrange(year, p1)[1]
+                    if 1 <= p2 <= max_days:
+                        return f"{year:04d}-{p1:02d}-{p2:02d}"
+        except Exception:
+            return None
+
+    # 3. Check YYYY-MM
     iso_year_month = re.match(r"^(\d{4})[-/](\d{1,2})$", cleaned)
     if iso_year_month:
         try:
             year = int(iso_year_month.group(1))
             month = int(iso_year_month.group(2))
-            if 1 <= month <= 12:
+            if 1 <= month <= 12 and 1969 <= year <= 2100:
                 last_day = calendar.monthrange(year, month)[1]
                 return f"{year:04d}-{month:02d}-{last_day:02d}"
         except Exception:
             return None
 
-    # 3. Check MM/YY or MM/YYYY (or with hyphens/dots)
+    # 4. Check MM/YY or MM/YYYY (or with hyphens/dots)
     m_y_match = re.match(r"^(\d{1,2})[-/\.](\d{2}|\d{4})$", cleaned)
     if m_y_match:
         try:
@@ -892,30 +933,35 @@ def parse_card_expiry_date(raw_date: str | None) -> str | None:
         except Exception:
             return None
 
-    # 4. Check Month Name Year (e.g. 'OCT 2026', 'OCTOBER 26')
-    month_names = {
-        "JAN": 1, "JANUARY": 1,
-        "FEB": 2, "FEBRUARY": 2,
-        "MAR": 3, "MARCH": 3,
-        "APR": 4, "APRIL": 4,
-        "MAY": 5,
-        "JUN": 6, "JUNE": 6,
-        "JUL": 7, "JULY": 7,
-        "AUG": 8, "AUGUST": 8,
-        "SEP": 9, "SEPT": 9, "SEPTEMBER": 9,
-        "OCT": 10, "OCTOBER": 10,
-        "NOV": 11, "NOVEMBER": 11,
-        "DEC": 12, "DECEMBER": 12,
-    }
+    # 5. Check Day Month Name Year (e.g. '15 OCT 2026', '15 OCTOBER 2026')
+    day_month_text_match = re.match(r"^(\d{1,2})\s+([A-Z]{3,9})\s+(\d{2}|\d{4})$", cleaned)
+    if day_month_text_match:
+        try:
+            day = int(day_month_text_match.group(1))
+            m_str = day_month_text_match.group(2)
+            raw_year = int(day_month_text_match.group(3))
+            month = month_names.get(m_str)
+            year = (2000 + raw_year if raw_year < 70 else 1900 + raw_year) if raw_year < 100 else raw_year
+            if month and 1969 <= year <= 2100:
+                max_days = calendar.monthrange(year, month)[1]
+                if 1 <= day <= max_days:
+                    return f"{year:04d}-{month:02d}-{day:02d}"
+        except Exception:
+            return None
+
+    # 6. Check Month Name Year (e.g. 'OCT 2026', 'OCTOBER 26')
     month_text_match = re.match(r"^([A-Z]{3,9})\s+(\d{2}|\d{4})$", cleaned)
     if month_text_match:
-        m_str = month_text_match.group(1)
-        raw_year = int(month_text_match.group(2))
-        month = month_names.get(m_str)
-        year = (2000 + raw_year if raw_year < 70 else 1900 + raw_year) if raw_year < 100 else raw_year
-        if month and 1969 <= year <= 2100:
-            last_day = calendar.monthrange(year, month)[1]
-            return f"{year:04d}-{month:02d}-{last_day:02d}"
+        try:
+            m_str = month_text_match.group(1)
+            raw_year = int(month_text_match.group(2))
+            month = month_names.get(m_str)
+            year = (2000 + raw_year if raw_year < 70 else 1900 + raw_year) if raw_year < 100 else raw_year
+            if month and 1969 <= year <= 2100:
+                last_day = calendar.monthrange(year, month)[1]
+                return f"{year:04d}-{month:02d}-{last_day:02d}"
+        except Exception:
+            return None
 
     return None
 
@@ -933,6 +979,69 @@ def format_card_expiry_display(iso_date: str | None) -> str | None:
     except Exception:
         pass
     return None
+
+
+def is_expiry_date_anomalous(
+    iso_date: str | None,
+    student_id: str | None = None,
+    threshold_years: int = 8,
+) -> tuple[bool, str | None]:
+    """
+    Detects whether a parsed card expiry date is anomalous (e.g. > threshold_years in the past/future
+    or prior to the student's intake year, often caused by ambiguous inputs like '06/07').
+
+    Returns:
+        (is_anomalous, explanation_reason)
+    """
+    if not iso_date:
+        return False, None
+
+    try:
+        parts = iso_date.split("-")
+        if len(parts) < 3:
+            return False, None
+        expiry_year = int(parts[0])
+    except Exception:
+        return False, None
+
+    current_year = datetime.now().year
+
+    # 1. Check relative to intake year if student_id is provided
+    if student_id and len(student_id) >= 2 and student_id[:2].isdigit():
+        raw_yy = int(student_id[:2])
+        intake_year = 2000 + raw_yy if raw_yy < 70 else 1900 + raw_yy
+        if expiry_year < intake_year - 1:
+            diff = intake_year - expiry_year
+            return (
+                True,
+                f"The entered expiry year ({expiry_year}) is {diff} year(s) before your intake year ({intake_year}). "
+                f"If you entered Day/Month (e.g. '06/07' for 6th July), it was interpreted as Month/Year (June 2007).",
+            )
+        if expiry_year > intake_year + threshold_years:
+            diff = expiry_year - intake_year
+            return (
+                True,
+                f"The entered expiry year ({expiry_year}) is {diff} years after your intake year ({intake_year}), "
+                f"which exceeds the standard {threshold_years}-year study threshold.",
+            )
+
+    # 2. Check relative to current dynamic year
+    if expiry_year < current_year - threshold_years:
+        diff = current_year - expiry_year
+        return (
+            True,
+            f"The entered expiry year ({expiry_year}) is {diff} years in the past (current year: {current_year}). "
+            f"If you entered Day/Month (e.g. '06/07' for 6th July), it was interpreted as Month/Year (June 2007).",
+        )
+    if expiry_year > current_year + threshold_years:
+        diff = expiry_year - current_year
+        return (
+            True,
+            f"The entered expiry year ({expiry_year}) is {diff} years in the future (current year: {current_year}), "
+            f"which exceeds the standard {threshold_years}-year threshold.",
+        )
+
+    return False, None
 
 
 def estimate_student_card_expiry(student_id: str | None, level_code: str | None = None) -> str | None:
@@ -965,6 +1074,7 @@ def estimate_student_card_expiry(student_id: str | None, level_code: str | None 
     else:
         # Default 3 years
         return f"{intake_year + 3:04d}-10-31"
+
 
 
 
