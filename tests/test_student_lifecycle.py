@@ -823,7 +823,7 @@ async def test_student_dropout_confirm_modal_validation(tmp_path):
 
     interaction.followup.send.assert_called_once()
     success_msg = interaction.followup.send.call_args[0][0]
-    assert "Student verification removed" in success_msg
+    assert "Student verification updated to Guest" in success_msg
     # DB record should be deleted
     assert await db.get_verification_by_user(user_id) is None
 
