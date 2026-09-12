@@ -344,58 +344,74 @@ class MediaStorageService:
 
 ---
 
-### 2. Blue-Green Production Deployment for Discord Bots
+### 2. Decoupled Client–Server Blue/Green Zero-Downtime Architecture
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant Deployer as Deployment Script (deploy.sh)
-    participant Inactive as Inactive Slot (Green)
-    participant Shared as Shared Volume (/opt/tarveri-shared)
-    participant Active as Active Slot (Blue)
-    participant Discord as Discord Gateway
+flowchart TD
+    subgraph Discord["Discord Cloud API"]
+        D_GW["Discord Gateway (WebSocket)"]
+        D_REST["Discord REST API (Roles, Channels, Messages)"]
+    end
 
-    Deployer->>Inactive: 1. Pull Git main & run pytest preflight
-    Deployer->>Active: 2. systemctl stop tarveri-blue (SIGINT)
-    Active->>Shared: 3. Flush SQLite WAL checkpoint & close DB
-    Active->>Discord: 4. Close Gateway WebSocket cleanly
-    Active-->>Deployer: 5. Active slot stopped (Process exit 0)
-    Deployer->>Inactive: 6. systemctl start tarveri-green
-    Inactive->>Shared: 7. Open bot.db in WAL mode & recover state
-    Inactive->>Discord: 8. Connect Gateway & run on_ready self-healing
-    Inactive-->>Deployer: 9. Verified online -> flip /opt/tarveri-shared/active_slot to green
+    subgraph Host["Host Machine / VPS"]
+        subgraph GatewayClient["🤖 Thin Gateway Daemon (client.py)"]
+            Listener["Persistent Discord Listener<br/>• Zero Business Logic (Never Restarts)<br/>• Fast Interaction ACK (< 50ms)<br/>• Local Modal & Component Registry"]
+        end
+
+        subgraph Proxy["🔀 Local Traffic Router (Nginx / Caddy / Socket)"]
+            Router["Reverse Proxy / Upstream Switcher<br/>(http://127.0.0.1:8080)"]
+        end
+
+        subgraph BackendWorkers["⚙️ Dual-Worker Logic Engine (FastAPI / Uvicorn)"]
+            Blue["🔵 Blue Worker (:8001)<br/>(Active Production Engine)"]
+            Green["🟢 Green Worker (:8002)<br/>(Standby / Deploying Target)"]
+        end
+
+        subgraph Data["🗄️ Shared Storage & State"]
+            DB[("SQLite in WAL Mode<br/>/var/lib/tarveri/data/bot.db")]
+            Media[("Rendered Cards & Logs<br/>/var/lib/tarveri/media/")]
+        end
+    end
+
+    D_GW <-->|"24/7 Persistent WebSocket"| Listener
+    Listener -->|"Enriched Payload (HTTP POST)"| Router
+    Listener <-->|"Role Grants & Message Edits"| D_REST
+    Router -->|"Active Route"| Blue
+    Router -.->|"Instant Swap (< 10ms)"| Green
+    Blue --> DB
+    Green --> DB
+    Blue --> Media
+    Green --> Media
 ```
 
-#### The Discord Gateway Constraint
-- Unlike stateless HTTP APIs where load balancers (Nginx/Envoy) can route traffic between blue and green instances concurrently, a Discord bot maintains a **stateful, singleton Gateway WebSocket connection**.
-- Running two instances with the same bot token simultaneously triggers:
-  1. Gateway session invalidation and collision errors (`400 Bad Request`).
-  2. Duplicate event dispatching (e.g. users receiving duplicate responses and roles).
-  3. Discord API interaction timeout conflicts.
-- **Solution**: Coordinated rapid switchover where the active slot performs an immediate clean `SIGINT` shutdown (checkpointing WAL in <500ms), followed immediately by the inactive slot starting up and resuming the gateway session. Total downtime is under 2–3 seconds.
+#### 🔍 Critical Architectural Scrutiny & Failure Mode Mitigations
 
-#### Dual-Slot Directory Layout
-```
-/opt/
-├── tarveri-blue/                 # Blue slot application checkout
-│   ├── .venv/
-│   └── tarveri/
-├── tarveri-green/                # Green slot application checkout
-│   ├── .venv/
-│   └── tarveri/
-└── tarveri-shared/               # Persistent shared state
-    ├── active_slot               # File containing "blue" or "green"
-    ├── .env                      # Production secrets & bot token
-    ├── data/
-    │   └── bot.db                # Shared SQLite database (WAL mode)
-    └── logs/                     # Shared rotating log files
-```
+| Critical Failure Mode | Technical Risk | Rigorous Architectural Mitigation |
+| :--- | :--- | :--- |
+| **1. Discord 3s Interaction Timeout** | If backend worker is cold-starting or rendering heavy card PNGs, Discord kills interactions after 3000ms. | **Immediate In-Memory ACK**: Gateway Client issues `await interaction.response.defer(ephemeral=True)` in `<50ms`. Then dispatches async HTTP request to worker and updates via `interaction.edit_original_response()`. Modals are cached in memory on the client for instantaneous popup rendering. |
+| **2. SQLite Multi-Process Locks** | Blue and Green run concurrently for 5–10s during health checks; simultaneous writes can cause `database is locked` (`SQLITE_BUSY`). | **WAL Mode + Busy Timeout**: Hardcoded `PRAGMA journal_mode = WAL;`, `PRAGMA busy_timeout = 30000;` (30s C-level busy wait retry), and `PRAGMA synchronous = NORMAL;`. Microsecond transaction scopes (never holding DB locks across network/image calls). |
+| **3. In-Flight Request Drops** | Forcefully terminating the old worker (`SIGKILL`) aborts in-progress verifications or guest ticket resolutions mid-flight. | **Graceful Drain Sequence**: Deployment script sends `SIGTERM` to the retiring worker with `TimeoutStopSec=15`. Uvicorn stops accepting new requests, drains active requests to completion, checkpoints WAL, and exits cleanly. |
+| **4. Discord Cache Invalidation** | Backend workers lack Discord's WebSocket memory cache (roles, member lists, channel hierarchies), risking 429 REST rate limits. | **Enriched Client Payloads**: The Gateway Client extracts all required context (user ID, guild ID, existing role IDs, channel permissions) and includes them in the HTTP request payload. The backend executes purely against payload + database and returns atomic instructions (e.g. `roles_to_add: [ID]`). |
+| **5. Duplicate Background Crons** | If both Blue and Green run periodic loops (`GraduationWatchdog`, `LogRotation`), students receive duplicate prompts. | **Singleton Worker / Leader Election**: Background watchdog tasks only run if `WORKER_ROLE=active` or via a dedicated lightweight cron runner (`python -m tarveri.cron`). |
+
+#### 🖥️ Single-Host Layout vs. Future Multi-Server Cluster
+
+1. **Single-Host Mode (Current Implementation)**:
+   - Everything runs on one VPS.
+   - Inter-process communication via `http://127.0.0.1:8080` (or high-speed Unix Domain Sockets).
+   - Shared SQLite database on NVMe storage with WAL mode.
+2. **Multi-Server Cluster (Future Zero-Code Scalability)**:
+   - **Gateway Node**: Runs Thin Gateway Client; points target URL to `https://api.tarveri.internal`.
+   - **Worker Nodes**: Multiple FastAPI workers behind an HAProxy / Cloud Load Balancer.
+   - **Storage**: SQLite replicated via Litestream / Garage S3, or PostgreSQL.
+   - *Zero code refactoring required to transition.*
 
 #### Systemd Unit Definitions
-`/etc/systemd/system/tarveri-blue.service` (and green counterpart):
+
+`/etc/systemd/system/tarveri-client.service` (Gateway Daemon):
 ```ini
 [Unit]
-Description=TARVeri Discord Bot (Blue Slot)
+Description=TARVeri Discord Gateway Client (Thin Daemon)
 After=network-online.target
 Wants=network-online.target
 
@@ -403,12 +419,33 @@ Wants=network-online.target
 Type=simple
 User=tarveri
 Group=tarveri
+WorkingDirectory=/opt/tarveri
+EnvironmentFile=/opt/tarveri-shared/.env
+Environment=BACKEND_URL=http://127.0.0.1:8080
+ExecStart=/opt/tarveri/.venv/bin/python -m tarveri.client
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/tarveri-worker-blue.service` (and Green counterpart):
+```ini
+[Unit]
+Description=TARVeri Logic Engine (Blue Slot)
+After=network-online.target
+
+[Service]
+Type=simple
+User=tarveri
+Group=tarveri
 WorkingDirectory=/opt/tarveri-blue
 EnvironmentFile=/opt/tarveri-shared/.env
+Environment=PORT=8001
 Environment=DATA_DIR=/opt/tarveri-shared/data
-Environment=LOG_DIR=/opt/tarveri-shared/logs
-ExecStart=/opt/tarveri-blue/.venv/bin/python -m tarveri
-KillSignal=SIGINT
+ExecStart=/opt/tarveri-blue/.venv/bin/uvicorn tarveri.server:app --host 127.0.0.1 --port 8001 --workers 2
+KillSignal=SIGTERM
 TimeoutStopSec=15
 Restart=no
 
@@ -416,7 +453,8 @@ Restart=no
 WantedBy=multi-user.target
 ```
 
-#### Zero-Downtime Switchover Script (`scripts/deploy_blue_green.sh`)
+#### Production Zero-Downtime Deployment Script (`scripts/deploy_blue_green.sh`)
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -426,16 +464,20 @@ ACTIVE_SLOT=$(cat "$SHARED_DIR/active_slot" 2>/dev/null || echo "blue")
 
 if [ "$ACTIVE_SLOT" = "blue" ]; then
     TARGET_SLOT="green"
-    ACTIVE_SERVICE="tarveri-blue"
-    TARGET_SERVICE="tarveri-green"
+    TARGET_PORT="8002"
+    OLD_PORT="8001"
+    ACTIVE_SERVICE="tarveri-worker-blue"
+    TARGET_SERVICE="tarveri-worker-green"
 else
     TARGET_SLOT="blue"
-    ACTIVE_SERVICE="tarveri-green"
-    TARGET_SERVICE="tarveri-blue"
+    TARGET_PORT="8001"
+    OLD_PORT="8002"
+    ACTIVE_SERVICE="tarveri-worker-green"
+    TARGET_SERVICE="tarveri-worker-blue"
 fi
 
 TARGET_DIR="/opt/tarveri-$TARGET_SLOT"
-echo "🚀 Starting Blue-Green deployment to [$TARGET_SLOT]..."
+echo "🚀 Starting Zero-Downtime Blue-Green deployment to [$TARGET_SLOT] on port $TARGET_PORT..."
 
 # 1. Update target codebase
 cd "$TARGET_DIR"
@@ -446,24 +488,42 @@ git reset --hard origin/main
 # 2. Run test preflight on target slot
 "$TARGET_DIR/.venv/bin/pytest" -v -W error
 
-# 3. Gracefully stop active slot (triggers WAL checkpoint & clean gateway disconnect)
-echo "⏸️ Stopping active slot [$ACTIVE_SLOT]..."
-sudo systemctl stop "$ACTIVE_SERVICE"
-
-# 4. Start target slot
-echo "▶️ Starting target slot [$TARGET_SLOT]..."
+# 3. Start target worker slot
+echo "▶️ Starting target worker [$TARGET_SLOT]..."
 sudo systemctl start "$TARGET_SERVICE"
 
-# 5. Verify target slot health (wait up to 10s for active state)
-sleep 3
-if sudo systemctl is-active --quiet "$TARGET_SERVICE"; then
-    echo "$TARGET_SLOT" > "$SHARED_DIR/active_slot"
-    echo "✅ Successfully switched active slot to [$TARGET_SLOT]!"
-else
-    echo "❌ Target slot failed to start! Rolling back to [$ACTIVE_SLOT]..."
-    sudo systemctl start "$ACTIVE_SERVICE"
+# 4. Probe health check endpoint (Wait up to 15s for warm-up)
+echo "🩺 Probing target worker health at http://127.0.0.1:$TARGET_PORT/health..."
+HEALTHY=0
+for i in {1..15}; do
+    if curl -s -f "http://127.0.0.1:$TARGET_PORT/health" > /dev/null 2>&1; then
+        HEALTHY=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$HEALTHY" -ne 1 ]; then
+    echo "❌ Target worker [$TARGET_SLOT] failed health check! Aborting deployment. Active slot [$ACTIVE_SLOT] untouched."
+    sudo systemctl stop "$TARGET_SERVICE"
     exit 1
 fi
+
+# 5. Atomic Nginx Upstream Swap (< 10ms)
+echo "🔀 Swapping Nginx upstream to port $TARGET_PORT..."
+sudo sed -i "s/server 127.0.0.1:$OLD_PORT/server 127.0.0.1:$TARGET_PORT/" /etc/nginx/conf.d/tarveri_upstream.conf
+sudo nginx -s reload
+
+# 6. Update persistent active slot marker
+echo "$TARGET_SLOT" | sudo tee "$SHARED_DIR/active_slot" > /dev/null
+echo "✅ Active slot flipped to [$TARGET_SLOT]!"
+
+# 7. Gracefully drain and stop old worker
+echo "🛑 Gracefully draining old [$ACTIVE_SLOT] worker (10s drain window)..."
+sleep 10
+sudo systemctl stop "$ACTIVE_SERVICE"
+
+echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is live."
 ```
 
 ---
