@@ -1412,6 +1412,24 @@ class Database:
             return None
         return self._row_to_ticket(row)
 
+    async def get_guest_ticket_by_seq(self, guild_id: int, ticket_seq: int) -> dict[str, Any] | None:
+        """Fetches guest ticket by guild-scoped sequence number or ticket ID."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            """SELECT ticket_id, guild_id, applicant_id, referrer_id, channel_id, referral_code,
+                      reason, vouch_note, vouched_by_id, vouched_at, status, created_at, closed_at,
+                      closed_by_admin_id, close_reason, ticket_seq, pinged_admin_ids, last_pinged_at
+               FROM guest_tickets
+               WHERE guild_id = ? AND (ticket_seq = ? OR ticket_id = ?)
+               ORDER BY ticket_id DESC LIMIT 1""",
+            (guild_id, ticket_seq, ticket_seq),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_ticket(row)
+
     async def get_open_guest_ticket_for_applicant(
         self, guild_id: int, applicant_id: int
     ) -> dict[str, Any] | None:

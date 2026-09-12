@@ -139,6 +139,7 @@ class TARVeriBot(commands.Bot):
                 admin_role_name=self.settings.admin_role_name,
                 update_checker=self.update_checker,
                 log_rotator=self.log_rotator,
+                guest_service=self.guest_service,
             )
         )
         await self.add_cog(

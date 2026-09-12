@@ -4,6 +4,7 @@ Admin Commands, Interactive Dashboard & Audit Tools for TARVeri.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
@@ -22,6 +23,7 @@ from tarveri.config import (
 )
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.services.guest_service import GuestService
 from tarveri.services.log_service import (
     LogRotationService,
     archive_old_logs,
@@ -46,7 +48,7 @@ def is_admin_or_has_role(interaction: discord.Interaction, admin_role_name: str)
     admin_role = get_admin_role_or_fallback(interaction.guild, admin_role_name)
     if admin_role and admin_role in interaction.user.roles:
         return True
-    return any(r.name.lower() == admin_role_name.lower() for r in interaction.user.roles)
+    return any(getattr(r, "name", "").lower() == admin_role_name.lower() for r in getattr(interaction.user, "roles", []))
 
 
 class AdminCog(commands.Cog, name="Admin"):
@@ -67,6 +69,7 @@ class AdminCog(commands.Cog, name="Admin"):
         admin_role_name: str,
         update_checker: UpdateCheckerService | None = None,
         log_rotator: LogRotationService | None = None,
+        guest_service: GuestService | None = None,
     ):
         self.bot = bot
         self.db = db
@@ -75,6 +78,7 @@ class AdminCog(commands.Cog, name="Admin"):
         self.admin_role_name = admin_role_name
         self.update_checker = update_checker
         self.log_rotator = log_rotator
+        self.guest_service = guest_service
 
     def _check_admin(self, interaction: discord.Interaction) -> bool:
         return is_admin_or_has_role(interaction, self.admin_role_name)
@@ -1265,6 +1269,143 @@ class AdminCog(commands.Cog, name="Admin"):
             )
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
+        schedule_ttl_delete(interaction, delay=60.0)
+
+    # ==========================================
+    # 🔒 14. Manual Ticket Closure
+    # ==========================================
+
+    @admin_group.command(
+        name="close_ticket",
+        description="Manually close a guest review ticket thread without kicking the applicant.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        reason="Reason for closing the ticket (e.g. duplicate request, inquiries resolved, spam dismissal)",
+        ticket_number="Optional ticket sequence number or DB ID (defaults to current thread ticket)",
+    )
+    async def close_ticket(
+        self,
+        interaction: discord.Interaction,
+        reason: str | None = None,
+        ticket_number: int | None = None,
+    ) -> None:
+        """Manually closes a guest review ticket without granting guest roles or kicking/banning."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command can only be used inside a server.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        guest_svc = self.guest_service or getattr(self.bot, "guest_service", None)
+        if not guest_svc:
+            await interaction.response.send_message("❌ Guest verification service is unavailable.", ephemeral=True)
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        ticket = None
+        if ticket_number is not None:
+            # 1. Search by guild-scoped sequence or DB ID
+            ticket = await self.db.get_guest_ticket_by_seq(interaction.guild.id, ticket_number)
+            if not ticket:
+                ticket = await self.db.get_guest_ticket_by_id(ticket_number)
+                if ticket and ticket.get("guild_id") != interaction.guild.id:
+                    ticket = None
+        else:
+            # 2. Default to current thread / channel
+            if interaction.channel:
+                ticket = await self.db.get_guest_ticket_by_channel(interaction.channel.id)
+
+        if not ticket:
+            if ticket_number is not None:
+                await interaction.followup.send(
+                    f"❌ No guest review ticket found matching #{ticket_number}.", ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "❌ This channel is not an active guest review ticket thread. "
+                    "Please run this command inside a ticket thread or specify `ticket_number`.",
+                    ephemeral=True,
+                )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        if ticket.get("status") != "OPEN":
+            seq = ticket.get("ticket_seq") or ticket["ticket_id"]
+            seq_code = format_ticket_seq(seq)
+            status_str = ticket.get("status", "UNKNOWN")
+            await interaction.followup.send(
+                f"⚠️ Ticket #{seq_code} is already resolved ({status_str}).", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        # Execute manual closure
+        success, reply_msg = await guest_svc.close_guest_ticket_manually(
+            ticket=ticket,
+            guild=interaction.guild,
+            admin_user=interaction.user,
+            reason=reason,
+        )
+
+        if success:
+            ticket_ch_id = ticket.get("channel_id")
+            thread = None
+            if ticket_ch_id:
+                if hasattr(interaction.guild, "get_thread"):
+                    thread = interaction.guild.get_thread(ticket_ch_id)
+                if not thread and hasattr(interaction.guild, "get_channel"):
+                    thread = interaction.guild.get_channel(ticket_ch_id)
+
+            # If inside the thread (or thread is accessible), post closure notice and lock/archive
+            if thread and isinstance(thread, discord.Thread):
+                reason_note = (
+                    f"\n> **Reason:** *\"{reason.strip()}\"*"
+                    if reason and reason.strip()
+                    else ""
+                )
+                try:
+                    await thread.send(
+                        f"🔒 **Ticket manually closed by {interaction.user.mention} via `/admin close_ticket`.**\n"
+                        f"*(Applicant remains in the server; no role changes or kicks executed)*{reason_note}\n\n"
+                        f"This thread will be locked and archived."
+                    )
+                except discord.HTTPException:
+                    pass
+
+                # Try to update the review embed on the root message if found in guest_cog
+                try:
+                    updated_ticket = await self.db.get_guest_ticket_by_id(ticket["ticket_id"])
+                    applicant_member = interaction.guild.get_member(ticket["applicant_id"])
+                    if updated_ticket:
+                        from tarveri.cogs.guest_cog import build_review_embed
+                        embed = build_review_embed(
+                            updated_ticket, interaction.guild, applicant_member, status_override="CLOSED"
+                        )
+                        starter_msg = getattr(thread, "starter_message", None)
+                        if starter_msg and starter_msg.author.id == self.bot.user.id:
+                            await starter_msg.edit(embed=embed, view=discord.ui.View())
+                except Exception:
+                    pass
+
+                await asyncio.sleep(3)
+                try:
+                    await thread.edit(locked=True, archived=True, reason=f"TARVeri: Ticket closed by {interaction.user}")
+                except discord.HTTPException:
+                    pass
+
+            await interaction.followup.send(reply_msg, ephemeral=True)
+        else:
+            await interaction.followup.send(reply_msg, ephemeral=True)
+
         schedule_ttl_delete(interaction, delay=60.0)
 
 

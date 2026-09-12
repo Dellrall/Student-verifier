@@ -120,6 +120,7 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 * **`/admin set_role [type] [role/name]`** — Configure or reset the server's `guest` or `admin` reviewer roles.
 * **`/admin panel [channel]`** — Post the persistent 3-button verification gateway panel (Student Verify / Referral Code / Guest Apply).
 * **`/admin tickets [status] [limit]`** — Query guest review tickets with clickable links to threads and verdict notes.
+* **`/admin close_ticket [reason] [ticket_number]`** — Manually close and archive current guest review thread ticket (or specify `ticket_number`) without kicking the user.
 * **`/admin backup [action]`** — Create immediate snapshots, list historical backups, or restore previous settings.
 * **`/admin logs [action]`** — Inspect active daily logs, list 10-day `.tar.gz` archives, or tail recent log lines.
 * **`/admin audit [limit] [event_type]`** — Inspect database audit logs with optional event type filtering.

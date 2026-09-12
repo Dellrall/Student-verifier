@@ -602,3 +602,102 @@ async def test_admin_backfill_roles_command(tmp_path):
 
     await db.close()
 
+
+@pytest.mark.asyncio
+async def test_admin_close_ticket_in_thread(tmp_path):
+    db_path = str(tmp_path / "admin_close_ticket_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = MagicMock()
+    guest_service = MagicMock()
+    guest_service.close_guest_ticket_manually = AsyncMock(
+        return_value=(True, "🔒 Guest review ticket #0001 manually closed.")
+    )
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin", guest_service=guest_service)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 12345
+    thread = MagicMock(spec=discord.Thread)
+    thread.id = 999111
+    thread.send = AsyncMock()
+    thread.edit = AsyncMock()
+    guild.get_thread.return_value = thread
+
+    # Create open guest ticket in DB
+    ticket_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=111222,
+        channel_id=thread.id,
+        reason="Attending guest lecture",
+    )
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+    admin_user.mention = "<@999>"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.channel = thread
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await cog.close_ticket.callback(cog, interaction, reason="Resolved inquiry")
+
+    guest_service.close_guest_ticket_manually.assert_called_once()
+    thread.send.assert_called_once()
+    assert "Ticket manually closed" in thread.send.call_args[0][0]
+    thread.edit.assert_called_once_with(locked=True, archived=True, reason=f"TARVeri: Ticket closed by {admin_user}")
+    interaction.followup.send.assert_called_once()
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_close_ticket_with_ticket_number(tmp_path):
+    db_path = str(tmp_path / "admin_close_ticket_seq_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = MagicMock()
+    guest_service = MagicMock()
+    guest_service.close_guest_ticket_manually = AsyncMock(
+        return_value=(True, "🔒 Guest review ticket #0042 manually closed.")
+    )
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin", guest_service=guest_service)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 54321
+
+    # Create ticket with seq 42
+    ticket_id = await db.create_guest_ticket(
+        guild_id=guild.id,
+        applicant_id=333444,
+        channel_id=888777,
+        ticket_seq=42,
+        reason="Visiting researcher",
+    )
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.channel = MagicMock(spec=discord.TextChannel)
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    await cog.close_ticket.callback(cog, interaction, reason="Duplicate request", ticket_number=42)
+
+    guest_service.close_guest_ticket_manually.assert_called_once()
+    interaction.followup.send.assert_called_once()
+
+    await db.close()
+
+
