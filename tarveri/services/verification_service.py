@@ -476,6 +476,41 @@ class VerificationService:
                 )
                 return None
 
+    async def sync_alumni_role_across_guilds(
+        self,
+        user_id: int,
+        guilds: Sequence[discord.Guild],
+        reason: str = "TARVeri: Sync alumni role",
+    ) -> list[str]:
+        """Ensures the alumni role is assigned to the user across the specified guilds."""
+        assigned_guild_names: list[str] = []
+        for guild in guilds:
+            member = await self.get_or_fetch_member(guild, user_id)
+            if not member:
+                continue
+
+            alumni_role = await self.get_or_create_alumni_role(guild)
+            if not alumni_role:
+                continue
+
+            if alumni_role not in getattr(member, "roles", []):
+                me = getattr(guild, "me", None)
+                can_manage = (
+                    getattr(me.guild_permissions, "manage_roles", False)
+                    if me and hasattr(me, "guild_permissions")
+                    else False
+                )
+                bot_top = getattr(me, "top_role", None)
+                bot_pos = getattr(bot_top, "position", 0) if bot_top else 0
+                role_pos = getattr(alumni_role, "position", 0)
+                if can_manage and role_pos < bot_pos:
+                    try:
+                        await member.add_roles(alumni_role, reason=reason)
+                        assigned_guild_names.append(guild.name)
+                    except discord.HTTPException as e:
+                        logger.warning(f"Could not assign alumni role to {member} in {guild.name}: {e}")
+        return assigned_guild_names
+
     @classmethod
     def _match_campus_role_in_list(cls, roles: Sequence[discord.Role], target_name: str) -> discord.Role | None:
         """Dynamic matcher to find an existing branch campus role in a list of roles."""
@@ -1478,36 +1513,11 @@ class VerificationService:
 
         # Assign role across mutual guilds
         mutual_guilds = await self.get_mutual_guilds_for_user(user_id)
-        roles_assigned: list[str] = []
-
-        for guild in mutual_guilds:
-            member = await self.get_or_fetch_member(guild, user_id)
-            if not member:
-                continue
-
-            alumni_role = await self.get_or_create_alumni_role(guild)
-            if not alumni_role:
-                continue
-
-            if alumni_role not in getattr(member, "roles", []):
-                me = getattr(guild, "me", None)
-                can_manage = (
-                    getattr(me.guild_permissions, "manage_roles", False)
-                    if me and hasattr(me, "guild_permissions")
-                    else False
-                )
-                bot_top = getattr(me, "top_role", None)
-                bot_pos = getattr(bot_top, "position", 0) if bot_top else 0
-                role_pos = getattr(alumni_role, "position", 0)
-                if can_manage and role_pos < bot_pos:
-                    try:
-                        await member.add_roles(
-                            alumni_role,
-                            reason=f"TARVeri: Claimed Alumni status (Class of {graduated_year})",
-                        )
-                        roles_assigned.append(guild.name)
-                    except discord.HTTPException as e:
-                        logger.warning(f"Could not assign alumni role to {member} in {guild.name}: {e}")
+        roles_assigned = await self.sync_alumni_role_across_guilds(
+            user_id,
+            mutual_guilds,
+            reason=f"TARVeri: Claimed Alumni status (Class of {graduated_year})",
+        )
 
         stored_faculty = verif[1]
         faculty_name = FACULTY_ROLES.get(stored_faculty, stored_faculty)

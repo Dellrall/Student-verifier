@@ -347,18 +347,112 @@ async def test_on_member_join_auto_sync_already_verified(mock_bot, mock_service,
     member.__str__.return_value = "Returning#0002"
 
     mock_sync_result = MagicMock()
-    mock_sync_result.verified_in = [("TARUMT Campus", "FOCS")]
+    mock_sync_result.verified_in = [(123, "TARUMT Campus", "FOCS, KL Main Campus, Degree")]
     mock_service.assign_role_across_guilds = AsyncMock(return_value=mock_sync_result)
 
     await cog.on_member_join(member)
 
-    # Should have called role assignment
-    mock_service.assign_role_across_guilds.assert_called_once_with(user_id, "FOCS", [guild])
+    # Should have called role assignment with faculty, campus, and study level roles
+    mock_service.assign_role_across_guilds.assert_called_once_with(
+        user_id, "FOCS", [guild], campus_role_name="KL Main Campus", level_role_name="Degree"
+    )
     # Should NOT have sent the new member tag message in welcome channel
     welcome_channel.send.assert_not_called()
     # Member gets confirmation DM
     member.send.assert_called_once()
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_on_member_join_auto_sync_with_branch_level_and_alumni(mock_bot, mock_service, mock_rate_limiter, tmp_path):
+    db = Database(str(tmp_path / "cog_join_sync_penang_test.db"))
+    await db.connect()
+
+    user_id = 99911
+    # Pre-record verification with FAFB (B), Penang campus (P), and Diploma (D) and Alumni status
+    await db.record_verification(user_id, "hash_penang", "B", campus_code="P", level_code="D")
+    await db.record_alumni_claim(user_id, 2024, "Diploma in Business")
+
+    cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 456
+    guild.name = "TARUMT Penang Campus"
+    welcome_channel = MagicMock(spec=discord.TextChannel)
+    welcome_channel.name = "welcome"
+    welcome_channel.send = AsyncMock()
+    guild.text_channels = [welcome_channel]
+
+    member = MagicMock(spec=discord.Member)
+    member.id = user_id
+    member.guild = guild
+    member.send = AsyncMock()
+    member.__str__.return_value = "Alumni#0001"
+
+    mock_sync_result = MagicMock()
+    mock_sync_result.verified_in = [(456, "TARUMT Penang Campus", "FAFB, Penang Branch, Diploma")]
+    mock_service.assign_role_across_guilds = AsyncMock(return_value=mock_sync_result)
+    mock_service.sync_alumni_role_across_guilds = AsyncMock(return_value=["TARUMT Penang Campus"])
+
+    await cog.on_member_join(member)
+
+    # Should assign FAFB, Penang Branch, and Diploma roles
+    mock_service.assign_role_across_guilds.assert_called_once_with(
+        user_id, "FAFB", [guild], campus_role_name="Penang Branch", level_role_name="Diploma"
+    )
+    # Should sync alumni role
+    mock_service.sync_alumni_role_across_guilds.assert_called_once_with(
+        user_id, [guild], reason="TARVeri: Auto-assigned returning alumni role on join"
+    )
+    # Member gets confirmation DM mentioning roles
+    member.send.assert_called_once()
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_verify_slash_resync_already_verified(mock_bot, mock_service, mock_rate_limiter, tmp_path):
+    db = Database(str(tmp_path / "verify_resync_test.db"))
+    await db.connect()
+
+    user_id = 77722
+    await db.record_verification(user_id, "hash_resync", "M", campus_code="A", level_code="F")
+    await db.record_alumni_claim(user_id, 2023, "Foundation in Computing")
+
+    cog = VerificationCog(mock_bot, db, mock_service, mock_rate_limiter)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 789
+    guild.name = "TARUMT Perak Campus"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.user = MagicMock()
+    interaction.user.id = user_id
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    mock_service.get_mutual_guilds_for_user = AsyncMock(return_value=[guild])
+    mock_sync_result = MagicMock()
+    mock_sync_result.verified_in = [(789, "TARUMT Perak Campus", "FOCS, Perak Branch, Foundation")]
+    mock_sync_result.already_had_role_in = []
+    mock_sync_result.missing_role_in = []
+    mock_sync_result.failed_in = []
+    mock_service.assign_role_across_guilds = AsyncMock(return_value=mock_sync_result)
+    mock_service.format_role_summary.return_value = "✅ Roles updated successfully"
+    mock_service.sync_alumni_role_across_guilds = AsyncMock(return_value=["TARUMT Perak Campus"])
+
+    # Invoke /verify with no student_id (resync path)
+    await cog.verify_slash.callback(cog, interaction, student_id=None)
+
+    interaction.response.defer.assert_called_once()
+    mock_service.assign_role_across_guilds.assert_called_once_with(
+        user_id, "FOCS", [guild], campus_role_name="Perak Branch", level_role_name="Foundation"
+    )
+    mock_service.sync_alumni_role_across_guilds.assert_called_once_with(
+        user_id, [guild], reason="TARVeri: Resync alumni role"
+    )
+    interaction.followup.send.assert_called_once()
+    await db.close()
+
 
 
 @pytest.mark.asyncio

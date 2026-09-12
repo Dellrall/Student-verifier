@@ -13,10 +13,12 @@ from discord import app_commands
 from discord.ext import commands
 
 from tarveri.config import (
+    CAMPUS_ROLES,
     FACULTY_ROLE_NAMES,
     FACULTY_ROLES,
     GUEST_ROLE_PATTERN,
     ROLE_HELP_KEYWORDS_PATTERN,
+    STUDY_LEVEL_ROLES,
     Settings,
     format_card_expiry_display,
     get_configured_tz,
@@ -764,23 +766,43 @@ class VerificationCog(commands.Cog, name="Verification"):
             return
 
         # Check if already verified — if so, resync silently without modal
-        existing = await self.db.get_verification_by_user(interaction.user.id)
-        if existing:
+        details = await self.db.get_verification_details(interaction.user.id)
+        if details:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            _, stored_faculty, _ = existing
-            mutual_guilds = await self.service.get_mutual_guilds_for_user(interaction.user.id)
-            result = await self.service.assign_role_across_guilds(
-                interaction.user.id, FACULTY_ROLES[stored_faculty], mutual_guilds
-            )
-            summary = self.service.format_role_summary(result)
-            msg = summary or "ℹ️ You're already verified and up to date in every server I share with you."
-            msg += "\n💡 *If you are progressing to a new study level (e.g. Diploma -> Degree), run `/verify student_id:<your_new_id>` to transition.*"
-            await interaction.followup.send(
-                msg,
-                ephemeral=True,
-            )
-            schedule_ttl_delete(interaction, delay=60.0)
-            return
+            stored_faculty = details.get("faculty_code")
+            faculty_role = FACULTY_ROLES.get(stored_faculty)
+            if faculty_role:
+                campus_code = details.get("campus_code") or "W"
+                campus_role = CAMPUS_ROLES.get(campus_code, "KL Main Campus")
+                level_code = details.get("level_code") or "R"
+                level_role = STUDY_LEVEL_ROLES.get(level_code, "Degree")
+                mutual_guilds = await self.service.get_mutual_guilds_for_user(interaction.user.id)
+                result = await self.service.assign_role_across_guilds(
+                    interaction.user.id,
+                    faculty_role,
+                    mutual_guilds,
+                    campus_role_name=campus_role,
+                    level_role_name=level_role,
+                )
+                if details.get("is_alumni"):
+                    try:
+                        await self.service.sync_alumni_role_across_guilds(
+                            interaction.user.id,
+                            mutual_guilds,
+                            reason="TARVeri: Resync alumni role",
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not resync alumni role for {interaction.user}: {e}")
+
+                summary = self.service.format_role_summary(result)
+                msg = summary or "ℹ️ You're already verified and up to date in every server I share with you."
+                msg += "\n💡 *If you are progressing to a new study level (e.g. Diploma -> Degree), run `/verify student_id:<your_new_id>` to transition.*"
+                await interaction.followup.send(
+                    msg,
+                    ephemeral=True,
+                )
+                schedule_ttl_delete(interaction, delay=60.0)
+                return
 
         # Open the interactive modal dialog
         await interaction.response.send_modal(VerificationModal(self.service))
@@ -1033,29 +1055,54 @@ class VerificationCog(commands.Cog, name="Verification"):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        """Automatically assigns faculty roles if member is already verified, else prompts and tags."""
-        existing = await self.db.get_verification_by_user(member.id)
-        if existing:
-            _, stored_faculty, _ = existing
+        """Automatically assigns faculty, campus, study level, and alumni roles if member is already verified, else prompts and tags."""
+        details = await self.db.get_verification_details(member.id)
+        if details:
+            stored_faculty = details.get("faculty_code")
             faculty_role = FACULTY_ROLES.get(stored_faculty)
             if faculty_role:
-                result = await self.service.assign_role_across_guilds(member.id, faculty_role, [member.guild])
+                campus_code = details.get("campus_code") or "W"
+                campus_role = CAMPUS_ROLES.get(campus_code, "KL Main Campus")
+                level_code = details.get("level_code") or "R"
+                level_role = STUDY_LEVEL_ROLES.get(level_code, "Degree")
+
+                result = await self.service.assign_role_across_guilds(
+                    member.id,
+                    faculty_role,
+                    [member.guild],
+                    campus_role_name=campus_role,
+                    level_role_name=level_role,
+                )
+
+                if details.get("is_alumni"):
+                    try:
+                        await self.service.sync_alumni_role_across_guilds(
+                            member.id,
+                            [member.guild],
+                            reason="TARVeri: Auto-assigned returning alumni role on join",
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not auto-sync alumni role for {member} on join: {e}")
+
                 if result.verified_in:
+                    assigned_labels = [item[2] if len(item) == 3 else item[1] for item in result.verified_in]
+                    assigned_str = ", ".join(dict.fromkeys(assigned_labels)) if assigned_labels else faculty_role
                     await self.db.log(
                         "INFO",
                         "AUTO_SYNC_JOIN",
-                        f"Auto-assigned '{faculty_role}' to returning verified member {member} in '{member.guild.name}'",
+                        f"Auto-assigned '{assigned_str}' to returning verified member {member} in '{member.guild.name}'",
                         guild=member.guild,
                         user_id=member.id,
                     )
                     try:
+                        roles_display = f"**{assigned_str}**" if assigned_str else f"**{faculty_role}**"
                         await member.send(
                             f"🎓 Welcome to **{member.guild.name}**! Because you are already verified with TARVeri, "
-                            f"you have automatically received your **{faculty_role}** role."
+                            f"you have automatically received your {roles_display} role(s)."
                         )
                     except discord.Forbidden:
                         pass
-                    return
+                return
 
         # New unverified member: Tag them in the server welcome/verification channel with embed and buttons
         welcome_channel = await self.get_welcome_or_verify_channel(member.guild)
