@@ -590,10 +590,10 @@ class StudentDropoutConfirmModal(discord.ui.Modal, title="⚠️ Confirm Studies
             return
 
         await interaction.followup.send(
-            "🚪 **Student verification removed.**\n\n"
-            "Your student verification and corresponding faculty, campus, and study level roles have been withdrawn across all mutual servers.\n"
+            "🚪 **Student verification updated to Guest.**\n\n"
+            "Your student roles (Faculty, Campus, Study Level) have been withdrawn, and you have been granted the **`Guest(Approved)`** role across mutual servers so you retain guest access to community channels.\n\n"
             "If you ever resume your studies at TARUMT in the future, you are welcome to run `/verify` again anytime.\n\n"
-            "We wish you the very best in your future endeavors! 🌟",
+            "We wish you the very best in your journey ahead! 🌟",
             ephemeral=True,
         )
         schedule_ttl_delete(interaction, delay=60.0)

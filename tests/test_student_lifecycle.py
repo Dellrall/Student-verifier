@@ -858,10 +858,16 @@ async def test_process_student_dropout_service_lifecycle(tmp_path):
     user_id = 554433
     await db.record_verification(user_id, "hash_drop_2", "M", campus_code="W", level_code="R")
 
+    guest_role = MagicMock(spec=discord.Role)
+    guest_role.name = "Guest(Approved)"
+    guest_role.position = 2
+    guild.create_role = AsyncMock(return_value=guest_role)
+
     member = MagicMock(spec=discord.Member)
     member.id = user_id
     member.roles = [fac_role, camp_role, lvl_role]
     member.remove_roles = AsyncMock()
+    member.add_roles = AsyncMock()
     guild.get_member.return_value = member
 
     me = MagicMock()
@@ -876,8 +882,12 @@ async def test_process_student_dropout_service_lifecycle(tmp_path):
     assert result["campus_name"] == "KL Main Campus"
     assert result["level_name"] == "Degree"
 
-    # Verify roles removal called
+    # Verify student roles removal called
     assert member.remove_roles.call_count >= 1
+
+    # Verify Guest(Approved) role was added
+    assert member.add_roles.call_count >= 1
+    assert member.add_roles.call_args[0][0] == guest_role
 
     # Verify DB record deleted
     assert await db.get_verification_by_user(user_id) is None

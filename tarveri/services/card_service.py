@@ -23,6 +23,7 @@ from tarveri.config import (
     FACULTY_COLORS,
     FACULTY_ROLES,
     GUEST_ROLE_COLOR,
+    GUEST_ROLE_PATTERN,
     STUDY_LEVEL_ROLE_NAMES,
     STUDY_LEVEL_ROLES,
     format_card_expiry_display,
@@ -183,9 +184,20 @@ class CardService:
                 t_id = guest_ticket.get("ticket_seq") or guest_ticket.get("ticket_id")
                 hash_preview = f"GST-{t_id:04d}" if isinstance(t_id, int) else f"GST-{t_id}"
             else:
-                faculty_code = "UNVERIFIED"
-                faculty_name = "Unverified"
-                hash_preview = f"UNV-{user_id % 10000:04d}"
+                has_guest_role = False
+                if isinstance(member, discord.Member):
+                    for r in getattr(member, "roles", []):
+                        r_name = getattr(r, "name", "").strip()
+                        if GUEST_ROLE_PATTERN.search(r_name):
+                            faculty_code = "GUEST"
+                            faculty_name = r_name
+                            hash_preview = f"GST-{user_id % 10000:04d}"
+                            has_guest_role = True
+                            break
+                if not has_guest_role:
+                    faculty_code = "UNVERIFIED"
+                    faculty_name = "Unverified"
+                    hash_preview = f"UNV-{user_id % 10000:04d}"
 
         # Alumni check
         alumni_info = await self.db.get_alumni_info_by_user(user_id) if is_verified_student else None

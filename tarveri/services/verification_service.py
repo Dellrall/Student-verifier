@@ -28,6 +28,7 @@ from tarveri.config import (
     FACULTY_COLORS,
     FACULTY_ROLE_NAMES,
     FACULTY_ROLES,
+    GUEST_ROLE_COLOR,
     GUEST_ROLE_PATTERN,
     ROLE_QUALIFIER_PATTERN,
     SRC_ROLE_NAMES,
@@ -510,6 +511,102 @@ class VerificationService:
                     except discord.HTTPException as e:
                         logger.warning(f"Could not assign alumni role to {member} in {guild.name}: {e}")
         return assigned_guild_names
+
+    async def find_guest_role(
+        self, guild: discord.Guild, configured_name: str | None = None
+    ) -> discord.Role | None:
+        """Finds the guest role in guild matching configured name or regex pattern."""
+        def _match_guest_in_list(roles: Sequence[discord.Role]) -> discord.Role | None:
+            if configured_name and configured_name.strip():
+                conf_clean = configured_name.strip().lower()
+                for r in roles:
+                    if getattr(r, "name", "").strip().lower() == conf_clean:
+                        return r
+            matched = []
+            for r in roles:
+                r_name = getattr(r, "name", "").strip()
+                if not r_name:
+                    continue
+                if GUEST_ROLE_PATTERN.search(r_name):
+                    matched.append(r)
+            if matched:
+                return max(matched, key=lambda r: getattr(r, "position", 0))
+            return None
+
+        guild_roles = getattr(guild, "roles", [])
+        if isinstance(guild_roles, (list, tuple)):
+            found = _match_guest_in_list(guild_roles)
+            if found is not None:
+                return found
+
+        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
+            try:
+                live_roles = await guild.fetch_roles()
+                if isinstance(live_roles, (list, tuple)):
+                    found = _match_guest_in_list(live_roles)
+                    if found is not None:
+                        return found
+            except (discord.HTTPException, discord.Forbidden):
+                pass
+        return None
+
+    async def get_or_create_guest_role(self, guild: discord.Guild) -> discord.Role | None:
+        """Retrieves or atomically creates the Guest(Approved) role for the guild."""
+        settings = await self.db.get_guild_settings(guild.id)
+        configured_name = settings[2].strip() if settings and settings[2] else None
+
+        existing_role = await self.find_guest_role(guild, configured_name)
+        if existing_role is not None:
+            return existing_role
+
+        lock = self._get_guild_role_lock(guild.id)
+        async with lock:
+            existing_role = await self.find_guest_role(guild, configured_name)
+            if existing_role is not None:
+                return existing_role
+
+            can_manage = (
+                getattr(guild.me.guild_permissions, "manage_roles", False)
+                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
+                else False
+            )
+            if not can_manage:
+                return None
+
+            role_name_to_create = configured_name or "Guest(Approved)"
+            try:
+                permissions = discord.Permissions(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True,
+                    attach_files=True,
+                    embed_links=True,
+                    add_reactions=True,
+                    use_external_emojis=True,
+                    connect=True,
+                    speak=True,
+                    use_voice_activation=True,
+                )
+                role = await guild.create_role(
+                    name=role_name_to_create,
+                    permissions=permissions,
+                    colour=discord.Colour(GUEST_ROLE_COLOR),
+                    reason="TARVeri: Auto-created Guest(Approved) role",
+                )
+                try:
+                    await self.db.record_bot_created_role(guild.id, role.id, role_name_to_create)
+                except Exception as e:
+                    logger.debug(f"Could not record bot created guest role: {e}")
+                await self.db.log(
+                    "INFO",
+                    "ROLE_CREATED",
+                    f"Created guest role '{role_name_to_create}' in '{guild.name}' (Guild ID: {guild.id})",
+                    guild=guild,
+                )
+                return role
+            except discord.HTTPException as e:
+                logger.warning(f"Could not create guest role '{role_name_to_create}' in '{guild.name}': {e}")
+                return None
 
     @classmethod
     def _match_campus_role_in_list(cls, roles: Sequence[discord.Role], target_name: str) -> discord.Role | None:
@@ -1079,9 +1176,10 @@ class VerificationService:
         if hasattr(self, "rate_limiter") and self.rate_limiter:
             self.rate_limiter.reset(user_id)
 
-        # 3. Strip faculty, campus, study level, and alumni roles across mutual guilds
+        # 3. Strip faculty, campus, study level, and alumni roles across mutual guilds, and grant Guest(Approved)
         mutual_guilds = await self.get_mutual_guilds_for_user(user_id)
         roles_removed_servers: list[str] = []
+        guest_roles_granted_servers: list[str] = []
 
         for guild in mutual_guilds:
             member = await self.get_or_fetch_member(guild, user_id)
@@ -1106,6 +1204,7 @@ class VerificationService:
             bot_top = getattr(me, "top_role", None)
             bot_pos = getattr(bot_top, "position", 0) if bot_top else 0
 
+            # Remove student-specific roles
             for role in roles_to_remove:
                 role_pos = getattr(role, "position", 0)
                 if can_manage and isinstance(bot_pos, int) and isinstance(role_pos, int) and role_pos < bot_pos:
@@ -1119,12 +1218,26 @@ class VerificationService:
                     except discord.HTTPException as e:
                         logger.warning(f"Could not remove role {role.name} from {member} in {guild.name}: {e}")
 
+            # Assign Guest(Approved) role so they maintain guest permissions & channel access
+            guest_role = await self.get_or_create_guest_role(guild)
+            if guest_role and guest_role not in getattr(member, "roles", []):
+                role_pos = getattr(guest_role, "position", 0)
+                if can_manage and isinstance(bot_pos, int) and isinstance(role_pos, int) and role_pos < bot_pos:
+                    try:
+                        await member.add_roles(
+                            guest_role,
+                            reason=f"TARVeri: Granted Guest(Approved) upon study discontinuation ({reason})",
+                        )
+                        guest_roles_granted_servers.append(guild.name)
+                    except discord.HTTPException as e:
+                        logger.warning(f"Could not assign guest role to {member} in {guild.name}: {e}")
+
         # 4. Log audit event
         guild_ctx = getattr(user, "guild", None)
         await self.db.log(
             "INFO",
             "STUDENT_DROPOUT",
-            f"Student {user} (ID: {user_id}) confirmed dropout / withdrawal from [{faculty_name} • {campus_name} • {level_name}]. Reason: '{reason}'. Revoked roles across {len(roles_removed_servers)} servers.",
+            f"Student {user} (ID: {user_id}) confirmed dropout / withdrawal from [{faculty_name} • {campus_name} • {level_name}]. Reason: '{reason}'. Granted Guest role across {len(guest_roles_granted_servers)} servers.",
             user_id=user_id,
             guild=guild_ctx,
         )
@@ -1135,6 +1248,7 @@ class VerificationService:
             "campus_name": campus_name,
             "level_name": level_name,
             "guilds_updated": len(roles_removed_servers),
+            "guest_guilds_granted": len(guest_roles_granted_servers),
         }
 
     async def perform_verification(
