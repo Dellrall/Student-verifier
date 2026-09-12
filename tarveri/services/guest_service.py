@@ -1061,13 +1061,68 @@ class GuestService:
         is_ban: bool = False,
     ) -> None:
         """
-        Revokes guest access, expires open review tickets, and invalidates active referrals
-        when a user leaves, is kicked, or is banned from the server.
+        Revokes guest access, expires open review tickets, archives private review threads,
+        and invalidates active referrals when a user leaves, is kicked, or is banned from the server.
         """
         revocation_status = "BANNED" if is_ban else "LEFT_SERVER"
         close_reason = "Member banned from server" if is_ban else "Member left the server"
         referrer_close_reason = "Referring student banned from server" if is_ban else "Referring student left server"
 
+        # 1. Clean up active review threads and channel permissions in real time
+        try:
+            open_applicant_ticket = await self.db.get_open_guest_ticket_for_applicant(guild.id, user.id)
+            if open_applicant_ticket:
+                thread_id = open_applicant_ticket.get("channel_id")
+                thread = guild.get_thread(thread_id) if hasattr(guild, "get_thread") else None
+                if not thread and hasattr(guild, "fetch_channel"):
+                    try:
+                        fetched = await guild.fetch_channel(thread_id)
+                        if isinstance(fetched, discord.Thread):
+                            thread = fetched
+                    except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                        thread = None
+
+                if thread and not getattr(thread, "archived", False):
+                    try:
+                        reason_msg = "banned from" if is_ban else "left"
+                        await thread.send(
+                            f"🛑 **Guest applicant {reason_msg} the server.** This review ticket has been automatically closed and the thread is archived."
+                        )
+                        await thread.edit(archived=True, locked=True)
+                    except (discord.HTTPException, discord.Forbidden):
+                        pass
+
+                await self._cleanup_channel_overwrites(guild, open_applicant_ticket)
+
+            # Check open tickets referred by this user
+            open_referred = await self.db.list_guest_tickets(guild.id, status="OPEN")
+            for t in open_referred:
+                if t.get("referrer_id") == user.id:
+                    thread_id = t.get("channel_id")
+                    thread = guild.get_thread(thread_id) if hasattr(guild, "get_thread") else None
+                    if not thread and hasattr(guild, "fetch_channel"):
+                        try:
+                            fetched = await guild.fetch_channel(thread_id)
+                            if isinstance(fetched, discord.Thread):
+                                thread = fetched
+                        except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                            thread = None
+
+                    if thread and not getattr(thread, "archived", False):
+                        try:
+                            reason_msg = "banned from" if is_ban else "left"
+                            await thread.send(
+                                f"🛑 **Referring student (<@{user.id}>) {reason_msg} the server.** This referral ticket has been cancelled and the thread is archived."
+                            )
+                            await thread.edit(archived=True, locked=True)
+                        except (discord.HTTPException, discord.Forbidden):
+                            pass
+
+                    await self._cleanup_channel_overwrites(guild, t)
+        except Exception as e:
+            logger.warning(f"Error notifying/archiving review threads for departing user {user}: {e}")
+
+        # 2. Update database records
         revoked_tickets = await self.db.revoke_guest_tickets_for_user(
             guild.id, user.id, status=revocation_status, close_reason=close_reason
         )
