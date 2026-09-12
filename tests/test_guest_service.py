@@ -164,7 +164,7 @@ async def test_guest_ticket_approval_and_rejection_lifecycle(tmp_path):
     applicant.add_roles.assert_called_once_with(guest_role, reason=f"TARVeri: Guest approved by {admin_user}")
     applicant.send.assert_called_once()
     assert "approved" in applicant.send.call_args[0][0].lower()
-    parent_channel.set_permissions.assert_called_with(applicant, overwrite=None, reason="TARVeri: Review ticket closed")
+    parent_channel.set_permissions.assert_any_call(applicant, overwrite=None, reason="TARVeri: Review ticket closed")
 
     # Code and ticket should now be marked USED / APPROVED
     ref_record_after = await db.get_referral_code(code, guild.id)

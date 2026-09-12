@@ -1034,25 +1034,23 @@ class GuestService:
 
         applicant_id = ticket.get("applicant_id")
         if applicant_id:
-            applicant_m = guild.get_member(applicant_id)
-            if applicant_m:
-                try:
-                    res = parent_ch.set_permissions(applicant_m, overwrite=None, reason="TARVeri: Review ticket closed")
-                    if inspect.isawaitable(res):
-                        await res
-                except (discord.HTTPException, discord.Forbidden):
-                    pass
+            target = guild.get_member(applicant_id) or discord.Object(id=applicant_id)
+            try:
+                res = parent_ch.set_permissions(target, overwrite=None, reason="TARVeri: Review ticket closed")
+                if inspect.isawaitable(res):
+                    await res
+            except (discord.HTTPException, discord.Forbidden):
+                pass
 
         referrer_id = ticket.get("referrer_id")
         if referrer_id:
-            referrer_m = guild.get_member(referrer_id)
-            if referrer_m:
-                try:
-                    res = parent_ch.set_permissions(referrer_m, overwrite=None, reason="TARVeri: Review ticket closed")
-                    if inspect.isawaitable(res):
-                        await res
-                except (discord.HTTPException, discord.Forbidden):
-                    pass
+            target_ref = guild.get_member(referrer_id) or discord.Object(id=referrer_id)
+            try:
+                res = parent_ch.set_permissions(target_ref, overwrite=None, reason="TARVeri: Review ticket closed")
+                if inspect.isawaitable(res):
+                    await res
+            except (discord.HTTPException, discord.Forbidden):
+                pass
 
     async def handle_member_leave_or_ban(
         self,
