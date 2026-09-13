@@ -264,33 +264,9 @@ class EmailService:
             ttl_minutes=ttl_minutes,
         )
 
-    def _send_smtp_sync(
-        self,
-        to_email: str,
-        otp_code: str,
-        server_name: str,
-        ttl_minutes: int,
-    ) -> bool:
-        """Synchronous SMTP worker with TLS and error handling."""
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"{otp_code} is your TARVeri verification code"
-        msg["From"] = email.utils.formataddr((
-            self.settings.smtp_from_name,
-            self.settings.smtp_from_email,
-        ))
-        msg["To"] = to_email
-        msg["Date"] = email.utils.formatdate(localtime=True)
-        msg["Message-ID"] = email.utils.make_msgid(domain=self.settings.smtp_from_email.split("@")[-1] if "@" in self.settings.smtp_from_email else "tarveri.local")
-
-        text_content = (
-            f"Hello TARUMT Student,\n\n"
-            f"Your TARVeri verification code for '{server_name}' is: {otp_code}\n\n"
-            f"This code will expire in {ttl_minutes} minutes.\n"
-            f"If you did not request this verification, please ignore this email.\n\n"
-            f"— TARVeri Verification System"
-        )
-
-        html_content = f"""<!DOCTYPE html>
+    def _render_html_template(self, otp_code: str, server_name: str, ttl_minutes: int) -> str:
+        """Renders branded dark-themed responsive HTML email for TARVeri OTP."""
+        return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -349,23 +325,128 @@ class EmailService:
 </body>
 </html>"""
 
+    def _send_to_smtp_endpoint(
+        self,
+        to_email: str,
+        otp_code: str,
+        server_name: str,
+        ttl_minutes: int,
+        host: str,
+        port: int,
+        user: str,
+        password: str,
+        from_email: str,
+        from_name: str,
+        use_tls: bool,
+        relay_label: str = "SMTP",
+    ) -> tuple[bool, str | None]:
+        """Transmits an email to a specific SMTP endpoint. Returns (success, error_message)."""
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"{otp_code} is your TARVeri verification code"
+        msg["From"] = email.utils.formataddr((from_name, from_email))
+        msg["To"] = to_email
+        msg["Date"] = email.utils.formatdate(localtime=True)
+        domain = from_email.split("@")[-1] if "@" in from_email else "tarveri.local"
+        msg["Message-ID"] = email.utils.make_msgid(domain=domain)
+
+        text_content = (
+            f"Hello TARUMT Student,\n\n"
+            f"Your TARVeri verification code for '{server_name}' is: {otp_code}\n\n"
+            f"This code will expire in {ttl_minutes} minutes.\n"
+            f"If you did not request this verification, please ignore this email.\n\n"
+            f"— TARVeri Verification System"
+        )
+        html_content = self._render_html_template(otp_code, server_name, ttl_minutes)
+
         msg.attach(MIMEText(text_content, "plain", "utf-8"))
         msg.attach(MIMEText(html_content, "html", "utf-8"))
 
         try:
-            with smtplib.SMTP(
-                host=self.settings.smtp_host,
-                port=self.settings.smtp_port,
-                timeout=12.0,
-            ) as server:
+            if port == 465:
+                server_ctx = smtplib.SMTP_SSL(host=host, port=port, timeout=12.0)
+            else:
+                server_ctx = smtplib.SMTP(host=host, port=port, timeout=12.0)
+
+            with server_ctx as server:
                 server.ehlo()
-                if self.settings.smtp_use_tls:
+                if use_tls and port != 465:
                     server.starttls()
                     server.ehlo()
-                if self.settings.smtp_user and self.settings.smtp_password:
-                    server.login(self.settings.smtp_user, self.settings.smtp_password)
+                if user and password:
+                    server.login(user, password)
                 server.send_message(msg)
-            return True
+            return True, None
         except Exception as e:
-            logger.error(f"SMTP delivery failed to {to_email} via {self.settings.smtp_host}:{self.settings.smtp_port}: {e}")
+            return False, str(e)
+
+    def _send_smtp_sync(
+        self,
+        to_email: str,
+        otp_code: str,
+        server_name: str,
+        ttl_minutes: int,
+    ) -> bool:
+        """
+        Synchronous SMTP worker with primary transmission and automatic fallback.
+        If the primary relay (e.g. SMTP2GO) fails (quota exceeded, connection error, etc.),
+        it automatically fails over to the direct email server SMTP.
+        """
+        # 1. Attempt Primary SMTP Delivery (e.g. SMTP2GO relay)
+        primary_ok, primary_err = self._send_to_smtp_endpoint(
+            to_email=to_email,
+            otp_code=otp_code,
+            server_name=server_name,
+            ttl_minutes=ttl_minutes,
+            host=self.settings.smtp_host,
+            port=self.settings.smtp_port,
+            user=self.settings.smtp_user,
+            password=self.settings.smtp_password,
+            from_email=self.settings.smtp_from_email,
+            from_name=self.settings.smtp_from_name,
+            use_tls=self.settings.smtp_use_tls,
+            relay_label="Primary SMTP",
+        )
+        if primary_ok:
+            return True
+
+        # 2. Check if Fallback Direct SMTP Server is configured
+        fallback_host = self.settings.smtp_fallback_host.strip()
+        if not fallback_host:
+            logger.error(
+                f"Primary SMTP delivery failed to {mask_email(to_email)} via {self.settings.smtp_host}:{self.settings.smtp_port}: {primary_err}. "
+                "No fallback SMTP configured."
+            )
             return False
+
+        logger.warning(
+            f"Primary SMTP relay ({self.settings.smtp_host}) failed ({primary_err}). "
+            f"Failing over to fallback email server SMTP ({fallback_host}:{self.settings.smtp_fallback_port})..."
+        )
+
+        fallback_from_email = self.settings.smtp_fallback_from_email.strip() or self.settings.smtp_from_email
+        fallback_from_name = self.settings.smtp_fallback_from_name.strip() or self.settings.smtp_from_name
+
+        fallback_ok, fallback_err = self._send_to_smtp_endpoint(
+            to_email=to_email,
+            otp_code=otp_code,
+            server_name=server_name,
+            ttl_minutes=ttl_minutes,
+            host=fallback_host,
+            port=self.settings.smtp_fallback_port,
+            user=self.settings.smtp_fallback_user,
+            password=self.settings.smtp_fallback_password,
+            from_email=fallback_from_email,
+            from_name=fallback_from_name,
+            use_tls=self.settings.smtp_fallback_use_tls,
+            relay_label="Fallback Direct SMTP",
+        )
+        if fallback_ok:
+            logger.info(
+                f"Fallback direct SMTP delivery SUCCEEDED to {mask_email(to_email)} via {fallback_host}:{self.settings.smtp_fallback_port}"
+            )
+            return True
+
+        logger.error(
+            f"Fallback SMTP delivery also failed to {mask_email(to_email)} via {fallback_host}:{self.settings.smtp_fallback_port}: {fallback_err}"
+        )
+        return False

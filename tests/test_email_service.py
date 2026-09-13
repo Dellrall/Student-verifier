@@ -304,3 +304,90 @@ async def test_student_otp_modal_submission(tmp_path):
     assert decrypt_email(details["student_email_encrypted"], key) == "24wmd08888@student.tarc.edu.my"
 
     await db.close()
+
+
+def test_email_service_smtp_fallback_on_primary_failure():
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        bot_token="fake_token",
+        id_hash_secret="fake_secret",
+        enable_email_verification=True,
+        email_encryption_key=key,
+        smtp_host="mail.smtp2go.com",
+        smtp_port=587,
+        smtp_user="smtp2go_user",
+        smtp_password="smtp2go_password",
+        smtp_fallback_host="mail.direct-domain.com",
+        smtp_fallback_port=587,
+        smtp_fallback_user="verify@direct-domain.com",
+        smtp_fallback_password="mailbox_password",
+    )
+    svc = EmailService(settings, mock_smtp=False)
+
+    def mock_endpoint(to_email, otp_code, server_name, ttl_minutes, host, port, user, password, from_email, from_name, use_tls, relay_label="SMTP"):
+        if host == "mail.smtp2go.com":
+            # Simulate SMTP2GO limit / quota exhausted error
+            return False, "550 5.7.1 Daily message sending limit exceeded on SMTP2GO relay"
+        if host == "mail.direct-domain.com":
+            # Fallback direct SMTP succeeds
+            return True, None
+        return False, "Unknown host"
+
+    with patch.object(svc, "_send_to_smtp_endpoint", side_effect=mock_endpoint) as mock_send:
+        success = svc._send_smtp_sync(
+            to_email="24wmd12345@student.tarc.edu.my",
+            otp_code="123456",
+            server_name="Test Server",
+            ttl_minutes=10,
+        )
+        assert success is True
+        assert mock_send.call_count == 2
+        # First call was primary
+        assert mock_send.call_args_list[0].kwargs["host"] == "mail.smtp2go.com"
+        # Second call was fallback
+        assert mock_send.call_args_list[1].kwargs["host"] == "mail.direct-domain.com"
+
+
+def test_email_service_smtp_both_fail():
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        bot_token="fake_token",
+        id_hash_secret="fake_secret",
+        enable_email_verification=True,
+        email_encryption_key=key,
+        smtp_host="mail.smtp2go.com",
+        smtp_fallback_host="mail.direct-domain.com",
+    )
+    svc = EmailService(settings, mock_smtp=False)
+
+    with patch.object(svc, "_send_to_smtp_endpoint", return_value=(False, "Connection timeout")):
+        success = svc._send_smtp_sync(
+            to_email="24wmd12345@student.tarc.edu.my",
+            otp_code="123456",
+            server_name="Test Server",
+            ttl_minutes=10,
+        )
+        assert success is False
+
+
+def test_email_service_primary_fails_without_fallback():
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        bot_token="fake_token",
+        id_hash_secret="fake_secret",
+        enable_email_verification=True,
+        email_encryption_key=key,
+        smtp_host="mail.smtp2go.com",
+        smtp_fallback_host="",  # No fallback configured
+    )
+    svc = EmailService(settings, mock_smtp=False)
+
+    with patch.object(svc, "_send_to_smtp_endpoint", return_value=(False, "550 Limit Exceeded")):
+        success = svc._send_smtp_sync(
+            to_email="24wmd12345@student.tarc.edu.my",
+            otp_code="123456",
+            server_name="Test Server",
+            ttl_minutes=10,
+        )
+        assert success is False
+

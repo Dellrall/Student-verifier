@@ -390,6 +390,13 @@ class Settings:
     smtp_from_email: str = "noreply@muwa.work"
     smtp_from_name: str = "TARVeri Student Verification"
     smtp_use_tls: bool = True
+    smtp_fallback_host: str = ""
+    smtp_fallback_port: int = 587
+    smtp_fallback_user: str = ""
+    smtp_fallback_password: str = ""
+    smtp_fallback_from_email: str = ""
+    smtp_fallback_from_name: str = ""
+    smtp_fallback_use_tls: bool = True
     email_otp_ttl_seconds: int = 600
     email_otp_max_attempts: int = 3
     email_otp_resend_cooldown_seconds: int = 60
@@ -640,6 +647,52 @@ class Settings:
         ).lower().strip()
         smtp_use_tls = smtp_tls_raw in ("true", "1", "yes")
 
+        smtp_fallback_host = (
+            os.getenv("TARVERI_SMTP_FALLBACK_HOST")
+            or os.getenv("SMTP_FALLBACK_HOST")
+            or ""
+        ).strip()
+
+        smtp_fallback_port_raw = (
+            os.getenv("TARVERI_SMTP_FALLBACK_PORT")
+            or os.getenv("SMTP_FALLBACK_PORT")
+            or "587"
+        ).strip()
+        smtp_fallback_port = (
+            int(smtp_fallback_port_raw) if smtp_fallback_port_raw.isdigit() else 587
+        )
+
+        smtp_fallback_user = (
+            os.getenv("TARVERI_SMTP_FALLBACK_USER")
+            or os.getenv("SMTP_FALLBACK_USER")
+            or ""
+        ).strip()
+
+        smtp_fallback_password = (
+            os.getenv("TARVERI_SMTP_FALLBACK_PASSWORD")
+            or os.getenv("SMTP_FALLBACK_PASSWORD")
+            or ""
+        ).strip()
+
+        smtp_fallback_from_email = (
+            os.getenv("TARVERI_SMTP_FALLBACK_FROM_EMAIL")
+            or os.getenv("SMTP_FALLBACK_FROM_EMAIL")
+            or ""
+        ).strip()
+
+        smtp_fallback_from_name = (
+            os.getenv("TARVERI_SMTP_FALLBACK_FROM_NAME")
+            or os.getenv("SMTP_FALLBACK_FROM_NAME")
+            or ""
+        ).strip()
+
+        smtp_fallback_tls_raw = (
+            os.getenv("TARVERI_SMTP_FALLBACK_USE_TLS")
+            or os.getenv("SMTP_FALLBACK_USE_TLS")
+            or "true"
+        ).lower().strip()
+        smtp_fallback_use_tls = smtp_fallback_tls_raw in ("true", "1", "yes")
+
         otp_ttl_raw = (
             os.getenv("TARVERI_EMAIL_OTP_TTL_SECONDS")
             or os.getenv("EMAIL_OTP_TTL_SECONDS")
@@ -720,6 +773,13 @@ class Settings:
             smtp_from_email=smtp_from_email,
             smtp_from_name=smtp_from_name,
             smtp_use_tls=smtp_use_tls,
+            smtp_fallback_host=smtp_fallback_host,
+            smtp_fallback_port=smtp_fallback_port,
+            smtp_fallback_user=smtp_fallback_user,
+            smtp_fallback_password=smtp_fallback_password,
+            smtp_fallback_from_email=smtp_fallback_from_email,
+            smtp_fallback_from_name=smtp_fallback_from_name,
+            smtp_fallback_use_tls=smtp_fallback_use_tls,
             email_otp_ttl_seconds=email_otp_ttl_seconds,
             email_otp_max_attempts=email_otp_max_attempts,
             email_otp_resend_cooldown_seconds=email_otp_resend_cooldown_seconds,

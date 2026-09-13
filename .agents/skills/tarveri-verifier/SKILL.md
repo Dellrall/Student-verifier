@@ -598,6 +598,13 @@ echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is li
   - `❌ [Cancel]`: Aborts pending OTP verification session.
 - **Attempt Exhaustion**: Upon 3 incorrect guesses, the pending OTP session is immediately wiped, requiring the user to restart.
 
+### 4. Automatic SMTP Failover & Direct Email Server Fallback
+- **Primary + Secondary Relay Resiliency**: If the primary SMTP relay (e.g. SMTP2GO) hits monthly/daily quota limits (SMTP 450/550 limit exceeded) or experiences network outages:
+  1. Detects primary failure and logs a warning with error details.
+  2. Automatically fails over to the fallback direct mail server (`SMTP_FALLBACK_HOST`, `SMTP_FALLBACK_PORT`, `SMTP_FALLBACK_USER`, `SMTP_FALLBACK_PASSWORD`).
+  3. Supports both STARTTLS (port 587) and SSL/TLS (port 465) on direct mail servers.
+  4. Delivers the OTP verification email seamlessly without user disruption.
+
 ---
 
 ## 🧪 Testing & Quality Guidelines
