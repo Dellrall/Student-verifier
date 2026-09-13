@@ -19,6 +19,7 @@ from tarveri.config import Settings, setup_logger
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.card_service import CardService
+from tarveri.services.email_service import EmailService
 from tarveri.services.graduation_watchdog_service import GraduationWatchdogService
 from tarveri.services.guest_service import GuestService
 from tarveri.services.log_service import LogRotationService
@@ -46,11 +47,16 @@ class TARVeriBot(commands.Bot):
             max_attempts=settings.rate_limit_max_attempts,
             window_seconds=settings.rate_limit_window_seconds,
         )
+        self.email_service = EmailService(
+            settings=settings,
+        )
         self.service = VerificationService(
             bot=self,
             db=self.db,
             secret=settings.id_hash_secret,
             rate_limiter=self.rate_limiter,
+            settings=settings,
+            email_service=self.email_service,
         )
         self.guest_service = GuestService(
             bot=self,
@@ -128,6 +134,7 @@ class TARVeriBot(commands.Bot):
                 rate_limiter=self.rate_limiter,
                 settings=self.settings,
                 guest_service=self.guest_service,
+                email_service=self.email_service,
             )
         )
         await self.add_cog(

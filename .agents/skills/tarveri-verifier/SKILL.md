@@ -568,6 +568,38 @@ echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is li
 
 ---
 
+## 📧 Institutional Student Email Verification & Authenticated Encryption Engine
+
+### 1. Zero-Hardcoding Configuration & Multi-Domain Filtering
+- Configurable via `.env` with comprehensive defaults:
+  - `ENABLE_EMAIL_VERIFICATION=true` (Toggle OTP requirement)
+  - `EMAIL_ALLOWED_DOMAINS=student.tarc.edu.my,tarc.edu.my` (Allowed domains)
+  - `EMAIL_ENCRYPTION_KEY=<fernet_base64_or_hex_key>` (AES-256 Fernet authenticated encryption key)
+  - `SMTP_HOST=mail.smtp2go.com` (SMTP relay host e.g. SMTP2GO)
+  - `SMTP_PORT=587` (SMTP port: 587 STARTTLS or 465 SSL)
+  - `SMTP_USER=...` (SMTP username / account)
+  - `SMTP_PASSWORD=...` (SMTP password or API key)
+  - `SMTP_FROM_EMAIL=verify@yourdomain.com` (Sender address)
+  - `SMTP_FROM_NAME=TARUMT Verification` (Display name)
+  - `EMAIL_OTP_TTL_SECONDS=600` (10-minute OTP expiration)
+  - `EMAIL_OTP_MAX_ATTEMPTS=3` (Brute-force lockout after 3 incorrect attempts)
+  - `EMAIL_OTP_RESEND_COOLDOWN_SECONDS=60` (1-minute resend cooldown)
+
+### 2. Dual-Layer Cryptographic Security
+- **Reversible AES-256 Authenticated Encryption (Fernet)**: Student email addresses are encrypted at rest using AES-128-CBC with HMAC-SHA256 authenticated integrity (Fernet specification), derived from `EMAIL_ENCRYPTION_KEY` or hashed system secret.
+- **Blind Index for Fast Duplicate Checks**: An HMAC-SHA256 digest (`student_email_hash`) is indexed in SQLite, enabling $O(1)$ duplicate prevention across Discord accounts without decrypting or exposing emails.
+- **Privacy Masking**: Displayed emails in logs and UI embeds are masked (e.g. `24***67@student.tarc.edu.my`).
+
+### 3. Interactive OTP Flow & Attempt Lockout
+- **Branded Dark-Mode Responsive HTML Email**: Dispatched asynchronously via worker threads (`asyncio.to_thread`) without blocking Discord gateway event loops.
+- **OTP Verification UI (`OtpVerificationPromptView` & `StudentOtpModal`)**:
+  - `🔢 [Enter Verification Code]`: Opens modal for 6-digit numeric OTP.
+  - `🔄 [Resend Code]`: Resends code with cooldown throttle.
+  - `❌ [Cancel]`: Aborts pending OTP verification session.
+- **Attempt Exhaustion**: Upon 3 incorrect guesses, the pending OTP session is immediately wiped, requiring the user to restart.
+
+---
+
 ## 🧪 Testing & Quality Guidelines
 
 - Run the full test suite with all warnings treated as errors:
