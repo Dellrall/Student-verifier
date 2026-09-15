@@ -38,10 +38,14 @@ from tarveri.config import (
     STUDY_LEVEL_ROLE_NAMES,
     STUDY_LEVEL_ROLES,
     StudentIdInfo,
+    encrypt_email,
     estimate_student_card_expiry,
     format_card_expiry_display,
     get_configured_tz,
+    hash_email,
     hash_student_id,
+    is_valid_student_email,
+    mask_email,
     mask_student_id,
     parse_card_expiry_date,
     parse_student_id,
@@ -62,11 +66,21 @@ class RoleSyncResult:
 
 
 class VerificationService:
-    def __init__(self, bot: discord.Client, db: Database, secret: str, rate_limiter: RateLimiter):
+    def __init__(
+        self,
+        bot: discord.Client,
+        db: Database,
+        secret: str,
+        rate_limiter: RateLimiter,
+        settings: Any = None,
+        email_service: Any = None,
+    ):
         self.bot = bot
         self.db = db
         self.secret = secret
         self.rate_limiter = rate_limiter
+        self.settings = settings
+        self.email_service = email_service
         self._in_flight_users: set[int] = set()
         self._lock = asyncio.Lock()
         self._role_locks: dict[int, asyncio.Lock] = {}
@@ -1256,13 +1270,14 @@ class VerificationService:
         user: discord.User | discord.Member,
         raw_student_id: str,
         raw_expiry_date: str | None = None,
+        raw_email: str | None = None,
     ) -> str:
         """
         Core verification pipeline:
         1. Rate limit validation
         2. In-flight race condition check
         3. Student ID format and faculty/campus/level code extraction
-        4. Account / duplicate ID verification checks
+        4. Account / duplicate ID / duplicate email verification checks
         5. Academic level progression / transition for existing students
         6. Role assignment across mutual guilds
         7. Atomic database recording with rollback on collision
@@ -1316,6 +1331,38 @@ class VerificationService:
 
             id_hash = hash_student_id(student_id, self.secret)
 
+            email_hash = None
+            email_encrypted = None
+            if raw_email and raw_email.strip():
+                clean_email = raw_email.strip().lower()
+                allowed_domains = (
+                    getattr(self.settings, "email_allowed_domains", ("student.tarc.edu.my", "tarc.edu.my"))
+                    if self.settings
+                    else ("student.tarc.edu.my", "tarc.edu.my")
+                )
+                if not is_valid_student_email(clean_email, allowed_domains=allowed_domains):
+                    return "❌ Invalid student email address. Please use your official institutional email (e.g. `@student.tarc.edu.my`)."
+                email_hash = hash_email(clean_email, self.secret)
+                existing_for_email = await self.db.get_verification_by_email_hash(email_hash)
+                if existing_for_email and existing_for_email[0] != user.id:
+                    await self.db.log(
+                        "WARNING",
+                        "DUPLICATE_EMAIL_ATTEMPT",
+                        f"{user} (ID: {user.id}) tried to use student email (masked: {mask_email(clean_email)}) already bound to account ID {existing_for_email[0]}",
+                        user_id=user.id,
+                        guild=guild_ctx,
+                    )
+                    return (
+                        "❌ This student email has already been used to verify a different Discord "
+                        "account. If that wasn't you, contact an admin immediately."
+                    )
+                enc_key = getattr(self.settings, "email_encryption_key", "") if self.settings else ""
+                if enc_key:
+                    try:
+                        email_encrypted = encrypt_email(clean_email, enc_key)
+                    except Exception as e:
+                        logger.warning(f"Could not encrypt email for {user}: {e}")
+
             # Check if user is already verified
             existing_for_user = await self.db.get_verification_by_user(user.id)
             if existing_for_user:
@@ -1358,6 +1405,8 @@ class VerificationService:
                         campus_code=campus_code,
                         level_code=level_code,
                         card_expiry_date=iso_expiry_date,
+                        student_email_encrypted=email_encrypted,
+                        student_email_hash=email_hash,
                     )
                 except Exception:
                     pass
@@ -1402,15 +1451,18 @@ class VerificationService:
                         campus_code=campus_code,
                         level_code=level_code,
                         card_expiry_date=iso_expiry_date,
+                        student_email_encrypted=email_encrypted,
+                        student_email_hash=email_hash,
                     )
                     active_servers = [
                         entry[1] if len(entry) == 3 else entry[0]
                         for entry in (sync_result.verified_in + sync_result.already_had_role_in)
                     ]
+                    email_log_str = f", email: {mask_email(clean_email)}" if email_hash and raw_email else ""
                     await self.db.log(
                         "INFO",
                         "VERIFIED",
-                        f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}) "
+                        f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}{email_log_str}) "
                         f"→ active in {active_servers}",
                         user_id=user.id,
                         guild=guild_ctx,

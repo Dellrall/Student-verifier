@@ -15,6 +15,7 @@ import zoneinfo
 from logging.handlers import RotatingFileHandler
 from typing import Final
 
+from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -379,6 +380,26 @@ class Settings:
     enable_graduation_watchdog: bool = True
     graduation_check_interval_hours: int = 24
     graduation_prompt_cooldown_days: int = 7
+    enable_email_verification: bool = False
+    email_allowed_domains: tuple[str, ...] = ("student.tarc.edu.my", "tarc.edu.my")
+    email_encryption_key: str = ""
+    smtp_host: str = "mail.smtp2go.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = "noreply@muwa.work"
+    smtp_from_name: str = "TARVeri Student Verification"
+    smtp_use_tls: bool = True
+    smtp_fallback_host: str = ""
+    smtp_fallback_port: int = 587
+    smtp_fallback_user: str = ""
+    smtp_fallback_password: str = ""
+    smtp_fallback_from_email: str = ""
+    smtp_fallback_from_name: str = ""
+    smtp_fallback_use_tls: bool = True
+    email_otp_ttl_seconds: int = 600
+    email_otp_max_attempts: int = 3
+    email_otp_resend_cooldown_seconds: int = 60
 
     @property
     def database_path(self) -> str:
@@ -559,6 +580,142 @@ class Settings:
         ).strip()
         graduation_prompt_cooldown_days = int(grad_cooldown_raw) if grad_cooldown_raw.isdigit() else 7
 
+        enable_email_veri_raw = (
+            os.getenv("TARVERI_EMAIL_VERIFICATION_ENABLED")
+            or os.getenv("EMAIL_VERIFICATION_ENABLED")
+            or os.getenv("ENABLE_EMAIL_VERIFICATION")
+            or "false"
+        ).lower().strip()
+        enable_email_verification = enable_email_veri_raw in ("true", "1", "yes")
+
+        email_domains_raw = (
+            os.getenv("TARVERI_EMAIL_ALLOWED_DOMAINS")
+            or os.getenv("EMAIL_ALLOWED_DOMAINS")
+            or "student.tarc.edu.my,tarc.edu.my"
+        ).strip()
+        email_allowed_domains = tuple(
+            d.strip().lower() for d in email_domains_raw.split(",") if d.strip()
+        ) or ("student.tarc.edu.my", "tarc.edu.my")
+
+        email_encryption_key = (
+            os.getenv("TARVERI_EMAIL_ENCRYPTION_KEY")
+            or os.getenv("EMAIL_ENCRYPTION_KEY")
+            or ""
+        ).strip()
+
+        smtp_host = (
+            os.getenv("TARVERI_SMTP_HOST")
+            or os.getenv("SMTP_HOST")
+            or "mail.smtp2go.com"
+        ).strip()
+
+        smtp_port_raw = (
+            os.getenv("TARVERI_SMTP_PORT")
+            or os.getenv("SMTP_PORT")
+            or "587"
+        ).strip()
+        smtp_port = int(smtp_port_raw) if smtp_port_raw.isdigit() else 587
+
+        smtp_user = (
+            os.getenv("TARVERI_SMTP_USER")
+            or os.getenv("SMTP_USER")
+            or ""
+        ).strip()
+
+        smtp_password = (
+            os.getenv("TARVERI_SMTP_PASSWORD")
+            or os.getenv("SMTP_PASSWORD")
+            or ""
+        ).strip()
+
+        smtp_from_email = (
+            os.getenv("TARVERI_SMTP_FROM_EMAIL")
+            or os.getenv("SMTP_FROM_EMAIL")
+            or "noreply@muwa.work"
+        ).strip()
+
+        smtp_from_name = (
+            os.getenv("TARVERI_SMTP_FROM_NAME")
+            or os.getenv("SMTP_FROM_NAME")
+            or "TARVeri Student Verification"
+        ).strip().strip('"').strip("'")
+
+        smtp_tls_raw = (
+            os.getenv("TARVERI_SMTP_USE_TLS")
+            or os.getenv("SMTP_USE_TLS")
+            or "true"
+        ).lower().strip()
+        smtp_use_tls = smtp_tls_raw in ("true", "1", "yes")
+
+        smtp_fallback_host = (
+            os.getenv("TARVERI_SMTP_FALLBACK_HOST")
+            or os.getenv("SMTP_FALLBACK_HOST")
+            or ""
+        ).strip()
+
+        smtp_fallback_port_raw = (
+            os.getenv("TARVERI_SMTP_FALLBACK_PORT")
+            or os.getenv("SMTP_FALLBACK_PORT")
+            or "587"
+        ).strip()
+        smtp_fallback_port = (
+            int(smtp_fallback_port_raw) if smtp_fallback_port_raw.isdigit() else 587
+        )
+
+        smtp_fallback_user = (
+            os.getenv("TARVERI_SMTP_FALLBACK_USER")
+            or os.getenv("SMTP_FALLBACK_USER")
+            or ""
+        ).strip()
+
+        smtp_fallback_password = (
+            os.getenv("TARVERI_SMTP_FALLBACK_PASSWORD")
+            or os.getenv("SMTP_FALLBACK_PASSWORD")
+            or ""
+        ).strip()
+
+        smtp_fallback_from_email = (
+            os.getenv("TARVERI_SMTP_FALLBACK_FROM_EMAIL")
+            or os.getenv("SMTP_FALLBACK_FROM_EMAIL")
+            or ""
+        ).strip()
+
+        smtp_fallback_from_name = (
+            os.getenv("TARVERI_SMTP_FALLBACK_FROM_NAME")
+            or os.getenv("SMTP_FALLBACK_FROM_NAME")
+            or ""
+        ).strip().strip('"').strip("'")
+
+        smtp_fallback_tls_raw = (
+            os.getenv("TARVERI_SMTP_FALLBACK_USE_TLS")
+            or os.getenv("SMTP_FALLBACK_USE_TLS")
+            or "true"
+        ).lower().strip()
+        smtp_fallback_use_tls = smtp_fallback_tls_raw in ("true", "1", "yes")
+
+        otp_ttl_raw = (
+            os.getenv("TARVERI_EMAIL_OTP_TTL_SECONDS")
+            or os.getenv("EMAIL_OTP_TTL_SECONDS")
+            or "600"
+        ).strip()
+        email_otp_ttl_seconds = int(otp_ttl_raw) if otp_ttl_raw.isdigit() else 600
+
+        otp_attempts_raw = (
+            os.getenv("TARVERI_EMAIL_OTP_MAX_ATTEMPTS")
+            or os.getenv("EMAIL_OTP_MAX_ATTEMPTS")
+            or "3"
+        ).strip()
+        email_otp_max_attempts = int(otp_attempts_raw) if otp_attempts_raw.isdigit() else 3
+
+        otp_cooldown_raw = (
+            os.getenv("TARVERI_EMAIL_OTP_RESEND_COOLDOWN_SECONDS")
+            or os.getenv("EMAIL_OTP_RESEND_COOLDOWN_SECONDS")
+            or "60"
+        ).strip()
+        email_otp_resend_cooldown_seconds = (
+            int(otp_cooldown_raw) if otp_cooldown_raw.isdigit() else 60
+        )
+
         if validate:
             if not bot_token:
                 raise RuntimeError(
@@ -569,6 +726,17 @@ class Settings:
                     "TARVERI_ID_HASH_SECRET is not set. Generate one with: "
                     '`python -c "import secrets; print(secrets.token_hex(32))"`'
                 )
+            if enable_email_verification and not email_encryption_key:
+                raise RuntimeError(
+                    "TARVERI_EMAIL_ENCRYPTION_KEY is required when email verification is enabled. "
+                    'Generate one with: python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+                )
+
+        if not email_encryption_key:
+            try:
+                email_encryption_key = Fernet.generate_key().decode()
+            except Exception:
+                pass
 
         return cls(
             bot_token=bot_token,
@@ -595,6 +763,26 @@ class Settings:
             enable_graduation_watchdog=enable_graduation_watchdog,
             graduation_check_interval_hours=graduation_check_interval_hours,
             graduation_prompt_cooldown_days=graduation_prompt_cooldown_days,
+            enable_email_verification=enable_email_verification,
+            email_allowed_domains=email_allowed_domains,
+            email_encryption_key=email_encryption_key,
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_user=smtp_user,
+            smtp_password=smtp_password,
+            smtp_from_email=smtp_from_email,
+            smtp_from_name=smtp_from_name,
+            smtp_use_tls=smtp_use_tls,
+            smtp_fallback_host=smtp_fallback_host,
+            smtp_fallback_port=smtp_fallback_port,
+            smtp_fallback_user=smtp_fallback_user,
+            smtp_fallback_password=smtp_fallback_password,
+            smtp_fallback_from_email=smtp_fallback_from_email,
+            smtp_fallback_from_name=smtp_fallback_from_name,
+            smtp_fallback_use_tls=smtp_fallback_use_tls,
+            email_otp_ttl_seconds=email_otp_ttl_seconds,
+            email_otp_max_attempts=email_otp_max_attempts,
+            email_otp_resend_cooldown_seconds=email_otp_resend_cooldown_seconds,
         )
 
 
@@ -761,6 +949,62 @@ def mask_student_id(student_id: str) -> str:
     if len(student_id) >= 6:
         return f"{student_id[:2]}***{student_id[-3:]}"
     return "***"
+
+
+def encrypt_email(email: str, encryption_key: str) -> str:
+    """Encrypts an email address using AES-128-CBC + HMAC-SHA256 authenticated encryption (Fernet)."""
+    if not encryption_key:
+        raise ValueError("Encryption key is required to encrypt email.")
+    f = Fernet(encryption_key.encode("utf-8") if isinstance(encryption_key, str) else encryption_key)
+    return f.encrypt(email.strip().lower().encode("utf-8")).decode("utf-8")
+
+
+def decrypt_email(ciphertext: str, encryption_key: str) -> str:
+    """Decrypts an encrypted email address."""
+    if not encryption_key:
+        raise ValueError("Encryption key is required to decrypt email.")
+    f = Fernet(encryption_key.encode("utf-8") if isinstance(encryption_key, str) else encryption_key)
+    return f.decrypt(ciphertext.strip().encode("utf-8")).decode("utf-8")
+
+
+def hash_email(email: str, secret: str) -> str:
+    """Deterministic HMAC-SHA256 hash for blind indexing / fast duplicate checks at rest."""
+    normalized = email.strip().lower()
+    return hmac.new(
+        secret.encode("utf-8"), normalized.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def mask_email(email: str) -> str:
+    """Masks an email for safe logs/displays (e.g., 2301234@student.tarc.edu.my -> 23***34@student.tarc.edu.my)."""
+    if not email or "@" not in email:
+        return "***"
+    local, domain = email.strip().split("@", 1)
+    if len(local) <= 2:
+        masked_local = f"{local[:1]}***"
+    elif len(local) <= 4:
+        masked_local = f"{local[:1]}***{local[-1:]}"
+    else:
+        masked_local = f"{local[:2]}***{local[-2:]}"
+    return f"{masked_local}@{domain}"
+
+
+def is_valid_student_email(
+    email: str,
+    allowed_domains: tuple[str, ...] | list[str] = ("student.tarc.edu.my", "tarc.edu.my"),
+) -> bool:
+    """Validates email format and institutional domain."""
+    if not email or "@" not in email:
+        return False
+    parts = email.strip().lower().rsplit("@", 1)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return False
+    local_part, domain_part = parts
+    # Check basic local part regex (alphanumeric, dot, underscore, dash, plus)
+    if not re.match(r"^[a-zA-Z0-9._%+-]+$", local_part):
+        return False
+    return any(domain_part == d.lower() or domain_part.endswith(f".{d.lower()}") for d in allowed_domains)
+
 
 
 @dataclass(frozen=True, slots=True)

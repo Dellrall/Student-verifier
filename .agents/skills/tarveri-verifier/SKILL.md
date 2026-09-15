@@ -568,6 +568,96 @@ echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is li
 
 ---
 
+## 📧 Institutional Student Email Verification & Authenticated Encryption Engine
+
+### 1. Zero-Hardcoding Configuration & Multi-Domain Filtering
+- Configurable via `.env` with comprehensive defaults:
+  - `ENABLE_EMAIL_VERIFICATION=true` (Toggle OTP requirement)
+  - `EMAIL_ALLOWED_DOMAINS=student.tarc.edu.my,tarc.edu.my` (Allowed domains)
+  - `EMAIL_ENCRYPTION_KEY=<fernet_base64_or_hex_key>` (AES-256 Fernet authenticated encryption key)
+  - `SMTP_HOST=mail.smtp2go.com` (SMTP relay host e.g. SMTP2GO)
+  - `SMTP_PORT=587` (SMTP port: 587 STARTTLS or 465 SSL)
+  - `SMTP_USER=...` (SMTP username / account)
+  - `SMTP_PASSWORD=...` (SMTP password or API key)
+  - `SMTP_FROM_EMAIL=verify@yourdomain.com` (Sender address)
+  - `SMTP_FROM_NAME=TARUMT Verification` (Display name)
+  - `EMAIL_OTP_TTL_SECONDS=600` (10-minute OTP expiration)
+  - `EMAIL_OTP_MAX_ATTEMPTS=3` (Brute-force lockout after 3 incorrect attempts)
+  - `EMAIL_OTP_RESEND_COOLDOWN_SECONDS=60` (1-minute resend cooldown)
+
+### 2. Dual-Layer Cryptographic Security
+- **Reversible AES-256 Authenticated Encryption (Fernet)**: Student email addresses are encrypted at rest using AES-128-CBC with HMAC-SHA256 authenticated integrity (Fernet specification), derived from `EMAIL_ENCRYPTION_KEY` or hashed system secret.
+- **Blind Index for Fast Duplicate Checks**: An HMAC-SHA256 digest (`student_email_hash`) is indexed in SQLite, enabling $O(1)$ duplicate prevention across Discord accounts without decrypting or exposing emails.
+- **Privacy Masking**: Displayed emails in logs and UI embeds are masked (e.g. `24***67@student.tarc.edu.my`).
+
+### 3. Interactive OTP Flow & Attempt Lockout
+- **Branded Dark-Mode Responsive HTML Email**: Dispatched asynchronously via worker threads (`asyncio.to_thread`) without blocking Discord gateway event loops.
+- **OTP Verification UI (`OtpVerificationPromptView` & `StudentOtpModal`)**:
+  - `🔢 [Enter Verification Code]`: Opens modal for 6-digit numeric OTP.
+  - `🔄 [Resend Code]`: Resends code with cooldown throttle.
+  - `❌ [Cancel]`: Aborts pending OTP verification session.
+- **Attempt Exhaustion**: Upon 3 incorrect guesses, the pending OTP session is immediately wiped, requiring the user to restart.
+
+### 4. Automatic SMTP Failover & Direct Email Server Fallback
+- **Primary + Secondary Relay Resiliency**: If the primary SMTP relay (e.g. SMTP2GO) hits monthly/daily quota limits (SMTP 450/550 limit exceeded) or experiences network outages:
+  1. Detects primary failure and logs a warning with error details.
+  2. Automatically fails over to the fallback direct mail server (`SMTP_FALLBACK_HOST`, `SMTP_FALLBACK_PORT`, `SMTP_FALLBACK_USER`, `SMTP_FALLBACK_PASSWORD`).
+  3. Supports both STARTTLS (port 587) and SSL/TLS (port 465) on direct mail servers.
+  4. Delivers the OTP verification email seamlessly without user disruption.
+
+---
+
+## 🎛️ Feature Flags & Operational Toggles Specification
+
+TARVeri employs a layered configuration system combining global environment toggles (`.env` / [`Settings`](file:///mnt/backup/git/Student-verifier/tarveri/config.py)) and dynamic per-guild settings (`guild_settings` table in SQLite).
+
+### 1. Global Feature Flags Matrix
+
+| Environment Variable | Dataclass Field | Default | Subsystem | Description & Behavioral Impact |
+| :--- | :--- | :---: | :--- | :--- |
+| `TARVERI_EMAIL_VERIFICATION_ENABLED` | `enable_email_verification` | `false` | Auth / Security | **False**: Instant verification via Modal/Slash ID input.<br>**True**: Enforces `@student.tarc.edu.my` OTP challenge with AES-256 encrypted storage. |
+| `TARVERI_ENABLE_GRADUATION_WATCHDOG` | `enable_graduation_watchdog` | `true` | Lifecycle | **False**: Background expiration scanner disabled.<br>**True**: Executes daily 24h sweeps prompting expired students via DM. |
+| `TARVERI_ENABLE_OUTAGE_WATCHDOG` | `enable_outage_watchdog` | `true` | Reliability | **False**: Network heartbeat probe disabled.<br>**True**: 15s ICMP/TCP probe with debounce alert triggers. |
+| `TARVERI_ENABLE_UPDATE_CHECKER` | `enable_update_checker` | `true` | Maintenance | **False**: Upstream Git checking disabled.<br>**True**: Checks GitHub remote daily and DMs hoster when new commits/tags are detected. |
+| `TARVERI_ENABLE_LOG_ROTATOR` | `enable_log_rotator` | `true` | Logging | **False**: Continuous append to single log file.<br>**True**: Midnight log rotation, 10-day period bundling, and `.tar.gz` compression. |
+| `TARVERI_SMTP_USE_TLS` | `smtp_use_tls` | `true` | Email Relay | **False**: Plaintext SMTP connection on port 25.<br>**True**: Enforces STARTTLS negotiation on port 587. |
+| `TARVERI_SMTP_FALLBACK_USE_TLS` | `smtp_fallback_use_tls` | `true` | Email Relay | Enforces STARTTLS / SSL on fallback direct email server. |
+
+---
+
+## 📱 Telegram Real-Time Notification Service (Roadmap & Implementation Plan)
+
+### 1. Architectural Overview
+Provides out-of-band mobile & desktop push alerts to the bot owner or staff team via Telegram Bot API using non-blocking asynchronous requests (`aiohttp`):
+
+```mermaid
+flowchart LR
+    A["TARVeri Core Events"] --> B["TelegramNotificationService"]
+    B --> C["Outage Watchdog (ISP / Power loss)"]
+    B --> D["Email Failover (SMTP2GO limit hit)"]
+    B --> E["Guest Review Tickets (Escalations)"]
+    B --> F["Upstream Updates (Git releases)"]
+    C & D & E & F --> G["Telegram Bot API (sendMessage)"]
+    G --> H["Staff / Hoster Telegram DM or Group"]
+```
+
+### 2. Configuration Parameters
+```dotenv
+# Telegram Real-Time Push Alerts
+TARVERI_ENABLE_TELEGRAM_NOTIFICATIONS=false
+TARVERI_TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+TARVERI_TELEGRAM_CHAT_ID=your_telegram_user_or_group_id
+TARVERI_TELEGRAM_THREAD_ID=              # Optional: Supergroup topic ID
+```
+
+### 3. Event Notification Mapping
+- 🚨 **CRITICAL**: Network/Power outage detected or recovered by `OutageService`.
+- ⚠️ **WARNING**: Primary SMTP quota/rate-limit hit; failover routed to fallback direct mail server.
+- 🎟️ **INFO**: New guest verification review ticket opened or staff ping requested.
+- 🔄 **INFO**: New Git release / upstream commit available for deployment.
+
+---
+
 ## 🧪 Testing & Quality Guidelines
 
 - Run the full test suite with all warnings treated as errors:
@@ -583,4 +673,5 @@ echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is li
 - **Feature Releases Only**: Only create and push annotated Git tags for **major/minor feature releases** (e.g. `v1.0.0`, `v2.0.0`, `v2.4.0`).
 - **No Patch Tags**: Do **NOT** create Git tags for tiny bugfixes, cosmetic adjustments, or small patch updates (e.g. do not tag `v2.4.1`). Bugfixes and maintenance updates should remain as clean, descriptive commits on `main` without creating new Git tags.
 - **Pre-Merge Tagging**: When merging a major pull request that transforms an existing architecture, tag the baseline on `main` *before* the merge (e.g. `v1.0.0`), then tag the new feature version (e.g. `v2.4.0`) on `main` after the merge.
+
 

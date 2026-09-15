@@ -268,7 +268,7 @@ class Database:
             if col not in existing_ticket_cols:
                 await self._conn.execute(f"ALTER TABLE guest_tickets ADD COLUMN {col} {col_def};")
 
-        # 4. verifications (Alumni fields + Campus & Study Level fields + Expiry fields)
+        # 4. verifications (Alumni fields + Campus & Study Level fields + Expiry fields + Email fields)
         cursor = await self._conn.execute("PRAGMA table_info(verifications);")
         existing_veri_cols = {row[1] for row in await cursor.fetchall()}
         for col, col_def in [
@@ -281,6 +281,8 @@ class Database:
             ("card_expiry_date", "TEXT"),
             ("lifecycle_prompt_status", "TEXT DEFAULT 'ACTIVE'"),
             ("last_lifecycle_prompt_at", "TEXT"),
+            ("student_email_encrypted", "TEXT"),
+            ("student_email_hash", "TEXT"),
         ]:
             if col not in existing_veri_cols:
                 await self._conn.execute(f"ALTER TABLE verifications ADD COLUMN {col} {col_def};")
@@ -293,6 +295,9 @@ class Database:
         )
         await self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_verifications_expiry_alumni ON verifications(is_alumni, card_expiry_date);"
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_verifications_email_hash ON verifications(student_email_hash);"
         )
 
         # 5. One-time data migration: Backfill legacy verifications missing campus_code to 'W' (KL Main Campus)
@@ -650,6 +655,15 @@ class Database:
         )
         return await cursor.fetchone()
 
+    async def get_verification_by_email_hash(self, email_hash: str) -> tuple[int] | None:
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            "SELECT discord_user_id FROM verifications WHERE student_email_hash = ?",
+            (email_hash,),
+        )
+        return await cursor.fetchone()
+
     async def record_verification(
         self,
         discord_user_id: int,
@@ -659,6 +673,8 @@ class Database:
         level_code: str | None = None,
         card_expiry_date: str | None = None,
         lifecycle_prompt_status: str = "ACTIVE",
+        student_email_encrypted: str | None = None,
+        student_email_hash: str | None = None,
     ) -> None:
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
@@ -666,9 +682,10 @@ class Database:
         await self._conn.execute(
             """INSERT INTO verifications (
                    discord_user_id, student_id_hash, faculty_code, verified_at,
-                   campus_code, level_code, card_expiry_date, lifecycle_prompt_status
+                   campus_code, level_code, card_expiry_date, lifecycle_prompt_status,
+                   student_email_encrypted, student_email_hash
                )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 discord_user_id,
                 student_id_hash,
@@ -678,18 +695,21 @@ class Database:
                 level_code,
                 card_expiry_date,
                 lifecycle_prompt_status,
+                student_email_encrypted,
+                student_email_hash,
             ),
         )
         await self._conn.commit()
 
     async def get_verification_details(self, discord_user_id: int) -> dict[str, Any] | None:
-        """Retrieves complete verification details (faculty, campus, level, expiry, alumni status) for a user."""
+        """Retrieves complete verification details (faculty, campus, level, expiry, alumni status, email) for a user."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         cursor = await self._conn.execute(
             """SELECT student_id_hash, faculty_code, verified_at, is_alumni, graduated_year,
                       programme, graduated_at, campus_code, level_code, card_expiry_date,
-                      lifecycle_prompt_status, last_lifecycle_prompt_at
+                      lifecycle_prompt_status, last_lifecycle_prompt_at,
+                      student_email_encrypted, student_email_hash
                FROM verifications WHERE discord_user_id = ?""",
             (discord_user_id,),
         )
@@ -709,6 +729,8 @@ class Database:
             "card_expiry_date": row[9],
             "lifecycle_prompt_status": row[10] or "ACTIVE",
             "last_lifecycle_prompt_at": row[11],
+            "student_email_encrypted": row[12],
+            "student_email_hash": row[13],
         }
 
     async def backfill_legacy_verifications(self, default_campus: str = "W") -> int:
@@ -732,6 +754,8 @@ class Database:
         card_expiry_date: str | None = None,
         lifecycle_prompt_status: str | None = None,
         last_lifecycle_prompt_at: str | None = None,
+        student_email_encrypted: str | None = None,
+        student_email_hash: str | None = None,
     ) -> bool:
         """Updates optional fields for an existing verified student."""
         if not self._conn:
@@ -753,6 +777,12 @@ class Database:
         if last_lifecycle_prompt_at is not None:
             updates.append("last_lifecycle_prompt_at = ?")
             params.append(last_lifecycle_prompt_at)
+        if student_email_encrypted is not None:
+            updates.append("student_email_encrypted = ?")
+            params.append(student_email_encrypted)
+        if student_email_hash is not None:
+            updates.append("student_email_hash = ?")
+            params.append(student_email_hash)
         if not updates:
             return False
         params.append(discord_user_id)
@@ -844,6 +874,8 @@ class Database:
         card_expiry_date: str | None = None,
         lifecycle_prompt_status: str | None = None,
         last_lifecycle_prompt_at: str | None = None,
+        student_email_encrypted: str | None = None,
+        student_email_hash: str | None = None,
     ) -> bool:
         """Updates the active verification record during an academic level transition or lifecycle prompt update."""
         if not self._conn:
@@ -885,6 +917,14 @@ class Database:
         if last_lifecycle_prompt_at is not None:
             updates.append("last_lifecycle_prompt_at = ?")
             params.append(last_lifecycle_prompt_at)
+
+        if student_email_encrypted is not None:
+            updates.append("student_email_encrypted = ?")
+            params.append(student_email_encrypted)
+
+        if student_email_hash is not None:
+            updates.append("student_email_hash = ?")
+            params.append(student_email_hash)
 
         if not updates:
             return False
