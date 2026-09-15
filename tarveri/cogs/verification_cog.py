@@ -20,6 +20,7 @@ from tarveri.config import (
     ROLE_HELP_KEYWORDS_PATTERN,
     STUDY_LEVEL_ROLES,
     Settings,
+    estimate_student_card_expiry,
     format_card_expiry_display,
     get_configured_tz,
     is_expiry_date_anomalous,
@@ -27,6 +28,7 @@ from tarveri.config import (
     mask_email,
     now_formatted,
     parse_card_expiry_date,
+    parse_student_id,
 )
 from tarveri.cogs.guest_cog import VerificationGatewayView
 from tarveri.database import Database
@@ -98,6 +100,149 @@ class AlumniClaimModal(discord.ui.Modal, title="TARUMT Alumni Transition"):
         )
         embed.set_footer(text="TARVeri Alumni Verification • Instant & Tamper-Proof")
         await interaction.followup.send(embed=embed, ephemeral=False)
+
+
+def build_alumni_email_confirm_embed(
+    student_id: str,
+    email: str,
+    iso_expiry: str,
+) -> discord.Embed:
+    """Builds a helpful embed when a graduated/alumni student ID is submitted for email verification."""
+    expiry_display = format_card_expiry_display(iso_expiry) or iso_expiry
+    masked = mask_email(email)
+    embed = discord.Embed(
+        title="🎓 Graduated Student Cohort Detected",
+        description=(
+            f"Your Student ID **`{student_id}`** indicates that your cohort completed studies around **`{expiry_display}`**.\n\n"
+            f"⚠️ **Note on Email Verification**:\n"
+            f"TARUMT institutional Google Workspace accounts (`@student.tarc.edu.my`) are typically deactivated after graduation.\n\n"
+            f"Please choose how you would like to proceed:"
+        ),
+        color=discord.Color.from_rgb(212, 175, 55),
+    )
+    embed.add_field(
+        name="🎓 Verify as Graduated Alumni (Recommended)",
+        value="If your student inbox is closed, skip the email OTP. Your student ID will be verified and you will be granted the **`TARUMT Alumni`** role.",
+        inline=False,
+    )
+    embed.add_field(
+        name=f"📬 Send OTP to `{masked}` Anyway",
+        value="If you still have active access to your student email inbox and wish to complete OTP verification.",
+        inline=False,
+    )
+    embed.add_field(
+        name="📚 Continuing Studies (New ID)",
+        value="If you have progressed to a new programme at TARUMT and have a new Student ID.",
+        inline=False,
+    )
+    embed.set_footer(text="TARVeri Alumni & Email Gateway • Safe Verification")
+    return embed
+
+
+class AlumniEmailConfirmationView(discord.ui.View):
+    """
+    Interactive view presented when a graduated student submits a verification request
+    with email OTP, allowing them to verify as alumni without email OTP or proceed with OTP.
+    """
+
+    def __init__(
+        self,
+        service: VerificationService,
+        email_service: EmailService,
+        student_id: str,
+        email: str,
+        raw_expiry: str | None,
+        iso_expiry: str,
+        timeout: float = 180.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.service = service
+        self.email_service = email_service
+        self.student_id = student_id
+        self.email = email
+        self.raw_expiry = raw_expiry
+        self.iso_expiry = iso_expiry
+
+    @discord.ui.button(
+        label="Verify as Graduated Alumni",
+        style=discord.ButtonStyle.success,
+        emoji="🎓",
+        custom_id="tarveri_alumni_confirm_verify",
+        row=0,
+    )
+    async def on_alumni_verify(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Directly verifies user with their student ID + encrypted email, then presents AlumniClaimModal."""
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        response_text = await self.service.perform_verification(
+            interaction.user,
+            self.student_id,
+            raw_expiry_date=self.iso_expiry,
+            raw_email=self.email,
+        )
+        lifecycle_view = StudentLifecycleResolutionView(self.service, self.service.db)
+        await interaction.followup.send(
+            f"✅ **Student ID Verified!**\n\n{response_text}\n\n"
+            f"🎉 Click **I have Graduated** below to register your graduation cohort and claim your **`TARUMT Alumni`** role across mutual servers!",
+            view=lifecycle_view,
+            ephemeral=True,
+        )
+        schedule_ttl_delete(interaction, delay=180.0)
+
+    @discord.ui.button(
+        label="Send OTP Anyway",
+        style=discord.ButtonStyle.primary,
+        emoji="📬",
+        custom_id="tarveri_alumni_send_otp_anyway",
+        row=0,
+    )
+    async def on_send_otp(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Proceeds to send OTP email to student email."""
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        server_name = interaction.guild.name if interaction.guild else "TARUMT Community"
+        send_result = await self.email_service.generate_and_send_otp(
+            user_id=interaction.user.id,
+            student_id=self.student_id,
+            email_address=self.email,
+            server_name=server_name,
+            card_expiry_date=self.raw_expiry,
+        )
+        if not send_result["success"]:
+            await interaction.followup.send(
+                f"❌ {send_result['error']}",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=30.0)
+            return
+
+        expire_ts = int(time.time()) + int(self.email_service.settings.email_otp_ttl_seconds)
+        embed = discord.Embed(
+            title="📬 Verification Code Sent!",
+            description=(
+                f"A 6-digit one-time verification code has been dispatched to:\n"
+                f"👉 `{mask_email(self.email)}`\n\n"
+                "**Next Steps:**\n"
+                "1️⃣ Check your student email inbox *(or Spam/Junk folder)*.\n"
+                "2️⃣ Click **Enter Verification Code** below or type `/otp <code>`.\n\n"
+                f"⏱️ **Code expires:** <t:{expire_ts}:R> *(at <t:{expire_ts}:t>)*"
+            ),
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text="TARVeri Email Security • AES-256 Encrypted at Rest")
+        view = OtpVerificationPromptView(self.service, self.email_service)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=float(self.email_service.settings.email_otp_ttl_seconds))
+
+    @discord.ui.button(
+        label="Continuing Studies (New ID)",
+        style=discord.ButtonStyle.secondary,
+        emoji="📚",
+        custom_id="tarveri_alumni_further_study",
+        row=0,
+    )
+    async def on_further_study(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """Opens modal to input new Student ID."""
+        modal = FurtherStudyTransitionModal(self.service)
+        await interaction.response.send_modal(modal)
 
 
 def build_expiry_anomaly_embed(
@@ -785,6 +930,33 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
                 schedule_ttl_delete(interaction, delay=30.0)
                 return
 
+            info = parse_student_id(student_id_val)
+            iso_expiry = (
+                parse_card_expiry_date(raw_expiry)
+                if raw_expiry
+                else estimate_student_card_expiry(student_id_val, info.level_code)
+            )
+            today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
+
+            # If student card expiry date is in the past (graduated alumni cohort), offer Alumni Confirmation Gate
+            if iso_expiry and iso_expiry < today_iso:
+                confirm_embed = build_alumni_email_confirm_embed(
+                    student_id=student_id_val,
+                    email=student_email_val,
+                    iso_expiry=iso_expiry,
+                )
+                confirm_view = AlumniEmailConfirmationView(
+                    service=self.service,
+                    email_service=self.email_service,
+                    student_id=student_id_val,
+                    email=student_email_val,
+                    raw_expiry=raw_expiry,
+                    iso_expiry=iso_expiry,
+                )
+                await interaction.followup.send(embed=confirm_embed, view=confirm_view, ephemeral=True)
+                schedule_ttl_delete(interaction, delay=180.0)
+                return
+
             server_name = interaction.guild.name if interaction.guild else "TARUMT Community"
             send_result = await self.email_service.generate_and_send_otp(
                 user_id=interaction.user.id,
@@ -1095,6 +1267,33 @@ class VerificationCog(commands.Cog, name="Verification"):
                 if not is_valid:
                     await interaction.followup.send(preflight_err or "❌ Pre-flight check failed.", ephemeral=True)
                     schedule_ttl_delete(interaction, delay=30.0)
+                    return
+
+                info = parse_student_id(raw_student_id)
+                iso_expiry = (
+                    parse_card_expiry_date(raw_expiry)
+                    if raw_expiry
+                    else estimate_student_card_expiry(raw_student_id, info.level_code)
+                )
+                today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
+
+                # If student card expiry date is in the past (graduated alumni cohort), offer Alumni Confirmation Gate
+                if iso_expiry and iso_expiry < today_iso:
+                    confirm_embed = build_alumni_email_confirm_embed(
+                        student_id=raw_student_id,
+                        email=raw_email,
+                        iso_expiry=iso_expiry,
+                    )
+                    confirm_view = AlumniEmailConfirmationView(
+                        service=self.service,
+                        email_service=self.email_service,
+                        student_id=raw_student_id,
+                        email=raw_email,
+                        raw_expiry=raw_expiry,
+                        iso_expiry=iso_expiry,
+                    )
+                    await interaction.followup.send(embed=confirm_embed, view=confirm_view, ephemeral=True)
+                    schedule_ttl_delete(interaction, delay=180.0)
                     return
 
                 server_name = interaction.guild.name if interaction.guild else "TARUMT Community"

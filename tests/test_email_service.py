@@ -5,6 +5,7 @@ Unit and integration tests for EmailService, AES-256 email encryption, OTP lifec
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,9 +27,11 @@ from tarveri.rate_limiter import RateLimiter
 from tarveri.services.email_service import EmailService
 from tarveri.services.verification_service import VerificationService
 from tarveri.cogs.verification_cog import (
+    AlumniEmailConfirmationView,
     OtpVerificationPromptView,
     StudentOtpModal,
     VerificationModal,
+    build_alumni_email_confirm_embed,
 )
 
 
@@ -719,6 +722,105 @@ async def test_validate_preflight_for_otp(tmp_path):
     assert "too many verification attempts" in err
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_alumni_email_confirmation_flow(tmp_path):
+    db_path = str(tmp_path / "alumni_confirm_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        bot_token="fake_token",
+        id_hash_secret="fake_secret_12345",
+        enable_email_verification=True,
+        email_encryption_key=key,
+    )
+    email_svc = EmailService(settings, mock_smtp=True)
+    rate_limiter = RateLimiter(max_attempts=5, window_seconds=60)
+    bot = MagicMock()
+    service = VerificationService(
+        bot=bot,
+        db=db,
+        secret="fake_secret_12345",
+        rate_limiter=rate_limiter,
+        settings=settings,
+        email_service=email_svc,
+    )
+
+    user = MagicMock(spec=discord.Member)
+    user.id = 8888
+    user.mention = "<@8888>"
+    user.roles = []
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 300
+    guild.name = "TARUMT Alumni Hub"
+    guild.roles = []
+    user.guild = guild
+
+    # Past cohort ID (6 years ago dynamically, e.g. Diploma duration 2 years -> expired 4 years ago)
+    now = datetime.now()
+    past_yy = str((now.year - 6) % 100).zfill(2)
+    old_student_id = f"{past_yy}WMD01234"
+    old_email = f"alumni-wm{past_yy}@student.tarc.edu.my"
+
+    # Test modal submission with past cohort ID
+    modal = VerificationModal(service=service, email_service=email_svc, require_email=True)
+    modal.student_id._value = old_student_id
+    modal.student_email._value = old_email
+    modal.card_expiry._value = ""
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.user = user
+    interaction.guild = guild
+    interaction.response = MagicMock()
+    interaction.response.defer = AsyncMock()
+    interaction.followup = MagicMock()
+    interaction.followup.send = AsyncMock()
+
+    await modal.on_submit(interaction)
+
+    # 1. Ensure 0 emails were dispatched to SMTP (alumni gate intercepted it)
+    assert len(email_svc.sent_emails) == 0
+
+    # 2. Ensure AlumniEmailConfirmationView was rendered
+    interaction.followup.send.assert_called_once()
+    kwargs = interaction.followup.send.call_args[1]
+    embed = kwargs["embed"]
+    view = kwargs["view"]
+
+    assert "Graduated Student Cohort Detected" in embed.title
+    assert isinstance(view, AlumniEmailConfirmationView)
+
+    # 3. Test clicking "Verify as Graduated Alumni" button
+    confirm_interaction = MagicMock(spec=discord.Interaction)
+    confirm_interaction.user = user
+    confirm_interaction.guild = guild
+    confirm_interaction.response = MagicMock()
+    confirm_interaction.response.defer = AsyncMock()
+    confirm_interaction.followup = MagicMock()
+    confirm_interaction.followup.send = AsyncMock()
+
+    with patch.object(service, "get_mutual_guilds_for_user", AsyncMock(return_value=[guild])):
+        with patch.object(service, "assign_role_across_guilds") as mock_assign:
+            mock_assign.return_value = MagicMock(
+                verified_in=[(300, "TARUMT Alumni Hub", "FOCS")],
+                already_had_role_in=[],
+                missing_role_in=[],
+                failed_in=[],
+            )
+            await view.children[0].callback(confirm_interaction)
+
+    # 4. User is verified in database with email saved encrypted, and 0 OTP emails sent!
+    assert len(email_svc.sent_emails) == 0
+    record = await db.get_verification_by_user(user.id)
+    assert record is not None
+    details = await db.get_verification_details(user.id)
+    assert details["student_email_hash"] is not None
+
+    await db.close()
+
 
 
 
