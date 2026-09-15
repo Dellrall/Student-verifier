@@ -554,4 +554,57 @@ async def test_otp_slash_command_flow(tmp_path):
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_email_service_edge_cases():
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        bot_token="fake_token",
+        id_hash_secret="fake_secret",
+        enable_email_verification=True,
+        email_encryption_key=key,
+        email_otp_resend_cooldown_seconds=60,
+    )
+    svc = EmailService(settings, mock_smtp=True)
+
+    # 1. Hyphenated and abbreviated TARUMT email formats
+    assert is_valid_student_email("yaplz-wm23@student.tarc.edu.my") is True
+    assert is_valid_student_email("tan.kh-pk24@student.tarc.edu.my") is True
+    assert is_valid_student_email("lee_ck-jh22@student.tarc.edu.my") is True
+    assert is_valid_student_email("admin@tarc.edu.my") is True
+    assert is_valid_student_email("invalid@gmail.com") is False
+
+    user_id = 445566
+    # 2. Generate initial OTP
+    res1 = await svc.generate_and_send_otp(
+        user_id, "23WMD01111", "yaplz-wm23@student.tarc.edu.my", server_name="TARUMT KL"
+    )
+    assert res1["success"] is True
+    assert len(svc.sent_emails) == 1
+
+    # 3. Resending to the EXACT SAME email within cooldown -> blocked by cooldown
+    res_same = await svc.generate_and_send_otp(
+        user_id, "23WMD01111", "yaplz-wm23@student.tarc.edu.my", server_name="TARUMT KL"
+    )
+    assert res_same["success"] is False
+    assert "Please wait" in res_same["error"]
+
+    # 4. Correcting email address (e.g. intake typo 23 -> 24) -> bypasses cooldown immediately!
+    res_corrected = await svc.generate_and_send_otp(
+        user_id, "23WMD01111", "yaplz-wm24@student.tarc.edu.my", server_name="TARUMT KL"
+    )
+    assert res_corrected["success"] is True
+    assert len(svc.sent_emails) == 2
+    assert svc.sent_emails[1]["to"] == "yaplz-wm24@student.tarc.edu.my"
+
+    # 5. Lazy expired OTP pruning
+    # Manually expire the pending OTP
+    pending = svc.get_pending_otp(user_id)
+    assert pending is not None
+    pending.expires_at = time.monotonic() - 10
+
+    # Calling get_pending_otp automatically prunes the expired entry
+    assert svc.get_pending_otp(user_id) is None
+    assert user_id not in svc._pending_otps
+
+
 

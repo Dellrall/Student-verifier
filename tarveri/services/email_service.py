@@ -82,6 +82,15 @@ class EmailService:
         """Produces deterministic HMAC-SHA256 blind index hash."""
         return hash_email(email_address, self.settings.id_hash_secret)
 
+    def _prune_expired_otps(self, now: float | None = None) -> None:
+        """Removes expired pending OTPs to prevent memory growth over long uptime."""
+        current_time = now if now is not None else time.monotonic()
+        expired_keys = [
+            uid for uid, otp in self._pending_otps.items() if current_time > otp.expires_at
+        ]
+        for uid in expired_keys:
+            self._pending_otps.pop(uid, None)
+
     async def generate_and_send_otp(
         self,
         user_id: int,
@@ -105,19 +114,26 @@ class EmailService:
 
         now = time.monotonic()
         async with self._lock:
+            self._prune_expired_otps(now)
             existing = self._pending_otps.get(user_id)
             if existing:
-                cooldown_remaining = (
-                    existing.last_sent_at
-                    + self.settings.email_otp_resend_cooldown_seconds
-                    - now
+                # If resending to the exact same email & student ID, enforce cooldown
+                is_same_request = (
+                    existing.email == email_clean
+                    and existing.student_id == student_id
                 )
-                if cooldown_remaining > 0:
-                    return {
-                        "success": False,
-                        "error": f"Please wait {int(cooldown_remaining)} seconds before requesting a new verification code.",
-                        "ttl_seconds": int(existing.expires_at - now),
-                    }
+                if is_same_request:
+                    cooldown_remaining = (
+                        existing.last_sent_at
+                        + self.settings.email_otp_resend_cooldown_seconds
+                        - now
+                    )
+                    if cooldown_remaining > 0:
+                        return {
+                            "success": False,
+                            "error": f"Please wait {int(cooldown_remaining)} seconds before requesting a new verification code.",
+                            "ttl_seconds": int(existing.expires_at - now),
+                        }
 
             # Generate secure 6-digit OTP code
             otp_code = "".join(secrets.choice("0123456789") for _ in range(6))
@@ -175,6 +191,7 @@ class EmailService:
         """
         now = time.monotonic()
         async with self._lock:
+            self._prune_expired_otps(now)
             pending = self._pending_otps.get(user_id)
             if not pending:
                 return {
@@ -227,10 +244,12 @@ class EmailService:
     async def cancel_pending_otp(self, user_id: int) -> None:
         """Discards any active pending OTP for a user."""
         async with self._lock:
+            self._prune_expired_otps()
             self._pending_otps.pop(user_id, None)
 
     def get_pending_otp(self, user_id: int) -> PendingOtp | None:
         """Returns active pending OTP object if not expired."""
+        self._prune_expired_otps()
         pending = self._pending_otps.get(user_id)
         if pending and time.monotonic() <= pending.expires_at:
             return pending
