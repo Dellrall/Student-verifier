@@ -426,9 +426,21 @@ async def test_verification_modal_guild_opt_in_and_opt_out(tmp_path):
     modal_opt_out.student_id._value = "24WMD05555"
     modal_opt_out.student_email._value = ""
 
-    with patch.object(service, "perform_verification", return_value="✅ Verified!"):
+    with patch.object(service, "perform_verification", return_value="✅ Verified!") as mock_verify:
         await modal_opt_out.on_submit(interaction)
         interaction.followup.send.assert_called_once_with("✅ Verified!", ephemeral=True)
+        mock_verify.assert_called_once_with(interaction.user, "24WMD05555", raw_expiry_date=None)
+
+    # Case 1b: Guild is OPTED-OUT, user provides email -> verifies directly without OTP, storing email encrypted
+    modal_opt_out.student_email._value = "24wmd05555@student.tarc.edu.my"
+    interaction.followup.send.reset_mock()
+    with patch.object(service, "perform_verification", return_value="✅ Verified with stored email!") as mock_verify:
+        await modal_opt_out.on_submit(interaction)
+        interaction.followup.send.assert_called_once_with("✅ Verified with stored email!", ephemeral=True)
+        mock_verify.assert_called_once_with(
+            interaction.user, "24WMD05555", raw_expiry_date=None, raw_email="24wmd05555@student.tarc.edu.my"
+        )
+        assert email_service.get_pending_otp(interaction.user.id) is None  # No OTP generated/sent
 
     # Case 2: Guild OPTS-IN -> require_email = True, omitting email is blocked
     await db.set_guild_email_verification(guild_id, True)

@@ -763,8 +763,8 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
             schedule_ttl_delete(interaction, delay=30.0)
             return
 
-        # 2. If student provided an email and email_service is active, trigger OTP dispatch
-        if is_email_active and student_email_val:
+        # 2. Only if the guild has opted-in to email verification, trigger OTP dispatch
+        if is_email_active and guild_email_required and student_email_val:
             await interaction.response.defer(ephemeral=True, thinking=True)
             server_name = interaction.guild.name if interaction.guild else "TARUMT Community"
             send_result = await self.email_service.generate_and_send_otp(
@@ -1059,7 +1059,7 @@ class VerificationCog(commands.Cog, name="Verification"):
                 await interaction.response.send_modal(modal)
                 return
 
-            if is_email_active and raw_email:
+            if is_email_active and guild_email_required and raw_email:
                 await interaction.response.defer(ephemeral=True, thinking=True)
                 server_name = interaction.guild.name if interaction.guild else "TARUMT Community"
                 send_result = await self.email_service.generate_and_send_otp(

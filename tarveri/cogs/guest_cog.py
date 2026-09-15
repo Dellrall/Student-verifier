@@ -216,8 +216,8 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
             schedule_ttl_delete(interaction, delay=30.0)
             return
 
-        # 2. If student provided an email and email_service is active, trigger OTP flow
-        if is_email_active and student_email_val:
+        # 2. Only if the guild has opted-in to email verification, trigger OTP flow
+        if is_email_active and guild_email_required and student_email_val:
             await interaction.response.defer(ephemeral=True)
             from tarveri.config import mask_email
             from tarveri.cogs.verification_cog import OtpVerificationPromptView
