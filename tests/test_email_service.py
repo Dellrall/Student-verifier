@@ -17,6 +17,7 @@ from tarveri.config import (
     decrypt_email,
     encrypt_email,
     hash_email,
+    hash_student_id,
     is_valid_student_email,
     mask_email,
 )
@@ -605,6 +606,120 @@ async def test_email_service_edge_cases():
     # Calling get_pending_otp automatically prunes the expired entry
     assert svc.get_pending_otp(user_id) is None
     assert user_id not in svc._pending_otps
+
+
+@pytest.mark.asyncio
+async def test_validate_preflight_for_otp(tmp_path):
+    db_path = str(tmp_path / "preflight_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        bot_token="fake_token",
+        id_hash_secret="fake_secret_12345",
+        enable_email_verification=True,
+        email_encryption_key=key,
+    )
+    email_svc = EmailService(settings, mock_smtp=True)
+    rate_limiter = RateLimiter(max_attempts=3, window_seconds=60)
+    bot = MagicMock()
+    service = VerificationService(
+        bot=bot,
+        db=db,
+        secret="fake_secret_12345",
+        rate_limiter=rate_limiter,
+        settings=settings,
+        email_service=email_svc,
+    )
+
+    # 1. Valid inputs pass preflight
+    ok, err = await service.validate_preflight_for_otp(
+        user_id=1001,
+        raw_student_id="24WMD01234",
+        raw_email="yaplz-wm24@student.tarc.edu.my",
+    )
+    assert ok is True
+    assert err is None
+
+    # 2. Invalid student ID format fails preflight
+    ok, err = await service.validate_preflight_for_otp(
+        user_id=1001,
+        raw_student_id="invalid_id",
+        raw_email="yaplz-wm24@student.tarc.edu.my",
+    )
+    assert ok is False
+    assert "Invalid student ID format" in err
+
+    # 3. Unknown faculty code fails preflight
+    ok, err = await service.validate_preflight_for_otp(
+        user_id=1001,
+        raw_student_id="24WXD01234",
+        raw_email="yaplz-wm24@student.tarc.edu.my",
+    )
+    assert ok is False
+    assert "does not match any known faculty" in err
+
+    # 4. Invalid email domain fails preflight
+    ok, err = await service.validate_preflight_for_otp(
+        user_id=1001,
+        raw_student_id="24WMD01234",
+        raw_email="student@gmail.com",
+    )
+    assert ok is False
+    assert "Invalid student email address" in err
+
+    # 5. Seed existing verified user (ID: 9999, student_id: 24WMD09999, email: existing-wm24@student.tarc.edu.my)
+    id_hash = hash_student_id("24WMD09999", "fake_secret_12345")
+    email_hash = hash_email("existing-wm24@student.tarc.edu.my", "fake_secret_12345")
+    await db.record_verification(
+        discord_user_id=9999,
+        student_id_hash=id_hash,
+        faculty_code="M",
+        student_email_hash=email_hash,
+    )
+
+    # 6. Duplicate student ID attempt from a different user fails preflight
+    ok, err = await service.validate_preflight_for_otp(
+        user_id=1002,
+        raw_student_id="24WMD09999",
+        raw_email="new-wm24@student.tarc.edu.my",
+    )
+    assert ok is False
+    assert "student ID has already been used" in err
+
+    # 7. Duplicate email attempt from a different user fails preflight
+    ok, err = await service.validate_preflight_for_otp(
+        user_id=1002,
+        raw_student_id="24WMD05555",
+        raw_email="existing-wm24@student.tarc.edu.my",
+    )
+    assert ok is False
+    assert "student email has already been used" in err
+
+    # 8. Same user re-verifying own ID/email passes preflight
+    ok, err = await service.validate_preflight_for_otp(
+        user_id=9999,
+        raw_student_id="24WMD09999",
+        raw_email="existing-wm24@student.tarc.edu.my",
+    )
+    assert ok is True
+    assert err is None
+
+    # 9. Rate limiting fails preflight
+    rate_limiter.record_attempt(1003)
+    rate_limiter.record_attempt(1003)
+    rate_limiter.record_attempt(1003)
+    ok, err = await service.validate_preflight_for_otp(
+        user_id=1003,
+        raw_student_id="24WMD01111",
+        raw_email="student-wm24@student.tarc.edu.my",
+    )
+    assert ok is False
+    assert "too many verification attempts" in err
+
+    await db.close()
+
 
 
 

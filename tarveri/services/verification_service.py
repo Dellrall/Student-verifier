@@ -1265,6 +1265,80 @@ class VerificationService:
             "guest_guilds_granted": len(guest_roles_granted_servers),
         }
 
+    async def validate_preflight_for_otp(
+        self,
+        user_id: int,
+        raw_student_id: str,
+        raw_email: str | None,
+        guild: discord.Guild | None = None,
+    ) -> tuple[bool, str | None]:
+        """
+        Validates rate limiting, Student ID format, duplicate Student ID,
+        and duplicate Email BEFORE any OTP transmission to conserve SMTP quota.
+        Returns (is_valid, error_message).
+        """
+        if self.rate_limiter.is_rate_limited(user_id):
+            return (
+                False,
+                "⏳ You've made too many verification attempts. Please wait a few minutes and try again.",
+            )
+
+        info = parse_student_id(raw_student_id)
+        if not info.is_valid or not info.faculty_code or not info.faculty_role:
+            if not info.student_id:
+                return False, "❌ Please provide a valid student ID (e.g., `23WMD09867`)."
+            if info.faculty_code and info.faculty_code not in FACULTY_ROLES:
+                return False, "❌ Student ID does not match any known faculty. Please check and try again."
+            return False, "❌ Invalid student ID format. Please use the format like `23WMD09867`."
+
+        student_id = info.student_id
+        id_hash = hash_student_id(student_id, self.secret)
+
+        existing_id = await self.db.get_verification_by_id_hash(id_hash)
+        if existing_id and existing_id[0] != user_id:
+            await self.db.log(
+                "WARNING",
+                "DUPLICATE_ID_ATTEMPT",
+                f"User ID {user_id} tried to verify student ID (masked: {mask_student_id(student_id)}) already bound to account ID {existing_id[0]}",
+                user_id=user_id,
+                guild=guild,
+            )
+            return (
+                False,
+                "❌ This student ID has already been used to verify a different Discord account. If that wasn't you, contact an admin immediately.",
+            )
+
+        if raw_email and raw_email.strip():
+            clean_email = raw_email.strip().lower()
+            allowed_domains = (
+                getattr(self.settings, "email_allowed_domains", ("student.tarc.edu.my", "tarc.edu.my"))
+                if self.settings
+                else ("student.tarc.edu.my", "tarc.edu.my")
+            )
+            if not is_valid_student_email(clean_email, allowed_domains=allowed_domains):
+                allowed_str = ", ".join(f"@{d}" for d in allowed_domains)
+                return (
+                    False,
+                    f"❌ Invalid student email address. Please use your official institutional email ({allowed_str}).",
+                )
+
+            email_hash = hash_email(clean_email, self.secret)
+            existing_email = await self.db.get_verification_by_email_hash(email_hash)
+            if existing_email and existing_email[0] != user_id:
+                await self.db.log(
+                    "WARNING",
+                    "DUPLICATE_EMAIL_ATTEMPT",
+                    f"User ID {user_id} tried to use student email (masked: {mask_email(clean_email)}) already bound to account ID {existing_email[0]}",
+                    user_id=user_id,
+                    guild=guild,
+                )
+                return (
+                    False,
+                    "❌ This student email has already been used to verify a different Discord account. If that wasn't you, contact an admin immediately.",
+                )
+
+        return True, None
+
     async def perform_verification(
         self,
         user: discord.User | discord.Member,

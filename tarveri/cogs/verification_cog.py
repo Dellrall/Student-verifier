@@ -773,6 +773,18 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
         should_send_otp = is_email_active and student_email_val and (guild_email_required or not restrict_smtp)
         if should_send_otp:
             await interaction.response.defer(ephemeral=True, thinking=True)
+            # Pre-flight validation: check rate limiting, ID format & uniqueness, and email domain & uniqueness
+            is_valid, preflight_err = await self.service.validate_preflight_for_otp(
+                user_id=interaction.user.id,
+                raw_student_id=student_id_val,
+                raw_email=student_email_val,
+                guild=interaction.guild,
+            )
+            if not is_valid:
+                await interaction.followup.send(preflight_err or "❌ Pre-flight check failed.", ephemeral=True)
+                schedule_ttl_delete(interaction, delay=30.0)
+                return
+
             server_name = interaction.guild.name if interaction.guild else "TARUMT Community"
             send_result = await self.email_service.generate_and_send_otp(
                 user_id=interaction.user.id,
@@ -1073,6 +1085,18 @@ class VerificationCog(commands.Cog, name="Verification"):
             should_send_otp = is_email_active and raw_email and (guild_email_required or not restrict_smtp)
             if should_send_otp:
                 await interaction.response.defer(ephemeral=True, thinking=True)
+                # Pre-flight validation: check rate limiting, ID format & uniqueness, and email domain & uniqueness
+                is_valid, preflight_err = await self.service.validate_preflight_for_otp(
+                    user_id=interaction.user.id,
+                    raw_student_id=raw_student_id,
+                    raw_email=raw_email,
+                    guild=interaction.guild,
+                )
+                if not is_valid:
+                    await interaction.followup.send(preflight_err or "❌ Pre-flight check failed.", ephemeral=True)
+                    schedule_ttl_delete(interaction, delay=30.0)
+                    return
+
                 server_name = interaction.guild.name if interaction.guild else "TARUMT Community"
                 send_result = await self.email_service.generate_and_send_otp(
                     user_id=interaction.user.id,
