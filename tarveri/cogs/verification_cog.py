@@ -752,6 +752,10 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
         is_email_active = bool(
             self.email_service and getattr(self.email_service, "is_enabled", False) is True
         )
+        restrict_smtp = bool(
+            self.email_service
+            and getattr(self.email_service.settings, "email_restrict_smtp_usage", True) is True
+        )
 
         # 1. If email is mandated for this guild, ensure student provided an email
         if is_email_active and guild_email_required and not student_email_val:
@@ -763,8 +767,11 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
             schedule_ttl_delete(interaction, delay=30.0)
             return
 
-        # 2. Only if the guild has opted-in to email verification, trigger OTP dispatch
-        if is_email_active and guild_email_required and student_email_val:
+        # 2. Trigger OTP dispatch if:
+        #    - guild explicitly opted-in (guild_email_required), OR
+        #    - SMTP usage is NOT restricted (restrict_smtp is False) and student provided an email
+        should_send_otp = is_email_active and student_email_val and (guild_email_required or not restrict_smtp)
+        if should_send_otp:
             await interaction.response.defer(ephemeral=True, thinking=True)
             server_name = interaction.guild.name if interaction.guild else "TARUMT Community"
             send_result = await self.email_service.generate_and_send_otp(
@@ -1046,6 +1053,10 @@ class VerificationCog(commands.Cog, name="Verification"):
                 self.email_service is not None
                 and getattr(self.email_service, "is_enabled", False) is True
             )
+            restrict_smtp = bool(
+                self.email_service
+                and getattr(self.email_service.settings, "email_restrict_smtp_usage", True) is True
+            )
             guild_email_required = False
             if interaction.guild and self.db:
                 guild_email_required = await self.db.is_guild_email_verification_enabled(interaction.guild.id)
@@ -1059,7 +1070,8 @@ class VerificationCog(commands.Cog, name="Verification"):
                 await interaction.response.send_modal(modal)
                 return
 
-            if is_email_active and guild_email_required and raw_email:
+            should_send_otp = is_email_active and raw_email and (guild_email_required or not restrict_smtp)
+            if should_send_otp:
                 await interaction.response.defer(ephemeral=True, thinking=True)
                 server_name = interaction.guild.name if interaction.guild else "TARUMT Community"
                 send_result = await self.email_service.generate_and_send_otp(
@@ -1193,11 +1205,15 @@ class VerificationCog(commands.Cog, name="Verification"):
             schedule_ttl_delete(interaction, delay=30.0)
             return
 
-        # Check if server opted in or user has a pending verification code
+        # Check if server opted in, SMTP is unrestricted, or user has a pending verification code
         if interaction.guild and hasattr(interaction.guild, "id") and isinstance(interaction.guild.id, int) and self.db:
             guild_email_opted_in = await self.db.is_guild_email_verification_enabled(interaction.guild.id)
+            restrict_smtp = bool(
+                self.email_service
+                and getattr(self.email_service.settings, "email_restrict_smtp_usage", True) is True
+            )
             pending = self.email_service.get_pending_otp(interaction.user.id)
-            if not guild_email_opted_in and not pending:
+            if restrict_smtp and not guild_email_opted_in and not pending:
                 await interaction.response.send_message(
                     "ℹ️ This server has not mandated email verification. You can verify directly with `/verify`.",
                     ephemeral=True,

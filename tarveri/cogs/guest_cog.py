@@ -205,6 +205,10 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
         is_email_active = bool(
             self.email_service and getattr(self.email_service, "is_enabled", False) is True
         )
+        restrict_smtp = bool(
+            self.email_service
+            and getattr(self.email_service.settings, "email_restrict_smtp_usage", True) is True
+        )
 
         # 1. If email is mandated for this guild, ensure student provided an email
         if is_email_active and guild_email_required and not student_email_val:
@@ -216,8 +220,11 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
             schedule_ttl_delete(interaction, delay=30.0)
             return
 
-        # 2. Only if the guild has opted-in to email verification, trigger OTP flow
-        if is_email_active and guild_email_required and student_email_val:
+        # 2. Trigger OTP flow if:
+        #    - guild explicitly opted-in (guild_email_required), OR
+        #    - SMTP usage is NOT restricted (restrict_smtp is False) and student provided an email
+        should_send_otp = is_email_active and student_email_val and (guild_email_required or not restrict_smtp)
+        if should_send_otp:
             await interaction.response.defer(ephemeral=True)
             from tarveri.config import mask_email
             from tarveri.cogs.verification_cog import OtpVerificationPromptView
