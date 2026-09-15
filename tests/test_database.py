@@ -161,29 +161,46 @@ async def test_database_guild_settings(tmp_path):
     guild_id = 999111
     # Initially None
     assert await db.get_guild_settings(guild_id) is None
+    assert await db.is_guild_email_verification_enabled(guild_id) is False
 
     # Set welcome channel
     await db.set_guild_welcome_channel(guild_id, 123456)
     settings = await db.get_guild_settings(guild_id)
-    assert settings == (123456, None, "Guest", None, None)
+    assert settings == (123456, None, "Guest", None, None, 0)
 
     # Set help channel
     await db.set_guild_help_channel(guild_id, 654321)
     settings = await db.get_guild_settings(guild_id)
-    assert settings == (123456, 654321, "Guest", None, None)
+    assert settings == (123456, 654321, "Guest", None, None, 0)
 
     # Set guest role, review channel, and admin role
     await db.set_guild_guest_role(guild_id, "Guest (Approved)")
     await db.set_guild_review_channel(guild_id, 999000)
     await db.set_guild_admin_role(guild_id, "Special Staff")
     settings = await db.get_guild_settings(guild_id)
-    assert settings == (123456, 654321, "Guest (Approved)", 999000, "Special Staff")
+    assert settings == (123456, 654321, "Guest (Approved)", 999000, "Special Staff", 0)
+
+    # Opt-in to email verification
+    await db.set_guild_email_verification(guild_id, True)
+    assert await db.is_guild_email_verification_enabled(guild_id) is True
+    settings = await db.get_guild_settings(guild_id)
+    assert settings == (123456, 654321, "Guest (Approved)", 999000, "Special Staff", 1)
+
+    # Opt-out of email verification
+    await db.set_guild_email_verification(guild_id, False)
+    assert await db.is_guild_email_verification_enabled(guild_id) is False
 
     # Reset welcome channel and admin role
     await db.set_guild_welcome_channel(guild_id, None)
     await db.set_guild_admin_role(guild_id, None)
     settings = await db.get_guild_settings(guild_id)
-    assert settings == (None, 654321, "Guest (Approved)", 999000, None)
+    assert settings == (None, 654321, "Guest (Approved)", 999000, None, 0)
+
+    # Email stats telemetry
+    stats = await db.get_email_verification_stats(guild_id)
+    assert "total_students" in stats
+    assert "email_verified_students" in stats
+    assert "guild_opted_in" in stats
 
     await db.close()
 
@@ -423,7 +440,7 @@ async def test_database_clear_stale_channel_setting(tmp_path):
     await db.set_guild_admin_role(guild_id, "Test Admin")
 
     settings = await db.get_guild_settings(guild_id)
-    assert settings == (1001, 1002, "Guest", 1003, "Test Admin")
+    assert settings == (1001, 1002, "Guest", 1003, "Test Admin", 0)
 
     # Clear welcome channel
     cleared_welcome = await db.clear_stale_channel_setting(guild_id, "welcome")
@@ -545,7 +562,7 @@ async def test_database_backup_listing_and_restoration(tmp_path):
     assert res["restored_guilds"] == 1
 
     restored = await db.get_guild_settings(guild_1)
-    assert restored == (5001, 5002, "Verified Guest", 5003, "TARVeri Admin")
+    assert restored == (5001, 5002, "Verified Guest", 5003, "TARVeri Admin", 0)
 
     # Full database restore
     # Add new dummy data to active

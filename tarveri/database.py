@@ -150,6 +150,7 @@ class Database:
                 guest_role_name TEXT DEFAULT 'Guest',
                 review_channel_id INTEGER,
                 admin_role_name TEXT,
+                require_email_verification INTEGER DEFAULT 0,
                 updated_at TEXT NOT NULL
             );
 
@@ -231,6 +232,7 @@ class Database:
             ("guest_role_name", "TEXT DEFAULT 'Guest'"),
             ("review_channel_id", "INTEGER"),
             ("admin_role_name", "TEXT"),
+            ("require_email_verification", "INTEGER DEFAULT 0"),
             ("updated_at", "TEXT DEFAULT ''"),
         ]:
             if col not in existing_guild_cols:
@@ -1118,16 +1120,93 @@ class Database:
 
     async def get_guild_settings(
         self, guild_id: int
-    ) -> tuple[int | None, int | None, str | None, int | None, str | None] | None:
-        """Returns (welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name) for the given guild, or None."""
+    ) -> tuple[int | None, int | None, str | None, int | None, str | None, int] | None:
+        """Returns (welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name, require_email_verification) for the given guild, or None."""
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
         cursor = await self._conn.execute(
-            """SELECT welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name
+            """SELECT welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name, COALESCE(require_email_verification, 0)
                FROM guild_settings WHERE guild_id = ?""",
             (guild_id,),
         )
         return await cursor.fetchone()
+
+    async def is_guild_email_verification_enabled(self, guild_id: int | Any) -> bool:
+        """Checks if student email OTP verification is mandated for the specified guild (default: False / opt-out)."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        if not isinstance(guild_id, int):
+            try:
+                guild_id = int(guild_id)
+            except (ValueError, TypeError):
+                return False
+        cursor = await self._conn.execute(
+            "SELECT require_email_verification FROM guild_settings WHERE guild_id = ?",
+            (guild_id,),
+        )
+        row = await cursor.fetchone()
+        if not row or row[0] is None:
+            return False
+        return bool(row[0])
+
+    async def set_guild_email_verification(self, guild_id: int | Any, enabled: bool) -> None:
+        """Sets the per-guild email verification requirement (opt-in = True, opt-out = False)."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        if not isinstance(guild_id, int):
+            try:
+                guild_id = int(guild_id)
+            except (ValueError, TypeError):
+                return
+        ts = now_formatted()
+        val = 1 if enabled else 0
+        await self._conn.execute(
+            """INSERT INTO guild_settings (guild_id, require_email_verification, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(guild_id) DO UPDATE SET
+                   require_email_verification = excluded.require_email_verification,
+                   updated_at = excluded.updated_at""",
+            (guild_id, val, ts),
+        )
+        await self._conn.commit()
+
+    async def get_email_verification_stats(self, guild_id: int | Any = None) -> dict[str, Any]:
+        """
+        Returns verification telemetry regarding student email verifications.
+        Includes total verified students, count verified with email OTP, percentage,
+        and guild opt-in status (if guild_id is provided).
+        """
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*), COUNT(student_email_hash) FROM verifications"
+        )
+        row = await cursor.fetchone()
+        total_students = row[0] if row else 0
+        email_verified_students = row[1] if row else 0
+        email_verified_rate = (email_verified_students / total_students * 100.0) if total_students > 0 else 0.0
+
+        is_opted_in = False
+        if guild_id is not None:
+            is_opted_in = await self.is_guild_email_verification_enabled(guild_id)
+
+        # Count total guilds opted in vs opted out
+        g_cursor = await self._conn.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN require_email_verification = 1 THEN 1 ELSE 0 END) FROM guild_settings"
+        )
+        g_row = await g_cursor.fetchone()
+        total_configured_guilds = g_row[0] if g_row and g_row[0] else 0
+        opted_in_guilds = g_row[1] if g_row and g_row[1] else 0
+
+        return {
+            "total_students": total_students,
+            "email_verified_students": email_verified_students,
+            "email_verified_rate": round(email_verified_rate, 1),
+            "guild_opted_in": is_opted_in,
+            "opted_in_guilds": opted_in_guilds,
+            "total_configured_guilds": total_configured_guilds,
+        }
+
 
     async def set_guild_welcome_channel(self, guild_id: int, channel_id: int | None) -> None:
         """Sets or clears the welcome channel ID for a guild."""

@@ -391,3 +391,67 @@ def test_email_service_primary_fails_without_fallback():
         )
         assert success is False
 
+
+@pytest.mark.asyncio
+async def test_verification_modal_guild_opt_in_and_opt_out(tmp_path):
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        bot_token="fake_token",
+        id_hash_secret="fake_secret",
+        enable_email_verification=True,
+        email_encryption_key=key,
+    )
+    db = Database(str(tmp_path / "guild_opt_in.db"))
+    await db.connect()
+
+    bot = MagicMock()
+    service = VerificationService(bot, db, "secret", RateLimiter(), email_service=EmailService(settings, mock_smtp=True))
+    email_service = service.email_service
+
+    guild_id = 999888
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = guild_id
+    guild.name = "Opt In Guild"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = MagicMock(spec=discord.Member)
+    interaction.user.id = 777111
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # Case 1: Guild is OPTED-OUT (default) -> email is optional, omitting email succeeds directly
+    modal_opt_out = VerificationModal(service, email_service, require_email=False)
+    assert modal_opt_out.student_email.required is False
+    modal_opt_out.student_id._value = "24WMD05555"
+    modal_opt_out.student_email._value = ""
+
+    with patch.object(service, "perform_verification", return_value="✅ Verified!"):
+        await modal_opt_out.on_submit(interaction)
+        interaction.followup.send.assert_called_once_with("✅ Verified!", ephemeral=True)
+
+    # Case 2: Guild OPTS-IN -> require_email = True, omitting email is blocked
+    await db.set_guild_email_verification(guild_id, True)
+    assert await db.is_guild_email_verification_enabled(guild_id) is True
+
+    modal_opt_in = VerificationModal(service, email_service, require_email=True)
+    assert modal_opt_in.student_email.required is True
+    modal_opt_in.student_id._value = "24WMD05555"
+    modal_opt_in.student_email._value = ""
+
+    interaction.followup.send.reset_mock()
+    await modal_opt_in.on_submit(interaction)
+    interaction.followup.send.assert_called_once()
+    assert "Institutional student email is required" in interaction.followup.send.call_args[0][0]
+
+    # Case 3: Guild is OPTED-IN and valid email is provided -> OTP dispatched
+    modal_opt_in.student_email._value = "24wmd05555@student.tarc.edu.my"
+    interaction.followup.send.reset_mock()
+    await modal_opt_in.on_submit(interaction)
+    interaction.followup.send.assert_called_once()
+    embed = interaction.followup.send.call_args[1]["embed"]
+    assert "Verification Code Sent!" in embed.title
+
+    await db.close()
+
+
