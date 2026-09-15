@@ -463,6 +463,10 @@ class AdminDashboardView(ui.View):
             btn_set_admin_role.callback = self._on_set_admin_role_clicked
             self.add_item(btn_set_admin_role)
 
+            btn_toggle_email = ui.Button(label="Toggle Email Verification", style=discord.ButtonStyle.primary, emoji="📧")
+            btn_toggle_email.callback = self._on_toggle_email_verification_clicked
+            self.add_item(btn_toggle_email)
+
             btn_reset_auto = ui.Button(label="Reset to Auto-Detect", style=discord.ButtonStyle.danger, emoji="🔄")
             btn_reset_auto.callback = self._on_reset_config_clicked
             self.add_item(btn_reset_auto)
@@ -572,6 +576,15 @@ class AdminDashboardView(ui.View):
         embed.add_field(name="Verified Past 24h", value=f"**{last_24h}** new", inline=True)
         embed.add_field(name="Verified Past 7d", value=f"**{last_7d}** new", inline=True)
 
+        email_stats = await self.cog.db.get_email_verification_stats(guild.id if guild else None)
+        email_status_text = (
+            f"**{email_stats['email_verified_students']}** / **{total}** ({email_stats['email_verified_rate']}%)"
+        )
+        embed.add_field(name="📧 Email Verified Students", value=email_status_text, inline=True)
+        if guild:
+            opt_status = "🔒 **Mandatory (Opted In)**" if email_stats["guild_opted_in"] else "⚪ **Optional (Default: Opted Out)**"
+            embed.add_field(name="📧 Server Email Policy", value=opt_status, inline=True)
+
         if faculty_counts:
             breakdown_lines = []
             for f_code, count in faculty_counts:
@@ -601,6 +614,7 @@ class AdminDashboardView(ui.View):
         g_role = settings[2] if settings and len(settings) > 2 and settings[2] else "Guest"
         r_id = settings[3] if settings and len(settings) > 3 else None
         adm_role = settings[4] if settings and len(settings) > 4 and settings[4] else f"Auto-detect ({self.cog.admin_role_name})"
+        is_email_opted_in = bool(settings[5]) if settings and len(settings) > 5 else False
 
         w_ch = guild.get_channel(w_id) if w_id else None
         h_ch = guild.get_channel(h_id) if h_id else None
@@ -623,6 +637,8 @@ class AdminDashboardView(ui.View):
         )
         embed.add_field(name="👥 Guest Role Name", value=f"`{g_role}`", inline=True)
         embed.add_field(name="🛡️ Admin / Reviewer Role", value=f"`{adm_role}`", inline=True)
+        email_mode_str = "🔒 **Mandatory (Opted In)**" if is_email_opted_in else "⚪ **Optional (Default: Opted Out)**"
+        embed.add_field(name="📧 Email Verification Policy", value=email_mode_str, inline=True)
 
         embed.set_footer(text="Use the buttons below to modify channels, roles, or reset to defaults.")
         return embed
@@ -895,6 +911,27 @@ class AdminDashboardView(ui.View):
         embed.set_footer(text=f"Select the target channel for {config_type.replace('_', ' ').title()}.")
         await self.update_message(interaction, embed=embed)
 
+    async def _on_toggle_email_verification_clicked(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("❌ Server context required.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        curr = await self.cog.db.is_guild_email_verification_enabled(interaction.guild.id)
+        new_val = not curr
+        await self.cog.db.set_guild_email_verification(interaction.guild.id, new_val)
+        status_word = "**MANDATORY (Opted In)**" if new_val else "**OPTIONAL (Opted Out)**"
+        await self.cog.db.log(
+            "INFO",
+            "GUILD_EMAIL_VERIFICATION_TOGGLED",
+            f"Email verification requirement set to {new_val} by admin {interaction.user}",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
+        self._rebuild_components()
+        embed = await self.build_config_embed(interaction.guild)
+        embed.description = f"📧 **Email verification requirement updated to {status_word}!**"
+        await self.update_message(interaction, embed=embed)
+
     async def _on_reset_config_clicked(self, interaction: discord.Interaction) -> None:
         if not interaction.guild:
             return
@@ -904,6 +941,7 @@ class AdminDashboardView(ui.View):
         await self.cog.db.set_guild_review_channel(interaction.guild.id, None)
         await self.cog.db.set_guild_guest_role(interaction.guild.id, "Guest")
         await self.cog.db.set_guild_admin_role(interaction.guild.id, None)
+        await self.cog.db.set_guild_email_verification(interaction.guild.id, False)
 
         verif_cog = self.cog.bot.get_cog("Verification")
         if verif_cog and hasattr(verif_cog, "invalidate_guild_cache"):

@@ -793,5 +793,91 @@ async def test_admin_close_ticket_already_left_server_archives_unarchived_thread
     await db.close()
 
 
+@pytest.mark.asyncio
+async def test_admin_email_verification_command(tmp_path):
+    db_path = str(tmp_path / "admin_email_cmd_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    service = MagicMock()
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 556677
+    guild.name = "CS Society"
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.send_message = AsyncMock()
+
+    # Opt-in to email verification
+    await cog.email_verification.callback(cog, interaction, enabled=True)
+    assert await db.is_guild_email_verification_enabled(guild.id) is True
+    interaction.response.send_message.assert_called_once()
+    assert "MANDATORY (Opted In)" in interaction.response.send_message.call_args[0][0]
+
+    # Opt-out of email verification
+    interaction.response.send_message.reset_mock()
+    await cog.email_verification.callback(cog, interaction, enabled=False)
+    assert await db.is_guild_email_verification_enabled(guild.id) is False
+    interaction.response.send_message.assert_called_once()
+    assert "OPTIONAL (Opted Out)" in interaction.response.send_message.call_args[0][0]
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_admin_dashboard_toggle_email_verification(tmp_path):
+    db_path = str(tmp_path / "admin_dashboard_toggle_test.db")
+    db = Database(db_path)
+    await db.connect()
+
+    bot = MagicMock()
+    bot.guilds = []
+    service = MagicMock()
+    rate_limiter = MagicMock()
+    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 889900
+    guild.name = "TARUMT Cyber Club"
+
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.guild_permissions.administrator = True
+    admin_user.id = 112233
+
+    view = AdminDashboardView(cog, admin_user, initial_category="config")
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.edit_original_response = AsyncMock()
+
+    # Toggle from False -> True
+    await view._on_toggle_email_verification_clicked(interaction)
+    assert await db.is_guild_email_verification_enabled(guild.id) is True
+    interaction.edit_original_response.assert_called_once()
+    embed = interaction.edit_original_response.call_args[1]["embed"]
+    assert "MANDATORY" in embed.description
+
+    # Toggle from True -> False
+    interaction.edit_original_response.reset_mock()
+    await view._on_toggle_email_verification_clicked(interaction)
+    assert await db.is_guild_email_verification_enabled(guild.id) is False
+    interaction.edit_original_response.assert_called_once()
+    embed = interaction.edit_original_response.call_args[1]["embed"]
+    assert "OPTIONAL" in embed.description
+
+    await db.close()
+
+
+
 
 

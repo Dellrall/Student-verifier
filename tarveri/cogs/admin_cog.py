@@ -139,6 +139,13 @@ class AdminCog(commands.Cog, name="Admin"):
         embed.add_field(name="Past 24 Hours", value=f"**{last_24h}** new", inline=True)
         embed.add_field(name="Past 7 Days", value=f"**{last_7d}** new", inline=True)
 
+        email_stats = await self.db.get_email_verification_stats(interaction.guild.id if interaction.guild else None)
+        embed.add_field(
+            name="Email Verified",
+            value=f"**{email_stats['email_verified_students']}** / **{total}** ({email_stats['email_verified_rate']}%)",
+            inline=True,
+        )
+
         if faculty_counts:
             breakdown_lines = []
             for f_code, count in faculty_counts:
@@ -159,6 +166,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 else "Guest(Approved)"
             )
             r_id = guild_settings[3] if guild_settings and len(guild_settings) > 3 else None
+            is_email_opted_in = bool(guild_settings[5]) if guild_settings and len(guild_settings) > 5 else False
 
             w_ch = interaction.guild.get_channel(w_id) if w_id else None
             h_ch = interaction.guild.get_channel(h_id) if h_id else None
@@ -174,11 +182,14 @@ class AdminCog(commands.Cog, name="Admin"):
                 else f"*Auto-detect ({self.admin_role_name})*"
             )
 
+            email_policy_str = "Mandatory (Opted In)" if is_email_opted_in else "Optional (Opted Out)"
+
             embed.add_field(name="Welcome Channel", value=w_display, inline=True)
             embed.add_field(name="Help Channel", value=h_display, inline=True)
             embed.add_field(name="Guest Role", value=f"`{g_role}`", inline=True)
             embed.add_field(name="Review Channel", value=r_display, inline=True)
             embed.add_field(name="Admin / Review Role", value=f"`{adm_role}`", inline=True)
+            embed.add_field(name="Email Verification Policy", value=f"`{email_policy_str}`", inline=True)
 
         embed.set_footer(text=f"TARVeri Bot • Active in {len(self.bot.guilds)} servers")
         await interaction.followup.send(embed=embed, ephemeral=True)
@@ -251,6 +262,10 @@ class AdminCog(commands.Cog, name="Admin"):
                 channel_status.append(f"✅ Review channel: {r_ch.mention}")
         else:
             channel_status.append("ℹ️ Review channel: *Auto-detected*")
+
+        is_email_opted_in = await self.db.is_guild_email_verification_enabled(guild.id)
+        email_policy_label = "Mandatory (Opted In)" if is_email_opted_in else "Optional (Opted Out)"
+        channel_status.append(f"📧 Email Verification Policy: **{email_policy_label}**")
 
         embed = discord.Embed(
             title="🛡️ TARVeri — Server Health & Diagnostics",
@@ -596,6 +611,43 @@ class AdminCog(commands.Cog, name="Admin"):
 
     async def setadminrole(self, interaction: discord.Interaction, role: discord.Role | None = None) -> None:
         await self.set_role(interaction, role_type="admin", role=role)
+
+    @admin_group.command(
+        name="email_verification",
+        description="Configure whether student email OTP verification is required in this server.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        enabled="True to mandate student email OTP (Opt-In), False to make it optional (Opt-Out).",
+    )
+    async def email_verification(self, interaction: discord.Interaction, enabled: bool) -> None:
+        """Sets the per-guild email verification requirement (opt-in / opt-out)."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            schedule_ttl_delete(interaction, delay=60.0)
+            return
+
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command must be used within a server.", ephemeral=True)
+            return
+
+        await self.db.set_guild_email_verification(interaction.guild.id, enabled)
+        await self.db.log(
+            "INFO",
+            "CONFIG_EMAIL_VERIFICATION",
+            f"Email verification requirement set to {enabled} by {interaction.user}",
+            guild=interaction.guild,
+            user_id=interaction.user.id,
+        )
+
+        mode_str = "**MANDATORY (Opted In)**" if enabled else "**OPTIONAL (Opted Out)**"
+        await interaction.response.send_message(
+            f"✅ Email verification requirement for **{interaction.guild.name}** is now {mode_str}.",
+            ephemeral=True,
+        )
+        schedule_ttl_delete(interaction, delay=60.0)
 
     @admin_group.command(
         name="backfill_roles",
