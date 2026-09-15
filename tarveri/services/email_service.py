@@ -355,9 +355,10 @@ class EmailService:
         clean_name = (from_name or "").strip().strip('"').strip("'")
         clean_from_email = (from_email or "").strip().strip('"').strip("'")
         if clean_name:
-            msg["From"] = email.utils.formataddr((str(Header(clean_name, "utf-8")), clean_from_email))
+            msg["From"] = f'"{clean_name}" <{clean_from_email}>'
         else:
             msg["From"] = clean_from_email
+        msg["Reply-To"] = clean_from_email
         msg["To"] = to_email.strip()
         msg["Date"] = email.utils.formatdate(localtime=True)
         domain = clean_from_email.split("@")[-1] if "@" in clean_from_email else "tarveri.local"
