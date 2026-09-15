@@ -400,6 +400,11 @@ class Settings:
     email_otp_ttl_seconds: int = 600
     email_otp_max_attempts: int = 3
     email_otp_resend_cooldown_seconds: int = 60
+    email_restrict_smtp_usage: bool = True
+
+    @property
+    def restrict_smtp_usage(self) -> bool:
+        return self.email_restrict_smtp_usage
 
     @property
     def database_path(self) -> str:
@@ -716,6 +721,15 @@ class Settings:
             int(otp_cooldown_raw) if otp_cooldown_raw.isdigit() else 60
         )
 
+        restrict_smtp_raw = (
+            os.getenv("TARVERI_EMAIL_RESTRICT_SMTP_USAGE")
+            or os.getenv("EMAIL_RESTRICT_SMTP_USAGE")
+            or os.getenv("TARVERI_RESTRICT_SMTP_USAGE")
+            or os.getenv("RESTRICT_SMTP_USAGE")
+            or "true"
+        ).lower().strip()
+        email_restrict_smtp_usage = restrict_smtp_raw in ("true", "1", "yes", "t")
+
         if validate:
             if not bot_token:
                 raise RuntimeError(
@@ -783,6 +797,7 @@ class Settings:
             email_otp_ttl_seconds=email_otp_ttl_seconds,
             email_otp_max_attempts=email_otp_max_attempts,
             email_otp_resend_cooldown_seconds=email_otp_resend_cooldown_seconds,
+            email_restrict_smtp_usage=email_restrict_smtp_usage,
         )
 
 

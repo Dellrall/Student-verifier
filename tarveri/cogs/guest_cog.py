@@ -205,6 +205,10 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
         is_email_active = bool(
             self.email_service and getattr(self.email_service, "is_enabled", False) is True
         )
+        restrict_smtp = bool(
+            self.email_service
+            and getattr(self.email_service.settings, "email_restrict_smtp_usage", True) is True
+        )
 
         # 1. If email is mandated for this guild, ensure student provided an email
         if is_email_active and guild_email_required and not student_email_val:
@@ -216,8 +220,11 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
             schedule_ttl_delete(interaction, delay=30.0)
             return
 
-        # 2. If student provided an email and email_service is active, trigger OTP flow
-        if is_email_active and student_email_val:
+        # 2. Trigger OTP flow if:
+        #    - guild explicitly opted-in (guild_email_required), OR
+        #    - SMTP usage is NOT restricted (restrict_smtp is False) and student provided an email
+        should_send_otp = is_email_active and student_email_val and (guild_email_required or not restrict_smtp)
+        if should_send_otp:
             await interaction.response.defer(ephemeral=True)
             from tarveri.config import mask_email
             from tarveri.cogs.verification_cog import OtpVerificationPromptView
@@ -242,10 +249,12 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
             embed = discord.Embed(
                 title="📬 Verification Code Sent!",
                 description=(
-                    f"A 6-digit one-time code has been sent to **`{mask_email(student_email_val)}`**.\n\n"
-                    "1. Open your student email inbox (check Spam/Junk if not found within 10 seconds).\n"
-                    "2. Click **`🔢 Enter Verification Code`** below or use `/otp <code>` to submit your 6-digit code.\n\n"
-                    f"⏱️ **Code expires:** <t:{expire_ts}:R> (<t:{expire_ts}:t>)"
+                    f"A 6-digit one-time verification code has been dispatched to:\n"
+                    f"👉 `{mask_email(student_email_val)}`\n\n"
+                    "**Next Steps:**\n"
+                    "1️⃣ Check your student email inbox *(or Spam/Junk folder)*.\n"
+                    "2️⃣ Click **Enter Verification Code** below or type `/otp <code>`.\n\n"
+                    f"⏱️ **Code expires:** <t:{expire_ts}:R> *(at <t:{expire_ts}:t>)*"
                 ),
                 color=discord.Color.blue(),
             )
