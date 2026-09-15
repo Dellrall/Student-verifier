@@ -23,6 +23,7 @@ Student-verifier/
 │   ├── utils.py                  # Ticket formatting (#A0001), TTL schedulers, timestamp parsers
 │   ├── services/
 │   │   ├── verification_service.py      # Student verification logic, role auto-creation, reconciliation, academic transition
+│   │   ├── email_service.py             # Institutional student email OTP generator, dual SMTP relay, and Fernet AES-256 encryption
 │   │   ├── graduation_watchdog_service.py # Periodic graduation & card expiry watchdog daemon
 │   │   ├── card_service.py              # Digital campus card rendering, Pillow glassmorphism, badge system
 │   │   ├── guest_service.py             # Referral codes, double verification, batch staff tagging, escalation
@@ -182,6 +183,23 @@ flowchart TD
 - **100% Dynamic Time Analysis**: All validation logic, century thresholding, intake year bounds, and example placeholders compute dynamically relative to `datetime.now().year` (`1969 <= year <= datetime.now().year + 5`).
 - **Zero Hardcoded Time-Locks**: Prevents obsolescence and guarantees future-proof operation across calendar years.
 
+### 16. Institutional Student Email Verification & Dual-SMTP Relay Engine
+- **2-Factor Email OTP Verification (`EmailService`)**:
+  - Verifies ownership of official TARUMT institutional mailboxes (`<abbr>-<branch><fac><intake>@student.tarc.edu.my`, e.g. `yaplz-wm23@student.tarc.edu.my` or `@tarc.edu.my`).
+  - Generates secure 6-digit one-time codes with a 10-minute TTL and real-time Discord relative timestamp countdowns (`<t:{expire_ts}:R>`).
+  - Enforces 3-attempt brute-force protection (invalidating the code on the 3rd wrong attempt) and a 60-second resend rate limit.
+  - **Smart Cooldown Bypass on Correction**: If a user corrects a mistyped email or ID, the 60-second cooldown is automatically bypassed to avoid frustrating legitimate users.
+  - **Lazy Memory Pruning**: In-memory transient OTP entries are pruned automatically upon any service access.
+- **AES-256 Symmetric Encryption at Rest (Fernet)**:
+  - All student email addresses are encrypted with a Fernet AES-256 authenticated key before storing in the SQLite `verifications` table (`student_email_encrypted`).
+- **HMAC-SHA256 Blind Indexing (`student_email_hash`)**:
+  - Deterministic HMAC-SHA256 blind indexing allows fast $O(1)$ duplicate email collision checks at rest without decrypting or storing plaintext emails.
+- **Primary & Fallback Dual-SMTP Architecture**:
+  - Transmits via high-deliverability primary SMTP relay (e.g. SMTP2GO port 587) with automatic fallback to a direct secondary SMTP mailbox server on quota depletion or network timeout.
+- **Per-Server Opt-In / Opt-Out & Quota Protection**:
+  - Servers can mandate email verification per-guild (`/admin email_verification enabled:True|False` or via the interactive Admin Dashboard toggle).
+  - **`TARVERI_EMAIL_RESTRICT_SMTP_USAGE` Feature Flag (Default: `True`)**: Restricts SMTP email dispatch to opted-in servers, preventing free-tier quota exhaustion on opted-out servers while still encrypting student emails at rest.
+
 ---
 
 ## 🎟️ Alphanumeric Ticket Sequencing, Multi-Action Buttons & Smart Escalation
@@ -207,7 +225,8 @@ flowchart TD
 ## 📋 Slash Commands Reference
 
 ### Student & Member Commands
-- `/verify [student_id]` — Submit student ID via private modal or direct argument.
+- `/verify [student_id] [expiry_date] [email]` — Submit student ID, optional expiry, and institutional student email via interactive modal or direct arguments.
+- `/otp <code>` — Direct slash command to verify 6-digit email OTP verification code.
 - `/graduate [year] [programme]` — Instant graduation claim for verified students to receive `TARUMT Alumni` role and card badge.
 - `/dropout` — Discontinue student verification and withdraw faculty/campus/level roles with mandatory confirmation phrase (`"Yes, I am dropping out."`).
 - `/card [member] [hidden]` — Generate and render high-DPI digital student/guest/alumni ID card with glassmorphism design and achievement badges (public by default, or `hidden: True`).
@@ -216,8 +235,10 @@ flowchart TD
 - `/referral list` — View active and past referral codes.
 
 ### 🛡️ Administrator Control Center (`/admin`)
-- `/admin dashboard` — Launches the rich interactive **TARVeri Administrator Control Center** UI with live category navigation, quick diagnostics, channel/role pickers, unverify/revoke modals, and backup triggers.
+- `/admin dashboard` — Launches the rich interactive **TARVeri Administrator Control Center** UI with live category navigation, quick diagnostics, channel/role pickers, email toggle, unverify/revoke modals, and backup triggers.
 - `/admin stats` — View student verification numbers, alumni metrics, and faculty distribution.
+- `/admin email_verification [enabled]` — Enable or disable mandatory institutional email OTP verification for the current server.
+- `/admin email_stats` — View server-level and global institutional email verification rates and opt-in statistics.
 - `/admin diagnose` — Run self-healing diagnostics, check role hierarchy, restore SRC roles, and reconcile missing member/alumni roles.
 - `/admin backfill_roles [default_campus] [default_level] [all_servers]` — Batch sync and assign missing branch campus and study level roles to all verified members.
 - `/admin unverify @user [reason]` — Unlink student ID and strip faculty roles across mutual servers.

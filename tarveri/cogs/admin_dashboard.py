@@ -232,7 +232,7 @@ class ChannelSelectComponent(ui.ChannelSelect):
     async def callback(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not self.values:
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         selected_ch = self.values[0]
         channel_id = selected_ch.id
 
@@ -310,7 +310,7 @@ class RoleSelectComponent(ui.RoleSelect):
     async def callback(self, interaction: discord.Interaction) -> None:
         if not interaction.guild or not self.values:
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         selected_role = self.values[0]
         await self.cog.db.set_guild_admin_role(interaction.guild.id, selected_role.name)
 
@@ -527,13 +527,15 @@ class AdminDashboardView(ui.View):
             self.add_item(btn_resync)
 
     async def refresh_view(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
         self._rebuild_components()
         embed = await self.build_current_embed(interaction.guild)
         await self.update_message(interaction, embed=embed)
 
     async def update_message(self, interaction: discord.Interaction, embed: discord.Embed) -> None:
-        await interaction.edit_original_response(embed=embed, view=self)
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.edit_original_response(embed=embed, view=self)
 
     async def build_current_embed(self, guild: discord.Guild | None) -> discord.Embed:
         if self.current_category == "overview":
@@ -841,7 +843,7 @@ class AdminDashboardView(ui.View):
     async def _on_run_diagnostics_now(self, interaction: discord.Interaction) -> None:
         if not interaction.guild:
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         guild = interaction.guild
 
         src_stats = await self.cog.service.restore_src_roles(guild)
@@ -890,7 +892,6 @@ class AdminDashboardView(ui.View):
         await interaction.response.send_modal(modal)
 
     async def _on_set_admin_role_clicked(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
         self.clear_items()
         self.add_item(AdminCategorySelect(self))
         self.add_item(RoleSelectComponent(self.cog, self))
@@ -899,7 +900,6 @@ class AdminDashboardView(ui.View):
         await self.update_message(interaction, embed=embed)
 
     async def _show_channel_select(self, interaction: discord.Interaction, config_type: str) -> None:
-        await interaction.response.defer(ephemeral=True)
         self.clear_items()
         self.add_item(AdminCategorySelect(self))
         self.add_item(ChannelSelectComponent(self.cog, self, config_type))
@@ -915,7 +915,7 @@ class AdminDashboardView(ui.View):
         if not interaction.guild:
             await interaction.response.send_message("❌ Server context required.", ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         curr = await self.cog.db.is_guild_email_verification_enabled(interaction.guild.id)
         new_val = not curr
         await self.cog.db.set_guild_email_verification(interaction.guild.id, new_val)
@@ -935,7 +935,7 @@ class AdminDashboardView(ui.View):
     async def _on_reset_config_clicked(self, interaction: discord.Interaction) -> None:
         if not interaction.guild:
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         await self.cog.db.set_guild_welcome_channel(interaction.guild.id, None)
         await self.cog.db.set_guild_help_channel(interaction.guild.id, None)
         await self.cog.db.set_guild_review_channel(interaction.guild.id, None)
@@ -955,14 +955,14 @@ class AdminDashboardView(ui.View):
         await self.refresh_view(interaction)
 
     async def _on_create_backup_clicked(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         backup_path = await self.cog.db.create_backup()
         embed = await self.build_backup_embed(interaction.guild)
         embed.description = f"✅ **Database snapshot created successfully:** `{backup_path}`"
         await self.update_message(interaction, embed=embed)
 
     async def _on_restore_settings_clicked(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         restored = await self.cog.db.restore_latest_guild_settings()
         embed = await self.build_backup_embed(interaction.guild)
         if restored:
@@ -972,7 +972,7 @@ class AdminDashboardView(ui.View):
         await self.update_message(interaction, embed=embed)
 
     async def _on_archive_logs_clicked(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         logs_dir = getattr(self.cog.bot, "settings", None) and self.cog.bot.settings.logs_dir or "logs"
         tz_name = getattr(self.cog.bot, "settings", None) and self.cog.bot.settings.timezone_name or "Asia/Kuala_Lumpur"
         results = archive_old_logs(logs_dir=logs_dir, older_than_days=10, tz_name=tz_name)
@@ -1047,14 +1047,14 @@ class AdminDashboardView(ui.View):
         schedule_ttl_delete(interaction, delay=60.0)
 
     async def _on_check_updates_clicked(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         embed = await self.build_updates_embed(interaction.guild)
         await self.update_message(interaction, embed=embed)
 
     async def _on_resync_clicked(self, interaction: discord.Interaction) -> None:
         if not interaction.guild:
             return
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
         guild = interaction.guild
         reconcile_stats = await self.cog.service.reconcile_verified_members(guild)
         alumni_stats = await self.cog.service.reconcile_alumni_members(guild)

@@ -60,18 +60,29 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 ## Usage
 
 ### Students & Members
-* **`/verify [student_id] [expiry_date]`** — Opens a private modal popup (or verifies directly via slash arguments).
+* **`/verify [student_id] [expiry_date] [email]`** — Opens a private modal popup (or verifies directly via slash arguments).
+  * *Institutional Email OTP Verification*: On opted-in servers, generates a 6-digit one-time code to your official `@student.tarc.edu.my` or `@tarc.edu.my` inbox with dynamic Discord countdown timers (`<t:{expire_ts}:R>`).
   * *Flexible Date Support*: Accepts `DD/MM/YYYY`, `DD-MM-YYYY`, `DD.MM.YYYY`, `DD/MM/YY`, `MM/YY`, `MM/YYYY`, `YYYY-MM-DD`, or `DD Month YYYY`.
   * *8-Year Anomaly Guard*: Ambiguous entries (like `06/07` for 6th July interpreted as June 2007) or dates exceeding $\pm 8$ years prompt an interactive confirmation view (`[Confirm Date]`, `[Re-enter Date]`, `[Auto-Calculate]`) with a 1-click re-input modal to prevent false alumni triggers.
   * *Zero-Effort Card Expiry*: Leaving the expiry date blank automatically estimates card validity based on intake year and study level (`F`: +1y, `D`: +2y, `R`: +3y, `P`: +2y).
   * *Smart Academic Transition*: Progressing to Degree or Masters? Simply enter your new Student ID to atomically update your study level and roles with full audit history.
   * *Real-Time Lifecycle Detection*: If your intake year or card expiry date is in the past, TARVeri automatically attaches an interactive resolution menu (🎓 Graduated Alumni / 📚 Further Studies / ⏳ Extend Expiry).
+* **`/otp <code>`** — Direct slash command to verify your 6-digit email OTP verification code immediately.
 * **Direct Messages (DMs)** — Send your student ID (e.g. `24WMR12345` or `24WMR12345 10/27`) directly to the bot for private verification.
 * **`/graduate [year] [programme]`** — Instant alumni claim for verified students. Discovers existing server `Alumni` roles or provisions the official `#D4AF37` role, updating your Digital Campus Card to Alumni status.
+* **`/dropout`** — Voluntarily withdraw student verification and release roles with an explicit confirmation phrase (`"Yes, I am dropping out."`).
 * **`/card [member] [hidden]`** — Generate and share high-DPI digital student/guest/alumni campus ID cards rendered with glassmorphism design, verification checkmarks, and achievement badges (`public` by default, or `hidden: True`).
 * **Context Menu App**: Right-click (or long-press) any member $\to$ **Apps** $\to$ **"View Campus Card"**.
 * **`/referral generate [ttl_hours]`** — Verified students generate a single-use guest referral code for friends (max 3 active).
 * **`/referral list`** — View active and past generated referral codes.
+
+### 📧 Institutional Email Verification & Security
+* **2-Factor Email OTP Verification**: Verifies ownership of official TARUMT institutional mailboxes (`<abbr>-<branch><fac><intake>@student.tarc.edu.my`, e.g. `yaplz-wm23@student.tarc.edu.my` or `@tarc.edu.my`).
+* **AES-256 Symmetric Encryption at Rest**: Student email addresses are encrypted with Fernet AES-256 authenticated encryption before persisting to SQLite.
+* **HMAC-SHA256 Blind Indexing**: Uses deterministic salted blind hashes (`student_email_hash`) to enforce 1-to-1 account binding and prevent cross-account duplicate email usage without storing plaintext emails.
+* **Primary & Fallback Dual-SMTP Engine**: Dispatches emails via high-deliverability primary relay (e.g. SMTP2GO) with seamless automatic failover to a direct secondary SMTP server on quota depletion or network timeout.
+* **Smart Cooldown on Email Typo Corrections**: Enforces a 60-second rate limit when resending to the same address, while allowing immediate code dispatch when a user corrects a mistyped email.
+* **Per-Server Opt-In / Opt-Out & Quota Protection**: Server administrators can mandate email verification per-server (`/admin email_verification enabled:True|False`). When `TARVERI_EMAIL_RESTRICT_SMTP_USAGE=true` (default), opted-out servers verify students immediately without wasting SMTP quota, while still storing encrypted emails at rest.
 
 ### 🎓 Academic Lifecycle & Graduation Watchdog Engine
 * **Automated Expiry Sweeps (`GraduationWatchdogService`)**: Periodic background checks (every 24h) monitor card validity and send polite lifecycle resolution DMs with a 7-day cooldown.
@@ -110,8 +121,10 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 * **Smart Role Help Tips**: When an unverified user asks questions like *"How to get role"* or *"nak verify"* in support channels, the bot replies with permanent tips explaining how to verify.
 
 ### 🛡️ Administrator Control Center (`/admin`)
-* **`/admin dashboard`** — Opens the rich interactive **TARVeri Administrator Control Center** UI (with category navigation dropdowns, diagnostics execution, channel/role pickers, unverify/revoke modals, and one-click backups).
+* **`/admin dashboard`** — Opens the rich interactive **TARVeri Administrator Control Center** UI (with category navigation dropdowns, live telemetry, diagnostics execution, channel/role pickers, email toggle, unverify/revoke modals, and one-click backups).
 * **`/admin stats`** — View student verification numbers, alumni metrics, faculty distribution percentages, and server health.
+* **`/admin email_verification [enabled]`** — Enable or disable mandatory institutional email OTP verification for the current server.
+* **`/admin email_stats`** — View server-level and global institutional email verification rates and opt-in statistics.
 * **`/admin diagnose`** — Run role hierarchy diagnostics, duplicate role reconciliation, and auto-heal missing faculty/alumni/SRC roles.
 * **`/admin backfill_roles [default_campus] [default_level] [all_servers]`** — Batch sync and assign missing branch campus and study level roles to all verified members.
 * **`/admin unverify @user [reason]`** — Unlink a student ID and remove their faculty/alumni roles across mutual servers.
