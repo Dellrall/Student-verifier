@@ -782,14 +782,14 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
                 schedule_ttl_delete(interaction, delay=30.0)
                 return
 
-            ttl_min = max(1, self.email_service.settings.email_otp_ttl_seconds // 60)
+            expire_ts = int(time.time()) + int(self.email_service.settings.email_otp_ttl_seconds)
             embed = discord.Embed(
                 title="📬 Verification Code Sent!",
                 description=(
                     f"A 6-digit one-time code has been sent to **`{mask_email(student_email_val)}`**.\n\n"
-                    "1. Open your student email inbox (check Spam/Junk if not found in 10 seconds).\n"
-                    "2. Click **`🔢 Enter Verification Code`** below to submit your 6-digit code.\n\n"
-                    f"⏱️ This code will expire in **{ttl_min} minutes**."
+                    "1. Open your student email inbox (check Spam/Junk if not found within 10 seconds).\n"
+                    "2. Click **`🔢 Enter Verification Code`** below or run `/otp <code>` to submit your code.\n\n"
+                    f"⏱️ **Code expires:** <t:{expire_ts}:R> (<t:{expire_ts}:t>)"
                 ),
                 color=discord.Color.blue(),
             )
@@ -926,9 +926,11 @@ class OtpVerificationPromptView(discord.ui.View):
             card_expiry_date=pending.card_expiry_date,
         )
         if res["success"]:
+            expire_ts = int(time.time()) + int(self.email_service.settings.email_otp_ttl_seconds)
             await interaction.followup.send(
-                f"📬 A fresh 6-digit verification code has been dispatched to **`{mask_email(pending.email)}`**.\n"
-                f"Please check your inbox and click **Enter Verification Code**.",
+                f"📬 A fresh 6-digit verification code has been dispatched to **`{mask_email(pending.email)}`**.\n\n"
+                f"⏱️ **Code expires:** <t:{expire_ts}:R> (<t:{expire_ts}:t>)\n"
+                f"Please check your inbox and click **Enter Verification Code** below or run `/otp <code>`.",
                 ephemeral=True,
             )
         else:
@@ -1062,14 +1064,14 @@ class VerificationCog(commands.Cog, name="Verification"):
                     schedule_ttl_delete(interaction, delay=30.0)
                     return
 
-                ttl_min = max(1, self.email_service.settings.email_otp_ttl_seconds // 60)
+                expire_ts = int(time.time()) + int(self.email_service.settings.email_otp_ttl_seconds)
                 embed = discord.Embed(
                     title="📬 Verification Code Sent!",
                     description=(
                         f"A 6-digit one-time code has been sent to **`{mask_email(raw_email)}`**.\n\n"
-                        "1. Open your student email inbox (check Spam/Junk if not found in 10 seconds).\n"
-                        "2. Click **`🔢 Enter Verification Code`** below to submit your 6-digit code.\n\n"
-                        f"⏱️ This code will expire in **{ttl_min} minutes**."
+                        "1. Open your student email inbox (check Spam/Junk if not found within 10 seconds).\n"
+                        "2. Click **`🔢 Enter Verification Code`** below or run `/otp <code>` to submit your code.\n\n"
+                        f"⏱️ **Code expires:** <t:{expire_ts}:R> (<t:{expire_ts}:t>)"
                     ),
                     color=discord.Color.blue(),
                 )
@@ -1154,6 +1156,72 @@ class VerificationCog(commands.Cog, name="Verification"):
         await interaction.response.send_modal(
             VerificationModal(self.service, self.email_service, require_email=guild_email_required)
         )
+
+    @app_commands.command(
+        name="otp",
+        description="Submit your 6-digit email verification code to complete student verification.",
+    )
+    @app_commands.describe(
+        code="The 6-digit one-time verification code sent to your student email inbox.",
+    )
+    async def otp_slash(
+        self,
+        interaction: discord.Interaction,
+        code: str,
+    ) -> None:
+        """Slash command to verify OTP code directly."""
+        if not self.email_service or not getattr(self.email_service, "is_enabled", False):
+            await interaction.response.send_message(
+                "❌ Email verification is currently disabled.",
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=30.0)
+            return
+
+        # Check if server opted in or user has a pending verification code
+        if interaction.guild and hasattr(interaction.guild, "id") and isinstance(interaction.guild.id, int) and self.db:
+            guild_email_opted_in = await self.db.is_guild_email_verification_enabled(interaction.guild.id)
+            pending = self.email_service.get_pending_otp(interaction.user.id)
+            if not guild_email_opted_in and not pending:
+                await interaction.response.send_message(
+                    "ℹ️ This server has not mandated email verification. You can verify directly with `/verify`.",
+                    ephemeral=True,
+                )
+                schedule_ttl_delete(interaction, delay=30.0)
+                return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        otp_val = code.strip()
+        result = await self.email_service.verify_otp(interaction.user.id, otp_val)
+        if not result["success"]:
+            view = OtpVerificationPromptView(self.service, self.email_service)
+            await interaction.followup.send(
+                f"{result['error']}",
+                view=view,
+                ephemeral=True,
+            )
+            schedule_ttl_delete(interaction, delay=120.0)
+            return
+
+        pending = result["pending"]
+        response_text = await self.service.perform_verification(
+            interaction.user,
+            pending.student_id,
+            raw_expiry_date=pending.card_expiry_date,
+            raw_email=pending.email,
+        )
+
+        embed = discord.Embed(
+            title="✅ Institutional Email & Student Verified!",
+            description=(
+                f"🎉 **{interaction.user.mention}** has verified their institutional email (**`{mask_email(pending.email)}`**).\n\n"
+                f"{response_text}"
+            ),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(text="TARVeri Secure Email OTP • Authenticated & Encrypted at Rest")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        schedule_ttl_delete(interaction, delay=120.0)
 
     @app_commands.command(
         name="graduate",

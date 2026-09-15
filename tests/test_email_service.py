@@ -451,7 +451,72 @@ async def test_verification_modal_guild_opt_in_and_opt_out(tmp_path):
     interaction.followup.send.assert_called_once()
     embed = interaction.followup.send.call_args[1]["embed"]
     assert "Verification Code Sent!" in embed.title
+    assert "<t:" in embed.description
+    assert ":R>" in embed.description
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_otp_slash_command_flow(tmp_path):
+    from tarveri.cogs.verification_cog import VerificationCog
+
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        bot_token="fake_token",
+        id_hash_secret="fake_secret",
+        enable_email_verification=True,
+        email_encryption_key=key,
+    )
+    db = Database(str(tmp_path / "otp_slash.db"))
+    await db.connect()
+
+    bot = MagicMock()
+    email_svc = EmailService(settings, mock_smtp=True)
+    service = VerificationService(bot, db, "secret", RateLimiter(), email_service=email_svc)
+    cog = VerificationCog(bot, db, service, RateLimiter(), email_service=email_svc)
+
+    user_id = 998811
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 12345
+    guild.name = "Test Guild"
+
+    member = MagicMock(spec=discord.Member)
+    member.id = user_id
+    member.mention = f"<@{user_id}>"
+
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.guild = guild
+    interaction.user = member
+    interaction.response.defer = AsyncMock()
+    interaction.response.send_message = AsyncMock()
+    interaction.followup.send = AsyncMock()
+
+    # 1. Running /otp without any pending OTP on an opt-out server
+    await cog.otp_slash.callback(cog, interaction, code="123456")
+    interaction.response.send_message.assert_called_once()
+    assert "This server has not mandated email verification" in interaction.response.send_message.call_args[0][0]
+
+    # 2. Generate OTP for user
+    res = await email_svc.generate_and_send_otp(user_id, "24WMD07777", "24wmd07777@student.tarc.edu.my", server_name="Test Guild")
+    otp_code = email_svc.sent_emails[0]["otp"]
+
+    # 3. Invalid OTP submission
+    interaction.response.send_message.reset_mock()
+    interaction.followup.send.reset_mock()
+    await cog.otp_slash.callback(cog, interaction, code="000000")
+    interaction.followup.send.assert_called_once()
+    assert "Incorrect verification code" in interaction.followup.send.call_args[0][0]
+
+    # 4. Valid OTP submission
+    with patch.object(service, "perform_verification", return_value="✅ Verified successfully"):
+        interaction.followup.send.reset_mock()
+        await cog.otp_slash.callback(cog, interaction, code=otp_code)
+        interaction.followup.send.assert_called_once()
+        embed = interaction.followup.send.call_args[1]["embed"]
+        assert "Institutional Email & Student Verified!" in embed.title
+
+    await db.close()
+
 
 

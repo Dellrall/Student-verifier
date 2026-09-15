@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 import logging
+import time
 from typing import Any
 
 import discord
@@ -237,14 +238,14 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
                 schedule_ttl_delete(interaction, delay=30.0)
                 return
 
-            ttl_min = max(1, self.email_service.settings.email_otp_ttl_seconds // 60)
+            expire_ts = int(time.time()) + int(self.email_service.settings.email_otp_ttl_seconds)
             embed = discord.Embed(
                 title="📬 Verification Code Sent!",
                 description=(
                     f"A 6-digit one-time code has been sent to **`{mask_email(student_email_val)}`**.\n\n"
-                    "1. Open your student email inbox (check Spam/Junk if not found in 10 seconds).\n"
-                    "2. Click **`🔢 Enter Verification Code`** below to submit your 6-digit code.\n\n"
-                    f"⏱️ This code will expire in **{ttl_min} minutes**."
+                    "1. Open your student email inbox (check Spam/Junk if not found within 10 seconds).\n"
+                    "2. Click **`🔢 Enter Verification Code`** below or use `/otp <code>` to submit your 6-digit code.\n\n"
+                    f"⏱️ **Code expires:** <t:{expire_ts}:R> (<t:{expire_ts}:t>)"
                 ),
                 color=discord.Color.blue(),
             )
