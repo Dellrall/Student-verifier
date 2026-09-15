@@ -638,7 +638,7 @@ class Settings:
             os.getenv("TARVERI_SMTP_FROM_NAME")
             or os.getenv("SMTP_FROM_NAME")
             or "TARVeri Student Verification"
-        ).strip()
+        ).strip().strip('"').strip("'")
 
         smtp_tls_raw = (
             os.getenv("TARVERI_SMTP_USE_TLS")
@@ -684,7 +684,7 @@ class Settings:
             os.getenv("TARVERI_SMTP_FALLBACK_FROM_NAME")
             or os.getenv("SMTP_FALLBACK_FROM_NAME")
             or ""
-        ).strip()
+        ).strip().strip('"').strip("'")
 
         smtp_fallback_tls_raw = (
             os.getenv("TARVERI_SMTP_FALLBACK_USE_TLS")

@@ -11,6 +11,7 @@ import secrets
 import smtplib
 import time
 from dataclasses import dataclass
+from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -265,102 +266,63 @@ class EmailService:
         )
 
     def _render_html_template(self, otp_code: str, server_name: str, ttl_minutes: int) -> str:
-        """Renders modern minimalist TARUMT-branded HTML email for OTP verification."""
+        """Renders ultra-clean, minimalist TARUMT verification email."""
         return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <title>TARVeri Verification Code</title>
+    <title>TARVeri Code</title>
 </head>
-<body style="margin: 0; padding: 0; background-color: #F4F6F9; font-family: 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #1F2937;">
-    <!-- Outer Container -->
-    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #F4F6F9; padding: 48px 12px;">
+<body style="margin: 0; padding: 0; background-color: #F8FAFC; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #0F172A;">
+    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #F8FAFC; padding: 40px 12px;">
         <tr>
             <td align="center">
-                <!-- Main Card (Max Width 500px for focused readability) -->
-                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 480px; background-color: #FFFFFF; border-radius: 16px; border: 1px solid #E5E7EB; box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06); overflow: hidden;">
+                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 440px; background-color: #FFFFFF; border-radius: 12px; border: 1px solid #E2E8F0; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04); overflow: hidden;">
                     
-                    <!-- Top Minimalist Brand Stripe (TARUMT Crimson & Deep Navy) -->
+                    <!-- Subtle Accent Line -->
                     <tr>
-                        <td height="5" style="background: linear-gradient(90deg, #C8102E 0%, #D4AF37 50%, #002B49 100%); line-height: 5px; font-size: 1px;">&nbsp;</td>
+                        <td height="4" style="background-color: #C8102E; line-height: 4px; font-size: 1px;">&nbsp;</td>
                     </tr>
 
-                    <!-- Header & Branding -->
+                    <!-- Card Body -->
                     <tr>
-                        <td style="padding: 36px 36px 20px 36px;">
-                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
-                                <tr>
-                                    <td>
-                                        <!-- Logo / Crest Icon & Brand Title -->
-                                        <div style="display: inline-block; vertical-align: middle; margin-right: 10px;">
-                                            <span style="font-size: 26px; line-height: 26px;">🎓</span>
-                                        </div>
-                                        <div style="display: inline-block; vertical-align: middle;">
-                                            <span style="font-size: 18px; font-weight: 800; color: #002B49; letter-spacing: -0.2px;">TARUMT</span>
-                                            <span style="font-size: 14px; font-weight: 500; color: #6B7280; margin-left: 6px;">· TARVeri</span>
-                                        </div>
-                                    </td>
-                                    <td align="right">
-                                        <!-- Minimal Pill Badge -->
-                                        <span style="display: inline-block; background-color: #FEF2F2; color: #C8102E; border: 1px solid #FEE2E2; border-radius: 9999px; padding: 4px 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
-                                            Verification
-                                        </span>
-                                    </td>
-                                </tr>
-                            </table>
-                        </td>
-                    </tr>
+                        <td style="padding: 32px 32px 28px 32px;">
+                            <!-- University Header -->
+                            <div style="margin-bottom: 24px;">
+                                <span style="font-size: 16px; font-weight: 800; color: #0F172A; letter-spacing: 0.5px;">TARUMT</span>
+                                <span style="font-size: 13px; font-weight: 500; color: #64748B; margin-left: 4px;">Student Verification</span>
+                            </div>
 
-                    <!-- Body Content -->
-                    <tr>
-                        <td style="padding: 0 36px 24px 36px;">
-                            <!-- Headline -->
-                            <h1 style="margin: 0 0 10px 0; font-size: 22px; font-weight: 700; color: #111827; letter-spacing: -0.4px;">
-                                Your verification code
+                            <h1 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700; color: #0F172A; letter-spacing: -0.2px;">
+                                Verification code
                             </h1>
-                            <p style="margin: 0 0 24px 0; font-size: 14px; line-height: 22px; color: #4B5563;">
-                                Use this code to verify your student status on <strong style="color: #111827;">{server_name}</strong> and unlock your faculty roles:
+                            <p style="margin: 0 0 20px 0; font-size: 14px; line-height: 20px; color: #475569;">
+                                Enter this code to verify your student status on <strong>{server_name}</strong>:
                             </p>
 
-                            <!-- Modern Minimalist OTP Hero Box -->
-                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 24px;">
+                            <!-- Modern OTP Box -->
+                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 20px;">
                                 <tr>
-                                    <td align="center" style="background-color: #F8FAFC; border: 1.5px solid #E2E8F0; border-radius: 12px; padding: 22px 16px;">
-                                        <!-- OTP Display -->
-                                        <div style="font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace; font-size: 36px; font-weight: 800; letter-spacing: 10px; color: #C8102E; margin-left: 10px;">
+                                    <td align="center" style="background-color: #F1F5F9; border-radius: 8px; padding: 16px 20px;">
+                                        <div style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #C8102E; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
                                             {otp_code}
                                         </div>
-                                        <div style="margin-top: 8px; font-size: 12px; font-weight: 500; color: #64748B;">
-                                            ⏱️ Valid for <strong>{ttl_minutes} minutes</strong>
-                                        </div>
                                     </td>
                                 </tr>
                             </table>
 
-                            <!-- Subtle Security & Privacy Card -->
-                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #F9FAFB; border-radius: 10px; padding: 14px 16px;">
-                                <tr>
-                                    <td width="22" valign="top" style="font-size: 16px; line-height: 20px;">🔒</td>
-                                    <td style="padding-left: 8px;">
-                                        <p style="margin: 0; font-size: 12px; line-height: 18px; color: #6B7280;">
-                                            <strong>Security Notice:</strong> TARVeri or TARUMT staff will never ask for your code. If you didn't request this code, you can safely disregard this email.
-                                        </p>
-                                    </td>
-                                </tr>
-                            </table>
+                            <p style="margin: 0; font-size: 13px; color: #64748B;">
+                                This code expires in <strong>{ttl_minutes} minutes</strong>.
+                            </p>
                         </td>
                     </tr>
 
-                    <!-- Minimalist Footer -->
+                    <!-- Minimal Footer -->
                     <tr>
-                        <td style="padding: 24px 36px 32px 36px; border-top: 1px solid #F3F4F6; background-color: #FAFAFA; text-align: center;">
-                            <p style="margin: 0 0 6px 0; font-size: 12px; font-weight: 600; color: #4B5563;">
-                                Tunku Abdul Rahman University of Management and Technology
-                            </p>
-                            <p style="margin: 0; font-size: 11px; line-height: 16px; color: #9CA3AF;">
-                                TARVeri Automated Student & Guest Verification · AES-256 Encrypted
+                        <td style="padding: 16px 32px; background-color: #F8FAFC; border-top: 1px solid #E2E8F0;">
+                            <p style="margin: 0; font-size: 11px; line-height: 16px; color: #94A3B8;">
+                                If you did not request this code, you can safely ignore this email.
                             </p>
                         </td>
                     </tr>
@@ -390,10 +352,15 @@ class EmailService:
         """Transmits an email to a specific SMTP endpoint. Returns (success, error_message)."""
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"{otp_code} is your TARVeri verification code"
-        msg["From"] = email.utils.formataddr((from_name, from_email))
-        msg["To"] = to_email
+        clean_name = (from_name or "").strip().strip('"').strip("'")
+        clean_from_email = (from_email or "").strip().strip('"').strip("'")
+        if clean_name:
+            msg["From"] = email.utils.formataddr((str(Header(clean_name, "utf-8")), clean_from_email))
+        else:
+            msg["From"] = clean_from_email
+        msg["To"] = to_email.strip()
         msg["Date"] = email.utils.formatdate(localtime=True)
-        domain = from_email.split("@")[-1] if "@" in from_email else "tarveri.local"
+        domain = clean_from_email.split("@")[-1] if "@" in clean_from_email else "tarveri.local"
         msg["Message-ID"] = email.utils.make_msgid(domain=domain)
 
         text_content = (

@@ -1343,8 +1343,8 @@ class VerificationCog(commands.Cog, name="Verification"):
 
         # Rate limit tips per user (60-second cooldown) to avoid spamming chat
         now = time.monotonic()
-        last_time = self._tip_cooldowns.get(message.author.id, 0.0)
-        if now - last_time < 60.0:
+        last_time = self._tip_cooldowns.get(message.author.id)
+        if last_time is not None and (now - last_time < 60.0):
             return
         self._tip_cooldowns[message.author.id] = now
 
@@ -1509,9 +1509,9 @@ class VerificationCog(commands.Cog, name="Verification"):
             return
 
         now = time.monotonic()
-        last_time = self._lifecycle_cooldowns.get(message.author.id, 0.0)
+        last_time = self._lifecycle_cooldowns.get(message.author.id)
         # In-memory cooldown: 1 day per user session
-        if now - last_time < 86400.0:
+        if last_time is not None and (now - last_time < 86400.0):
             return
 
         details = await self.db.get_verification_details(message.author.id)
