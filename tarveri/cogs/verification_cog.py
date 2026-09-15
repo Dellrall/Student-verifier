@@ -786,10 +786,12 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
             embed = discord.Embed(
                 title="📬 Verification Code Sent!",
                 description=(
-                    f"A 6-digit one-time code has been sent to **`{mask_email(student_email_val)}`**.\n\n"
-                    "1. Open your student email inbox (check Spam/Junk if not found within 10 seconds).\n"
-                    "2. Click **`🔢 Enter Verification Code`** below or run `/otp <code>` to submit your code.\n\n"
-                    f"⏱️ **Code expires:** <t:{expire_ts}:R> (<t:{expire_ts}:t>)"
+                    f"A 6-digit one-time verification code has been dispatched to:\n"
+                    f"👉 `{mask_email(student_email_val)}`\n\n"
+                    "**Next Steps:**\n"
+                    "1️⃣ Check your student email inbox *(or Spam/Junk folder)*.\n"
+                    "2️⃣ Click **Enter Verification Code** below or type `/otp <code>`.\n\n"
+                    f"⏱️ **Code expires:** <t:{expire_ts}:R> *(at <t:{expire_ts}:t>)*"
                 ),
                 color=discord.Color.blue(),
             )
@@ -867,7 +869,7 @@ class StudentOtpModal(discord.ui.Modal, title="🔢 Enter Verification Code"):
         embed = discord.Embed(
             title="✅ Institutional Email & Student Verified!",
             description=(
-                f"🎉 **{interaction.user.mention}** has verified their institutional email (**`{mask_email(pending.email)}`**).\n\n"
+                f"🎉 **{interaction.user.mention}** has verified their institutional email (`{mask_email(pending.email)}`).\n\n"
                 f"{response_text}"
             ),
             color=discord.Color.green(),
@@ -927,10 +929,21 @@ class OtpVerificationPromptView(discord.ui.View):
         )
         if res["success"]:
             expire_ts = int(time.time()) + int(self.email_service.settings.email_otp_ttl_seconds)
+            embed = discord.Embed(
+                title="📬 Fresh Verification Code Sent!",
+                description=(
+                    f"A new 6-digit one-time verification code has been dispatched to:\n"
+                    f"👉 `{mask_email(pending.email)}`\n\n"
+                    "**Next Steps:**\n"
+                    "1️⃣ Check your student email inbox *(or Spam/Junk folder)*.\n"
+                    "2️⃣ Click **Enter Verification Code** below or type `/otp <code>`.\n\n"
+                    f"⏱️ **Code expires:** <t:{expire_ts}:R> *(at <t:{expire_ts}:t>)*"
+                ),
+                color=discord.Color.blue(),
+            )
+            embed.set_footer(text="TARVeri Email Security • AES-256 Encrypted at Rest")
             await interaction.followup.send(
-                f"📬 A fresh 6-digit verification code has been dispatched to **`{mask_email(pending.email)}`**.\n\n"
-                f"⏱️ **Code expires:** <t:{expire_ts}:R> (<t:{expire_ts}:t>)\n"
-                f"Please check your inbox and click **Enter Verification Code** below or run `/otp <code>`.",
+                embed=embed,
                 ephemeral=True,
             )
         else:
@@ -1068,10 +1081,12 @@ class VerificationCog(commands.Cog, name="Verification"):
                 embed = discord.Embed(
                     title="📬 Verification Code Sent!",
                     description=(
-                        f"A 6-digit one-time code has been sent to **`{mask_email(raw_email)}`**.\n\n"
-                        "1. Open your student email inbox (check Spam/Junk if not found within 10 seconds).\n"
-                        "2. Click **`🔢 Enter Verification Code`** below or run `/otp <code>` to submit your code.\n\n"
-                        f"⏱️ **Code expires:** <t:{expire_ts}:R> (<t:{expire_ts}:t>)"
+                        f"A 6-digit one-time verification code has been dispatched to:\n"
+                        f"👉 `{mask_email(raw_email)}`\n\n"
+                        "**Next Steps:**\n"
+                        "1️⃣ Check your student email inbox *(or Spam/Junk folder)*.\n"
+                        "2️⃣ Click **Enter Verification Code** below or type `/otp <code>`.\n\n"
+                        f"⏱️ **Code expires:** <t:{expire_ts}:R> *(at <t:{expire_ts}:t>)*"
                     ),
                     color=discord.Color.blue(),
                 )
@@ -1214,7 +1229,7 @@ class VerificationCog(commands.Cog, name="Verification"):
         embed = discord.Embed(
             title="✅ Institutional Email & Student Verified!",
             description=(
-                f"🎉 **{interaction.user.mention}** has verified their institutional email (**`{mask_email(pending.email)}`**).\n\n"
+                f"🎉 **{interaction.user.mention}** has verified their institutional email (`{mask_email(pending.email)}`).\n\n"
                 f"{response_text}"
             ),
             color=discord.Color.green(),

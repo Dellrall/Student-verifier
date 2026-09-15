@@ -242,10 +242,12 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
             embed = discord.Embed(
                 title="📬 Verification Code Sent!",
                 description=(
-                    f"A 6-digit one-time code has been sent to **`{mask_email(student_email_val)}`**.\n\n"
-                    "1. Open your student email inbox (check Spam/Junk if not found within 10 seconds).\n"
-                    "2. Click **`🔢 Enter Verification Code`** below or use `/otp <code>` to submit your 6-digit code.\n\n"
-                    f"⏱️ **Code expires:** <t:{expire_ts}:R> (<t:{expire_ts}:t>)"
+                    f"A 6-digit one-time verification code has been dispatched to:\n"
+                    f"👉 `{mask_email(student_email_val)}`\n\n"
+                    "**Next Steps:**\n"
+                    "1️⃣ Check your student email inbox *(or Spam/Junk folder)*.\n"
+                    "2️⃣ Click **Enter Verification Code** below or type `/otp <code>`.\n\n"
+                    f"⏱️ **Code expires:** <t:{expire_ts}:R> *(at <t:{expire_ts}:t>)*"
                 ),
                 color=discord.Color.blue(),
             )
