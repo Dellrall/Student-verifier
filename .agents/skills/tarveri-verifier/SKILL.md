@@ -626,6 +626,14 @@ echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is li
   3. Supports both STARTTLS (port 587) and SSL/TLS (port 465) on direct mail servers.
   4. Delivers the OTP verification email seamlessly without user disruption.
 
+### 5. Pre-Flight Validation & Alumni Email Confirmation Gate
+- **Pre-Flight Validation Pipeline (`validate_preflight_for_otp`)**:
+  - Validates user rate limits, Student ID syntax, and duplicate Student ID/Email HMAC blind index hashes in SQLite **before** dispatching to SMTP.
+  - Rejects typos, wrong domains, and duplicate accounts with zero wasted SMTP emails.
+- **Alumni Email Confirmation Gate (`AlumniEmailConfirmationView`)**:
+  - Automatically intercepts verification requests where the student ID's card expiry is dynamically in the past (`iso_expiry < today_iso`).
+  - Presents interactive options to verify directly as graduated alumni without email OTP (since university accounts are deactivated post-graduation), send OTP anyway, or enter a new student ID.
+
 ---
 
 ## 🎛️ Feature Flags & Operational Toggles Specification

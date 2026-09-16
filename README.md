@@ -81,7 +81,8 @@ To safely pull upstream updates with automatic database backup (10-file rotation
 * **AES-256 Symmetric Encryption at Rest**: Student email addresses are encrypted with Fernet AES-256 authenticated encryption before persisting to SQLite.
 * **HMAC-SHA256 Blind Indexing**: Uses deterministic salted blind hashes (`student_email_hash`) to enforce 1-to-1 account binding and prevent cross-account duplicate email usage without storing plaintext emails.
 * **Primary & Fallback Dual-SMTP Engine**: Dispatches emails via high-deliverability primary relay (e.g. SMTP2GO) with seamless automatic failover to a direct secondary SMTP server on quota depletion or network timeout.
-* **Smart Cooldown on Email Typo Corrections**: Enforces a 60-second rate limit when resending to the same address, while allowing immediate code dispatch when a user corrects a mistyped email.
+* **Pre-Flight Validation Pipeline**: Validates user rate limits, Student ID structure, and blind index duplicate checks (both Student ID and Email) **before** touching the SMTP relay, eliminating wasted quota on typos or duplicate attempts.
+* **Alumni Email Confirmation Gate**: Automatically intercepts graduated cohorts (where card expiry is dynamically in the past) before OTP dispatch, giving alumni the option to verify directly and claim their `TARUMT Alumni` role without being blocked by deactivated university inboxes.
 * **Per-Server Opt-In / Opt-Out & Quota Protection**: Server administrators can mandate email verification per-server (`/admin email_verification enabled:True|False`). When `TARVERI_EMAIL_RESTRICT_SMTP_USAGE=true` (default), opted-out servers verify students immediately without wasting SMTP quota, while still storing encrypted emails at rest.
 
 ### 🎓 Academic Lifecycle & Graduation Watchdog Engine
