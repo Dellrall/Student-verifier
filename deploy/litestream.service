@@ -1,0 +1,27 @@
+[Unit]
+Description=Litestream SQLite Continuous Cloud Replication
+After=network.target
+
+[Service]
+Type=simple
+# Replace 'username' and paths with your host server's user and directory
+# When running as a user service (~/.config/systemd/user/litestream.service),
+# User= is omitted and managed by systemctl --user.
+User=username
+WorkingDirectory=/opt/Student-verifier
+EnvironmentFile=/opt/Student-verifier/.env
+ExecStart=/usr/local/bin/litestream replicate -config /opt/Student-verifier/litestream.yml
+Restart=always
+RestartSec=5
+
+# Logging: Isolated in journalctl, view with 'journalctl -u litestream -f'
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

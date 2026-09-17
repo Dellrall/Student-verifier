@@ -2,7 +2,31 @@
 
 All notable changes to the **TARVeri** Discord Student & Guest Verification Bot are documented in this file.
 
-## [v2.4.1] — 2026-09-09 (Current)
+## [v2.5.0] — 2026-09-17 (Current)
+### ☁️ Continuous Cloud Replication & Litestream Integration
+* **Litestream SQLite Cloud Streaming**:
+  - Configured continuous frame-by-frame SQLite streaming to Cloudflare R2 / AWS S3 via `litestream.yml` (`sync-interval: 10s`, `retention: 720h`).
+  - Added multi-mode operational support: wrapped execution (`litestream replicate -log-level warn -exec "..."`), decoupled tmux execution, and dedicated systemd user service (`deploy/litestream.service`).
+  - Streamlined environment variable resolution compatible with Go `os.ExpandEnv`.
+
+### 🛡️ Storage Guard & Self-Healing Space Reclamation
+* **Automated Storage Monitoring (`StorageGuardService`)**:
+  - Added proactive disk and database footprint tracking (`tarveri.db`, `-wal`, `-shm`, `backups/`, `logs/`) against configurable limits (`TARVERI_MAX_STORAGE_MB`).
+  - Triggers real-time Sentry warnings at 80% and high-priority `StorageLimitExceededError` alerts at 100%.
+  - Executes automatic self-healing space recovery: WAL truncation (`PRAGMA wal_checkpoint(TRUNCATE)`), audit log pruning >30 days (`prune_audit_logs()`), and backup rotation.
+
+### 🧹 Architecture Refactoring & CI Automation
+* **Unified Role Management (`RoleManager`)**:
+  - Consolidated double-checked locking, cache lookups, Discord API fallbacks, atomic role creation, and audit logging into a single unified manager, eliminating ~500 lines of duplicate role logic across `VerificationService` and `GuestService`.
+* **Typed Environment Parsing (`Settings.from_env`)**:
+  - Refactored `tarveri/config.py` with typed helper utilities (`_env_str`, `_env_int`, `_env_bool`, `_env_optional_int`), reducing boilerplate by 75%.
+* **GitHub Actions Multi-Version CI Matrix**:
+  - Added `.github/workflows/ci.yml` running automated pytest suite across Python 3.11, 3.12, and 3.13.
+  - Expanded test coverage to **215 passing unit tests**.
+
+---
+
+## [v2.4.1] — 2026-09-09
 ### 🐛 Bug Fixes & Reliability Patches
 * **Direct Message Callable Prefix Compatibility**:
   - Fixed `TypeError` in `VerificationCog.on_message` when `command_prefix` is configured with a callable (e.g. `commands.when_mentioned_or("!")`) or tuple of prefixes.
