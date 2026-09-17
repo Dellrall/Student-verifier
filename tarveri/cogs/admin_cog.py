@@ -1542,11 +1542,51 @@ class AdminCog(commands.Cog, name="Admin"):
                     pass
 
             await interaction.followup.send(reply_msg, ephemeral=True)
-        else:
-            await interaction.followup.send(reply_msg, ephemeral=True)
-
         schedule_ttl_delete(interaction, delay=60.0)
+
+    # ==========================================
+    # 🚨 18. Sentry Telemetry Test Command
+    # ==========================================
+
+    @admin_group.command(
+        name="sentry_test",
+        description="Trigger a deliberate division by zero exception (1 / 0) to test Sentry telemetry.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def sentry_test(self, interaction: discord.Interaction) -> None:
+        """Triggers a deliberate ZeroDivisionError (1 / 0) to test Sentry crash reporting."""
+        if not self._check_admin(interaction):
+            await interaction.response.send_message(
+                "❌ You do not have permission to use this command.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            # Deliberate ZeroDivisionError (1 / 0) to test Sentry capture
+            _ = 1 / 0
+        except ZeroDivisionError as e:
+            logger.error(
+                f"🚨 Sentry test triggered by {interaction.user} (ID: {interaction.user.id}): {e}",
+                exc_info=True,
+            )
+            try:
+                import sentry_sdk
+                sentry_sdk.capture_exception(e)
+            except Exception:
+                pass
+
+            await interaction.followup.send(
+                "🚨 **Sentry Test Exception Dispatched!**\n\n"
+                "• **Exception**: `ZeroDivisionError: division by zero` (`1 / 0`)\n"
+                "• **Triggered By**: " + interaction.user.mention + "\n"
+                "• **Status**: Captured and transmitted to your configured Sentry project.\n\n"
+                "👉 Check your [Sentry Issues Dashboard](https://sentry.io) or your notification alerts!",
+                ephemeral=True,
+            )
 
 
 async def setup(bot: commands.Bot) -> None:
     pass
+
