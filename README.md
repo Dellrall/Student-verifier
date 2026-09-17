@@ -22,57 +22,65 @@ end
 
 subgraph group_discord["Discord boundary"]
   node_discord_api{{"Discord API & gateway<br/>external platform"}}
-  node_verification_cog["Verification cog<br/>Discord commands"]
   node_guest_cog["Guest cog<br/>Discord workflows<br/>[guest_cog.py]"]
+  node_verification_cog["Verification cog<br/>Discord commands"]
   node_admin_cog["Admin cog<br/>Discord commands<br/>[admin_cog.py]"]
   node_admin_dashboard["Admin dashboard<br/>admin UI<br/>[admin_dashboard.py]"]
-end
-
-subgraph group_domain["Domain services"]
-  node_verification_service["Verification service<br/>identity lifecycle"]
-  node_email_service["Email service<br/>OTP delivery<br/>[email_service.py]"]
-  node_guest_service["Guest service<br/>guest workflow<br/>[guest_service.py]"]
-  node_rate_limiter["Rate limiter<br/>abuse control<br/>[rate_limiter.py]"]
-  node_database[("SQLite system of record<br/>persistence<br/>[database.py]")]
-  node_log_service["Audit logging<br/>audit service<br/>[log_service.py]"]
-  node_smtp{{"SMTP relays<br/>external email"}}
 end
 
 subgraph group_operations["Operations"]
   node_watchdog["Graduation watchdog<br/>background service"]
   node_outage["Outage monitor<br/>background service<br/>[outage_service.py]"]
-  node_litestream["Litestream replication<br/>SQLite backup<br/>[litestream.yml]"]
-  node_systemd["System service<br/>deployment unit<br/>[tarveri.service]"]
-  node_updater["Update automation<br/>deployment script<br/>[update.sh]"]
   node_network{{"Network probes<br/>external connectivity"}}
+  node_litestream["Litestream replication<br/>SQLite backup<br/>[litestream.yml]"]
+  node_updater["Update automation<br/>deployment script<br/>[update.sh]"]
+  node_systemd["System service<br/>deployment unit<br/>[tarveri.service]"]
+end
+
+subgraph group_domain["Domain services"]
+  node_guest_service["Guest service<br/>guest workflow<br/>[guest_service.py]"]
+  node_rate_limiter["Rate limiter<br/>abuse control<br/>[rate_limiter.py]"]
+  node_verification_service["Verification service<br/>identity lifecycle"]
+  node_email_service["Email service<br/>OTP delivery<br/>[email_service.py]"]
+  node_log_service["Audit logging<br/>audit service<br/>[log_service.py]"]
+  node_smtp{{"SMTP relays<br/>external email"}}
+  node_database[("SQLite system of record<br/>persistence<br/>[database.py]")]
 end
 
 node_entry -->|"starts"| node_bot
-node_systemd -->|"runs"| node_entry
-node_bot -->|"registers"| node_verification_cog
+
 node_bot -->|"registers"| node_guest_cog
+node_bot -->|"registers"| node_verification_cog
 node_bot -->|"registers"| node_admin_cog
 node_bot -->|"starts"| node_watchdog
 node_bot -->|"starts"| node_outage
-node_discord_api -->|"interactions & events"| node_verification_cog
+
 node_discord_api -->|"interactions & events"| node_guest_cog
+node_discord_api -->|"interactions & events"| node_verification_cog
 node_discord_api -->|"commands"| node_admin_cog
-node_verification_cog -->|"verifies identities"| node_verification_service
-node_verification_cog -->|"checks limits"| node_rate_limiter
-node_guest_cog -->|"runs guest workflow"| node_guest_service
 node_admin_cog -->|"opens"| node_admin_dashboard
+
+node_guest_cog -->|"runs guest workflow"| node_guest_service
+node_verification_cog -->|"checks limits"| node_rate_limiter
+node_verification_cog -->|"verifies identities"| node_verification_service
 node_admin_dashboard -->|"diagnostics & operations"| node_database
-node_verification_service -->|"initiates OTP"| node_email_service
-node_verification_service -->|"identity state & roles"| node_database
+
+node_outage -->|"probes"| node_network
+node_updater -->|"updates service"| node_systemd
+node_systemd -->|"runs"| node_entry
+
 node_guest_service -->|"checks verified referrers"| node_verification_service
 node_guest_service -->|"tickets & guest state"| node_database
-node_email_service -->|"encrypted email & blind index"| node_database
-node_email_service -->|"sends OTP"| node_smtp
-node_log_service -->|"writes audit events"| node_database
 node_watchdog -->|"resolves expiry"| node_verification_service
-node_outage -->|"probes"| node_network
+
+node_verification_service -->|"initiates OTP"| node_email_service
+node_verification_service -->|"identity state & roles"| node_database
+
+node_email_service -->|"sends OTP"| node_smtp
+node_email_service -->|"encrypted email & blind index"| node_database
+
+node_log_service -->|"writes audit events"| node_database
 node_litestream -.->|"replicates"| node_database
-node_updater -->|"updates service"| node_systemd
 
 click node_entry "https://github.com/dellrall/student-verifier/blob/main/tarveri_bot.py"
 click node_bot "https://github.com/dellrall/student-verifier/blob/main/tarveri/bot.py"
