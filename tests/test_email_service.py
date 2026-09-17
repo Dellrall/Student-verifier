@@ -310,7 +310,8 @@ async def test_student_otp_modal_submission(tmp_path):
     await db.close()
 
 
-def test_email_service_smtp_fallback_on_primary_failure():
+@pytest.mark.asyncio
+async def test_email_service_smtp_fallback_on_primary_failure():
     key = Fernet.generate_key().decode()
     settings = Settings(
         bot_token="fake_token",
@@ -328,7 +329,7 @@ def test_email_service_smtp_fallback_on_primary_failure():
     )
     svc = EmailService(settings, mock_smtp=False)
 
-    def mock_endpoint(to_email, otp_code, server_name, ttl_minutes, host, port, user, password, from_email, from_name, use_tls, relay_label="SMTP"):
+    async def mock_endpoint(to_email, otp_code, server_name, ttl_minutes, host, port, user, password, from_email, from_name, use_tls, relay_label="SMTP"):
         if host == "mail.smtp2go.com":
             # Simulate SMTP2GO limit / quota exhausted error
             return False, "550 5.7.1 Daily message sending limit exceeded on SMTP2GO relay"
@@ -338,7 +339,7 @@ def test_email_service_smtp_fallback_on_primary_failure():
         return False, "Unknown host"
 
     with patch.object(svc, "_send_to_smtp_endpoint", side_effect=mock_endpoint) as mock_send:
-        success = svc._send_smtp_sync(
+        success = await svc._send_smtp_async(
             to_email="24wmd12345@student.tarc.edu.my",
             otp_code="123456",
             server_name="Test Server",
@@ -352,7 +353,51 @@ def test_email_service_smtp_fallback_on_primary_failure():
         assert mock_send.call_args_list[1].kwargs["host"] == "mail.direct-domain.com"
 
 
-def test_email_service_smtp_both_fail():
+@pytest.mark.asyncio
+async def test_email_service_circuit_breaker_trips_to_instant_fallback():
+    """Verifies circuit breaker trips after fail_max errors and immediately bypasses primary relay."""
+    key = Fernet.generate_key().decode()
+    settings = Settings(
+        bot_token="fake_token",
+        id_hash_secret="fake_secret",
+        enable_email_verification=True,
+        email_encryption_key=key,
+        smtp_host="mail.smtp2go.com",
+        smtp_fallback_host="mail.direct-domain.com",
+        circuit_breaker_fail_max=2,
+        circuit_breaker_reset_timeout=60,
+    )
+    svc = EmailService(settings, mock_smtp=False)
+
+    async def mock_endpoint(to_email, otp_code, server_name, ttl_minutes, host, port, user, password, from_email, from_name, use_tls, relay_label="SMTP"):
+        if host == "mail.smtp2go.com":
+            return False, "500 Server Error"
+        if host == "mail.direct-domain.com":
+            return True, None
+        return False, "Unknown host"
+
+    with patch.object(svc, "_send_to_smtp_endpoint", side_effect=mock_endpoint) as mock_send:
+        # Request 1: Primary fails -> Fallback succeeds (1 failure recorded)
+        r1 = await svc._send_smtp_async("u1@student.tarc.edu.my", "111111", "Server", 10)
+        assert r1 is True
+        assert svc._primary_breaker.current_state == "closed"
+        assert svc._primary_breaker.fail_count == 1
+
+        # Request 2: Primary fails -> Fallback succeeds (2 failures -> Breaker trips OPEN!)
+        r2 = await svc._send_smtp_async("u2@student.tarc.edu.my", "222222", "Server", 10)
+        assert r2 is True
+        assert svc._primary_breaker.current_state == "open"
+
+        # Request 3: Circuit breaker is OPEN -> Primary is COMPLETELY BYPASSED with 0 network calls
+        mock_send.reset_mock()
+        r3 = await svc._send_smtp_async("u3@student.tarc.edu.my", "333333", "Server", 10)
+        assert r3 is True
+        assert mock_send.call_count == 1  # Only called fallback!
+        assert mock_send.call_args_list[0].kwargs["host"] == "mail.direct-domain.com"
+
+
+@pytest.mark.asyncio
+async def test_email_service_smtp_both_fail():
     key = Fernet.generate_key().decode()
     settings = Settings(
         bot_token="fake_token",
@@ -364,8 +409,8 @@ def test_email_service_smtp_both_fail():
     )
     svc = EmailService(settings, mock_smtp=False)
 
-    with patch.object(svc, "_send_to_smtp_endpoint", return_value=(False, "Connection timeout")):
-        success = svc._send_smtp_sync(
+    with patch.object(svc, "_send_to_smtp_endpoint", AsyncMock(return_value=(False, "Connection timeout"))):
+        success = await svc._send_smtp_async(
             to_email="24wmd12345@student.tarc.edu.my",
             otp_code="123456",
             server_name="Test Server",
@@ -374,7 +419,8 @@ def test_email_service_smtp_both_fail():
         assert success is False
 
 
-def test_email_service_primary_fails_without_fallback():
+@pytest.mark.asyncio
+async def test_email_service_primary_fails_without_fallback():
     key = Fernet.generate_key().decode()
     settings = Settings(
         bot_token="fake_token",
@@ -386,8 +432,8 @@ def test_email_service_primary_fails_without_fallback():
     )
     svc = EmailService(settings, mock_smtp=False)
 
-    with patch.object(svc, "_send_to_smtp_endpoint", return_value=(False, "550 Limit Exceeded")):
-        success = svc._send_smtp_sync(
+    with patch.object(svc, "_send_to_smtp_endpoint", AsyncMock(return_value=(False, "550 Limit Exceeded"))):
+        success = await svc._send_smtp_async(
             to_email="24wmd12345@student.tarc.edu.my",
             otp_code="123456",
             server_name="Test Server",

@@ -619,12 +619,13 @@ echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is li
   - `❌ [Cancel]`: Aborts pending OTP verification session.
 - **Attempt Exhaustion**: Upon 3 incorrect guesses, the pending OTP session is immediately wiped, requiring the user to restart.
 
-### 4. Automatic SMTP Failover & Direct Email Server Fallback
-- **Primary + Secondary Relay Resiliency**: If the primary SMTP relay (e.g. SMTP2GO) hits monthly/daily quota limits (SMTP 450/550 limit exceeded) or experiences network outages:
-  1. Detects primary failure and logs a warning with error details.
-  2. Automatically fails over to the fallback direct mail server (`SMTP_FALLBACK_HOST`, `SMTP_FALLBACK_PORT`, `SMTP_FALLBACK_USER`, `SMTP_FALLBACK_PASSWORD`).
-  3. Supports both STARTTLS (port 587) and SSL/TLS (port 465) on direct mail servers.
-  4. Delivers the OTP verification email seamlessly without user disruption.
+### 4. Non-Blocking Async Delivery & Circuit Breaker Failover
+- **Native Async I/O (`aiosmtplib`)**: Delivers emails directly on the `asyncio` event loop with zero thread-pool executor contention during intake surges.
+- **Instant Failover Circuit Breaker (`AsyncCircuitBreaker`)**:
+  - Monitors Primary SMTP (Resend / SMTP2GO) health.
+  - Automatically trips to **`OPEN`** state after `TARVERI_CIRCUIT_BREAKER_FAIL_MAX` (default 3) consecutive failures.
+  - When **`OPEN`**, immediately routes all subsequent OTP requests to Fallback Direct SMTP with **0ms latency penalty** (bypassing the 12s socket timeout).
+  - Automatically probes Primary SMTP recovery in **`HALF_OPEN`** state after `TARVERI_CIRCUIT_BREAKER_RESET_TIMEOUT` (default 300s).
 
 ### 5. Pre-Flight Validation & Alumni Email Confirmation Gate
 - **Pre-Flight Validation Pipeline (`validate_preflight_for_otp`)**:
@@ -645,12 +646,31 @@ TARVeri employs a layered configuration system combining global environment togg
 | Environment Variable | Dataclass Field | Default | Subsystem | Description & Behavioral Impact |
 | :--- | :--- | :---: | :--- | :--- |
 | `TARVERI_EMAIL_VERIFICATION_ENABLED` | `enable_email_verification` | `false` | Auth / Security | **False**: Instant verification via Modal/Slash ID input.<br>**True**: Enforces `@student.tarc.edu.my` OTP challenge with AES-256 encrypted storage. |
+| `TARVERI_CIRCUIT_BREAKER_FAIL_MAX` | `circuit_breaker_fail_max` | `3` | Email / Resiliency | Number of consecutive Primary SMTP errors before tripping circuit breaker to OPEN. |
+| `TARVERI_CIRCUIT_BREAKER_RESET_TIMEOUT` | `circuit_breaker_reset_timeout` | `300` | Email / Resiliency | Seconds to keep circuit breaker OPEN before probing Primary SMTP recovery in HALF_OPEN. |
+| `TARVERI_SENTRY_DSN` | `sentry_dsn` | `""` | Observability | Optional Sentry DSN for real-time error tracking and Discord interaction crash reporting. |
 | `TARVERI_ENABLE_GRADUATION_WATCHDOG` | `enable_graduation_watchdog` | `true` | Lifecycle | **False**: Background expiration scanner disabled.<br>**True**: Executes daily 24h sweeps prompting expired students via DM. |
 | `TARVERI_ENABLE_OUTAGE_WATCHDOG` | `enable_outage_watchdog` | `true` | Reliability | **False**: Network heartbeat probe disabled.<br>**True**: 15s ICMP/TCP probe with debounce alert triggers. |
 | `TARVERI_ENABLE_UPDATE_CHECKER` | `enable_update_checker` | `true` | Maintenance | **False**: Upstream Git checking disabled.<br>**True**: Checks GitHub remote daily and DMs hoster when new commits/tags are detected. |
 | `TARVERI_ENABLE_LOG_ROTATOR` | `enable_log_rotator` | `true` | Logging | **False**: Continuous append to single log file.<br>**True**: Midnight log rotation, 10-day period bundling, and `.tar.gz` compression. |
 | `TARVERI_SMTP_USE_TLS` | `smtp_use_tls` | `true` | Email Relay | **False**: Plaintext SMTP connection on port 25.<br>**True**: Enforces STARTTLS negotiation on port 587. |
 | `TARVERI_SMTP_FALLBACK_USE_TLS` | `smtp_fallback_use_tls` | `true` | Email Relay | Enforces STARTTLS / SSL on fallback direct email server. |
+
+---
+
+## 💾 Litestream Continuous Cloud Database Replication
+
+TARVeri includes native support for [Litestream](https://litestream.io) to continuously stream SQLite WAL frames to Cloudflare R2 / AWS S3 with sub-second RPO:
+
+1. **Configuration**: Configured via `litestream.yml` in the root directory.
+2. **Replication Command**:
+   ```bash
+   litestream replicate -config litestream.yml
+   ```
+3. **Point-In-Time Disaster Recovery**:
+   ```bash
+   litestream restore -config litestream.yml -o tarveri.db
+   ```
 
 ---
 

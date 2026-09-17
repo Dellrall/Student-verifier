@@ -16,6 +16,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
 
+import aiosmtplib
+
 from tarveri.config import (
     Settings,
     decrypt_email,
@@ -24,6 +26,7 @@ from tarveri.config import (
     is_valid_student_email,
     mask_email,
 )
+from tarveri.utils import AsyncCircuitBreaker, CircuitBreakerError
 
 logger = logging.getLogger("tarveri")
 
@@ -47,7 +50,8 @@ class EmailService:
     """
     Manages institutional student email verification:
     - Generates 6-digit cryptographically secure OTPs
-    - Asynchronously transmits branded HTML verification emails via SMTP (e.g. SMTP2GO)
+    - Asynchronously transmits branded HTML verification emails via non-blocking aiosmtplib
+    - Resilient Primary -> Fallback SMTP routing with zero-wait AsyncCircuitBreaker
     - Validates OTP submissions with attempt limits and resend cooldowns
     - Encrypts/decrypts student emails at rest with AES-256 (Fernet)
     """
@@ -59,6 +63,11 @@ class EmailService:
         self._lock = asyncio.Lock()
         # Test helper hook for inspecting sent emails during test runs
         self.sent_emails: list[dict[str, Any]] = []
+        self._primary_breaker = AsyncCircuitBreaker(
+            fail_max=getattr(settings, "circuit_breaker_fail_max", 3),
+            reset_timeout=float(getattr(settings, "circuit_breaker_reset_timeout", 300)),
+            name="PrimarySMTPBreaker",
+        )
 
     @property
     def is_enabled(self) -> bool:
@@ -262,7 +271,7 @@ class EmailService:
         server_name: str,
         ttl_minutes: int,
     ) -> bool:
-        """Executes SMTP transmission in a worker thread."""
+        """Transmits verification email via async SMTP or mock collector."""
         if self.mock_smtp or not self.settings.smtp_user or not self.settings.smtp_password:
             # Mock / Developer Mode: Log code without real SMTP transmission
             logger.info(
@@ -276,8 +285,7 @@ class EmailService:
             })
             return True
 
-        return await asyncio.to_thread(
-            self._send_smtp_sync,
+        return await self._send_smtp_async(
             to_email=to_email,
             otp_code=otp_code,
             server_name=server_name,
@@ -353,7 +361,7 @@ class EmailService:
 </body>
 </html>"""
 
-    def _send_to_smtp_endpoint(
+    async def _send_to_smtp_endpoint(
         self,
         to_email: str,
         otp_code: str,
@@ -368,7 +376,7 @@ class EmailService:
         use_tls: bool,
         relay_label: str = "SMTP",
     ) -> tuple[bool, str | None]:
-        """Transmits an email to a specific SMTP endpoint. Returns (success, error_message)."""
+        """Asynchronously transmits an email to a specific SMTP endpoint via aiosmtplib."""
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"{otp_code} is your TARVeri verification code"
         clean_name = (from_name or "").strip().strip('"').strip("'")
@@ -396,24 +404,22 @@ class EmailService:
         msg.attach(MIMEText(html_content, "html", "utf-8"))
 
         try:
-            if port == 465:
-                server_ctx = smtplib.SMTP_SSL(host=host, port=port, timeout=12.0)
-            else:
-                server_ctx = smtplib.SMTP(host=host, port=port, timeout=12.0)
-
-            with server_ctx as server:
-                server.ehlo()
-                if use_tls and port != 465:
-                    server.starttls()
-                    server.ehlo()
-                if user and password:
-                    server.login(user, password)
-                server.send_message(msg)
+            is_ssl_port = (port == 465)
+            await aiosmtplib.send(
+                msg,
+                hostname=host,
+                port=port,
+                username=user or None,
+                password=password or None,
+                use_tls=is_ssl_port,
+                start_tls=(use_tls and not is_ssl_port),
+                timeout=12.0,
+            )
             return True, None
         except Exception as e:
             return False, str(e)
 
-    def _send_smtp_sync(
+    async def _send_smtp_async(
         self,
         to_email: str,
         otp_code: str,
@@ -421,27 +427,44 @@ class EmailService:
         ttl_minutes: int,
     ) -> bool:
         """
-        Synchronous SMTP worker with primary transmission and automatic fallback.
-        If the primary relay (e.g. SMTP2GO) fails (quota exceeded, connection error, etc.),
-        it automatically fails over to the direct email server SMTP.
+        Asynchronous SMTP dispatcher with circuit-breaker protected Primary transmission and automated Fallback.
+        If Primary SMTP (e.g. SMTP2GO / Resend) fails repeatedly, the circuit breaker opens and routes immediately
+        to Fallback Direct SMTP with zero latency penalty.
         """
-        # 1. Attempt Primary SMTP Delivery (e.g. SMTP2GO relay)
-        primary_ok, primary_err = self._send_to_smtp_endpoint(
-            to_email=to_email,
-            otp_code=otp_code,
-            server_name=server_name,
-            ttl_minutes=ttl_minutes,
-            host=self.settings.smtp_host,
-            port=self.settings.smtp_port,
-            user=self.settings.smtp_user,
-            password=self.settings.smtp_password,
-            from_email=self.settings.smtp_from_email,
-            from_name=self.settings.smtp_from_name,
-            use_tls=self.settings.smtp_use_tls,
-            relay_label="Primary SMTP",
-        )
-        if primary_ok:
-            return True
+        primary_ok = False
+        primary_err: str | None = None
+
+        # 1. Attempt Primary SMTP Delivery with Circuit Breaker Protection
+        if self._primary_breaker.current_state == "open":
+            logger.warning(
+                f"⚡ Primary SMTP circuit breaker is OPEN (tripped after repeated failures). "
+                f"Bypassing {self.settings.smtp_host} and failing over immediately..."
+            )
+            primary_err = "Circuit Breaker OPEN"
+        else:
+            try:
+                primary_ok, primary_err = await self._send_to_smtp_endpoint(
+                    to_email=to_email,
+                    otp_code=otp_code,
+                    server_name=server_name,
+                    ttl_minutes=ttl_minutes,
+                    host=self.settings.smtp_host,
+                    port=self.settings.smtp_port,
+                    user=self.settings.smtp_user,
+                    password=self.settings.smtp_password,
+                    from_email=self.settings.smtp_from_email,
+                    from_name=self.settings.smtp_from_name,
+                    use_tls=self.settings.smtp_use_tls,
+                    relay_label="Primary SMTP",
+                )
+                if primary_ok:
+                    await self._primary_breaker.record_success()
+                    return True
+                else:
+                    await self._primary_breaker.record_failure()
+            except Exception as e:
+                primary_err = str(e)
+                await self._primary_breaker.record_failure()
 
         # 2. Check if Fallback Direct SMTP Server is configured
         fallback_host = self.settings.smtp_fallback_host.strip()
@@ -460,7 +483,7 @@ class EmailService:
         fallback_from_email = self.settings.smtp_fallback_from_email.strip() or self.settings.smtp_from_email
         fallback_from_name = self.settings.smtp_fallback_from_name.strip() or self.settings.smtp_from_name
 
-        fallback_ok, fallback_err = self._send_to_smtp_endpoint(
+        fallback_ok, fallback_err = await self._send_to_smtp_endpoint(
             to_email=to_email,
             otp_code=otp_code,
             server_name=server_name,
@@ -484,3 +507,30 @@ class EmailService:
             f"Fallback SMTP delivery also failed to {mask_email(to_email)} via {fallback_host}:{self.settings.smtp_fallback_port}: {fallback_err}"
         )
         return False
+
+    def _send_smtp_sync(
+        self,
+        to_email: str,
+        otp_code: str,
+        server_name: str,
+        ttl_minutes: int,
+    ) -> bool:
+        """Synchronous bridge helper for running SMTP dispatch."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # Already in an event loop
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    asyncio.run,
+                    self._send_smtp_async(to_email, otp_code, server_name, ttl_minutes),
+                )
+                return future.result()
+        else:
+            return asyncio.run(
+                self._send_smtp_async(to_email, otp_code, server_name, ttl_minutes)
+            )

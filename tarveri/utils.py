@@ -144,3 +144,73 @@ def parse_db_timestamp(ts_str: str | None, tz: tzinfo | None = None) -> datetime
         return None
 
 
+class CircuitBreakerError(Exception):
+    """Raised when an operation is attempted while the circuit breaker is OPEN."""
+    pass
+
+
+class AsyncCircuitBreaker:
+    """
+    High-performance async Circuit Breaker for mission-critical I/O endpoints.
+    States: CLOSED (normal) -> OPEN (tripped after fail_max errors) -> HALF_OPEN (probing after reset_timeout).
+    """
+
+    def __init__(
+        self,
+        fail_max: int = 3,
+        reset_timeout: float = 300.0,
+        name: str = "CircuitBreaker",
+    ) -> None:
+        self.fail_max = fail_max
+        self.reset_timeout = reset_timeout
+        self.name = name
+        self._state: str = "closed"
+        self._fail_count: int = 0
+        import time
+        self._last_state_change: float = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    @property
+    def current_state(self) -> str:
+        import time
+        now = time.monotonic()
+        if self._state == "open" and (now - self._last_state_change) >= self.reset_timeout:
+            return "half_open"
+        return self._state
+
+    @property
+    def fail_count(self) -> int:
+        return self._fail_count
+
+    async def record_success(self) -> None:
+        import time
+        async with self._lock:
+            self._fail_count = 0
+            self._state = "closed"
+            self._last_state_change = time.monotonic()
+
+    async def record_failure(self) -> None:
+        import time
+        async with self._lock:
+            self._fail_count += 1
+            if self._fail_count >= self.fail_max or self._state == "half_open":
+                self._state = "open"
+                self._last_state_change = time.monotonic()
+
+    async def call(self, coro_func, *args, **kwargs):
+        state = self.current_state
+        if state == "open":
+            raise CircuitBreakerError(
+                f"Circuit breaker '{self.name}' is OPEN (fail threshold {self.fail_max} reached). "
+                f"Reset timeout ({self.reset_timeout}s) not elapsed yet."
+            )
+        try:
+            result = await coro_func(*args, **kwargs)
+            await self.record_success()
+            return result
+        except Exception:
+            await self.record_failure()
+            raise
+
+
+

@@ -401,6 +401,9 @@ class Settings:
     email_otp_max_attempts: int = 3
     email_otp_resend_cooldown_seconds: int = 60
     email_restrict_smtp_usage: bool = True
+    sentry_dsn: str = ""
+    circuit_breaker_fail_max: int = 3
+    circuit_breaker_reset_timeout: int = 300
 
     @property
     def restrict_smtp_usage(self) -> bool:
@@ -730,6 +733,30 @@ class Settings:
         ).lower().strip()
         email_restrict_smtp_usage = restrict_smtp_raw in ("true", "1", "yes", "t")
 
+        sentry_dsn = (
+            os.getenv("TARVERI_SENTRY_DSN")
+            or os.getenv("SENTRY_DSN")
+            or ""
+        ).strip()
+
+        cb_fail_max_raw = (
+            os.getenv("TARVERI_CIRCUIT_BREAKER_FAIL_MAX")
+            or os.getenv("CIRCUIT_BREAKER_FAIL_MAX")
+            or "3"
+        ).strip()
+        circuit_breaker_fail_max = (
+            int(cb_fail_max_raw) if cb_fail_max_raw.isdigit() else 3
+        )
+
+        cb_reset_timeout_raw = (
+            os.getenv("TARVERI_CIRCUIT_BREAKER_RESET_TIMEOUT")
+            or os.getenv("CIRCUIT_BREAKER_RESET_TIMEOUT")
+            or "300"
+        ).strip()
+        circuit_breaker_reset_timeout = (
+            int(cb_reset_timeout_raw) if cb_reset_timeout_raw.isdigit() else 300
+        )
+
         if validate:
             if not bot_token:
                 raise RuntimeError(
@@ -798,6 +825,9 @@ class Settings:
             email_otp_max_attempts=email_otp_max_attempts,
             email_otp_resend_cooldown_seconds=email_otp_resend_cooldown_seconds,
             email_restrict_smtp_usage=email_restrict_smtp_usage,
+            sentry_dsn=sentry_dsn,
+            circuit_breaker_fail_max=circuit_breaker_fail_max,
+            circuit_breaker_reset_timeout=circuit_breaker_reset_timeout,
         )
 
 

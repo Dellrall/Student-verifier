@@ -253,4 +253,20 @@ def test_get_configured_tz_fallback():
     assert tz_system is not None
 
 
+def test_settings_sentry_and_circuit_breaker(monkeypatch):
+    from tarveri.config import Settings
+
+    monkeypatch.setenv("TARVERI_BOT_TOKEN", "mock_bot_token")
+    monkeypatch.setenv("TARVERI_ID_HASH_SECRET", "mock_secret")
+    monkeypatch.setenv("TARVERI_SENTRY_DSN", "https://public@sentry.example.com/1")
+    monkeypatch.setenv("TARVERI_CIRCUIT_BREAKER_FAIL_MAX", "5")
+    monkeypatch.setenv("TARVERI_CIRCUIT_BREAKER_RESET_TIMEOUT", "600")
+
+    settings = Settings.from_env(validate=True)
+    assert settings.sentry_dsn == "https://public@sentry.example.com/1"
+    assert settings.circuit_breaker_fail_max == 5
+    assert settings.circuit_breaker_reset_timeout == 600
+
+
+
 

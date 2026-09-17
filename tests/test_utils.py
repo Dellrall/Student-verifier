@@ -155,5 +155,57 @@ def test_parse_ticket_seq():
     assert parse_ticket_seq("A10000") is None
 
 
+@pytest.mark.asyncio
+async def test_async_circuit_breaker_lifecycle():
+    from tarveri.utils import AsyncCircuitBreaker, CircuitBreakerError
+
+    cb = AsyncCircuitBreaker(fail_max=3, reset_timeout=0.2, name="TestBreaker")
+    assert cb.current_state == "closed"
+    assert cb.fail_count == 0
+
+    async def successful_call():
+        return "success"
+
+    async def failing_call():
+        raise ValueError("simulated network failure")
+
+    # 1. Success remains closed
+    res = await cb.call(successful_call)
+    assert res == "success"
+    assert cb.current_state == "closed"
+
+    # 2. 2 Failures: still closed, counter increments
+    with pytest.raises(ValueError):
+        await cb.call(failing_call)
+    assert cb.fail_count == 1
+    assert cb.current_state == "closed"
+
+    with pytest.raises(ValueError):
+        await cb.call(failing_call)
+    assert cb.fail_count == 2
+    assert cb.current_state == "closed"
+
+    # 3. 3rd Failure: trips OPEN
+    with pytest.raises(ValueError):
+        await cb.call(failing_call)
+    assert cb.current_state == "open"
+
+    # 4. Immediate calls raise CircuitBreakerError without executing the function
+    with pytest.raises(CircuitBreakerError) as exc_info:
+        await cb.call(successful_call)
+    assert "is OPEN" in str(exc_info.value)
+
+    # 5. Wait for reset timeout -> transitions to half_open
+    await asyncio.sleep(0.25)
+    assert cb.current_state == "half_open"
+
+    # 6. Successful probe recovers circuit to closed
+    res2 = await cb.call(successful_call)
+    assert res2 == "success"
+    assert cb.current_state == "closed"
+    assert cb.fail_count == 0
+
+
+
 
 

@@ -307,6 +307,19 @@ async def run_bot(settings: Settings | None = None) -> None:
         tz_name=settings.timezone_name,
         logs_dir=settings.logs_dir,
     )
+
+    if settings.sentry_dsn:
+        try:
+            import sentry_sdk
+            sentry_sdk.init(
+                dsn=settings.sentry_dsn,
+                traces_sample_rate=0.1,
+                profiles_sample_rate=0.1,
+            )
+            logger.info("🚨 Sentry real-time crash and error telemetry initialized.")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Sentry SDK: {e}")
+
     bot = TARVeriBot(settings)
 
     loop = asyncio.get_running_loop()
