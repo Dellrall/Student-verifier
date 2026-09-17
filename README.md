@@ -177,7 +177,12 @@ Install and run as a 24/7 background service for your user without needing root/
 ```bash
 # Install bot and Litestream cloud replication as user services:
 ./scripts/install_service.sh --user --with-litestream --enable-now
+
+# Check service status & logs:
+systemctl --user status tarveri
+journalctl --user -u tarveri -f
 ```
+*(Or run with `./scripts/install_service.sh --system --with-litestream --enable-now` for system-wide `/etc/systemd/system` deployment)*
 
 ### 6. Automated Updates
 
