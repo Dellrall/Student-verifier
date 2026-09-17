@@ -4,14 +4,13 @@
 dbs:
   - path: tarveri.db
     replicas:
-      # Option A: Cloudflare R2 (S3-compatible, Free 10GB storage, 0 egress fees)
-      # Run with: litestream replicate -config /path/to/litestream.yml
+      # Cloudflare R2 (S3-compatible, Free 10GB storage, 0 egress fees)
       - type: s3
-        bucket: "${LITESTREAM_BUCKET:-tarveri-backups}"
-        path: "db"
-        endpoint: "${LITESTREAM_ENDPOINT:-https://<account-id>.r2.cloudflarestorage.com}"
-        access-key-id: "${LITESTREAM_ACCESS_KEY_ID}"
-        secret-access-key: "${LITESTREAM_SECRET_ACCESS_KEY}"
+        bucket: $LITESTREAM_BUCKET
+        path: db
+        endpoint: $LITESTREAM_ENDPOINT
+        access-key-id: $LITESTREAM_ACCESS_KEY_ID
+        secret-access-key: $LITESTREAM_SECRET_ACCESS_KEY
         sync-interval: 10s
         retention: 720h # 30 days
         snapshot-interval: 24h
