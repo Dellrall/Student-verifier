@@ -219,7 +219,7 @@ Run the full automated test suite with all warnings treated as errors:
 
 ## 🤝 Acknowledgements & Credits
 
-* Engineered, hardened, and architected in collaboration with **Google DeepMind Antigravity** (powered by **Gemini 3.7**).
+* Engineered, hardened, and architected in collaboration with **Google DeepMind Antigravity** (powered by **Gemini 3.7 Flash** — Thinking Medium).
 * Built with [discord.py](https://discordpy.readthedocs.io/), [aiosmtplib](https://github.com/cole/aiosmtplib), [Litestream](https://litestream.io), and [Sentry](https://sentry.io).
 
 ---
