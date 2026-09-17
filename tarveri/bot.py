@@ -24,6 +24,7 @@ from tarveri.services.graduation_watchdog_service import GraduationWatchdogServi
 from tarveri.services.guest_service import GuestService
 from tarveri.services.log_service import LogRotationService
 from tarveri.services.outage_service import OutageService
+from tarveri.services.storage_guard_service import StorageGuardService
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.services.verification_service import VerificationService
 
@@ -110,6 +111,15 @@ class TARVeriBot(commands.Bot):
             if settings.enable_log_rotator
             else None
         )
+        self.storage_guard = (
+            StorageGuardService(
+                db=self.db,
+                settings=settings,
+                bot=self,
+            )
+            if settings.enable_storage_guard
+            else None
+        )
         self._is_ready_logged = False
         self._cmd_sync_task: asyncio.Task[None] | None = None
 
@@ -192,6 +202,9 @@ class TARVeriBot(commands.Bot):
         if self.graduation_watchdog:
             self.graduation_watchdog.start()
 
+        if self.storage_guard:
+            self.storage_guard.start()
+
     async def on_disconnect(self) -> None:
         logger.debug("Discord gateway connection lost (disconnect event).")
         if self.outage_service:
@@ -267,6 +280,9 @@ class TARVeriBot(commands.Bot):
 
         if self.outage_service:
             self.outage_service.stop()
+
+        if self.storage_guard:
+            self.storage_guard.stop()
 
         if self.log_rotator:
             self.log_rotator.stop()

@@ -404,6 +404,9 @@ class Settings:
     sentry_dsn: str = ""
     circuit_breaker_fail_max: int = 3
     circuit_breaker_reset_timeout: int = 300
+    max_storage_mb: int = 500
+    enable_storage_guard: bool = True
+    storage_check_interval_hours: int = 6
 
     @property
     def restrict_smtp_usage(self) -> bool:
@@ -512,6 +515,9 @@ class Settings:
         sentry_dsn = _env_str("TARVERI_SENTRY_DSN", "SENTRY_DSN")
         circuit_breaker_fail_max = _env_int("TARVERI_CIRCUIT_BREAKER_FAIL_MAX", "CIRCUIT_BREAKER_FAIL_MAX", default=3)
         circuit_breaker_reset_timeout = _env_int("TARVERI_CIRCUIT_BREAKER_RESET_TIMEOUT", "CIRCUIT_BREAKER_RESET_TIMEOUT", default=300)
+        max_storage_mb = _env_int("TARVERI_MAX_STORAGE_MB", "MAX_STORAGE_MB", default=500)
+        enable_storage_guard = _env_bool("TARVERI_ENABLE_STORAGE_GUARD", "ENABLE_STORAGE_GUARD", default=True)
+        storage_check_interval_hours = _env_int("TARVERI_STORAGE_CHECK_INTERVAL_HOURS", "STORAGE_CHECK_INTERVAL_HOURS", default=6)
 
         if validate:
             if not bot_token:
@@ -584,6 +590,9 @@ class Settings:
             sentry_dsn=sentry_dsn,
             circuit_breaker_fail_max=circuit_breaker_fail_max,
             circuit_breaker_reset_timeout=circuit_breaker_reset_timeout,
+            max_storage_mb=max_storage_mb,
+            enable_storage_guard=enable_storage_guard,
+            storage_check_interval_hours=storage_check_interval_hours,
         )
 
 

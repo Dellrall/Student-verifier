@@ -383,6 +383,21 @@ class Database:
                 await self._conn.close()
                 self._conn = None
 
+    async def checkpoint_wal(self) -> None:
+        """Flushes and truncates the SQLite write-ahead log (WAL) into the main database file."""
+        if self._conn:
+            await self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            await self._conn.commit()
+
+    async def prune_audit_logs(self, older_than_days: int = 90) -> int:
+        """Prunes audit log rows older than the specified number of days."""
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        cutoff = (datetime.now(get_configured_tz()) - timedelta(days=older_than_days)).strftime("%Y-%m-%d %H:%M:%S")
+        cursor = await self._conn.execute("DELETE FROM audit_log WHERE timestamp < ?;", (cutoff,))
+        await self._conn.commit()
+        return cursor.rowcount
+
     async def __aenter__(self) -> Database:
         await self.connect()
         return self
