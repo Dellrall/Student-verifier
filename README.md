@@ -1,9 +1,9 @@
 # 🎓 TARVeri — Student & Guest Verification Bot
 
-[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
+[![CI](https://github.com/Dellrall/Student-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/Dellrall/Student-verifier/actions/workflows/ci.yml)
+[![Python 3.11 | 3.12 | 3.13](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
 [![Discord.py](https://img.shields.io/badge/discord.py-v2.4-5865F2.svg)](https://discordpy.readthedocs.io/)
 [![SQLite WAL](https://img.shields.io/badge/sqlite-WAL%20mode-003B57.svg)](https://www.sqlite.org/wal.html)
-[![Tests Passing](https://img.shields.io/badge/tests-211%20passed-success.svg)](https://github.com/Dellrall/Student-verifier)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > **TARVeri** is a production-grade Discord student and guest verification bot engineered for **TARUMT (Tunku Abdul Rahman University of Management and Technology)**. It automatically parses student IDs, verifies institutional email ownership with dual-relay OTP failover, renders high-DPI digital campus cards, and orchestrates guest referral ticket reviews.
