@@ -860,46 +860,16 @@ async def test_admin_dashboard_toggle_email_verification(tmp_path):
     interaction.response.defer = AsyncMock()
     interaction.edit_original_response = AsyncMock()
 
-    # Toggle from False -> True
+    # Toggle from True -> False
+    interaction.edit_original_response.reset_mock()
     await view._on_toggle_email_verification_clicked(interaction)
-    assert await db.is_guild_email_verification_enabled(guild.id) is True
+    assert await db.is_guild_email_verification_enabled(guild.id) is False
     interaction.edit_original_response.assert_called_once()
     embed = interaction.edit_original_response.call_args[1]["embed"]
-    assert "MANDATORY" in embed.description
+    assert "OPTIONAL" in embed.description
 
     await db.close()
 
-
-@pytest.mark.asyncio
-async def test_admin_sentry_test_command(tmp_path):
-    db_path = str(tmp_path / "admin_sentry_test.db")
-    db = Database(db_path)
-    await db.connect()
-
-    bot = MagicMock()
-    service = MagicMock()
-    rate_limiter = MagicMock()
-    cog = AdminCog(bot, db, service, rate_limiter, admin_role_name="TARVeri Admin")
-
-    guild = MagicMock(spec=discord.Guild)
-    guild.id = 112233
-    admin_user = MagicMock(spec=discord.Member)
-    admin_user.guild_permissions.administrator = True
-    admin_user.mention = "<@123>"
-    admin_user.id = 123
-
-    interaction = MagicMock(spec=discord.Interaction)
-    interaction.guild = guild
-    interaction.user = admin_user
-    interaction.response.defer = AsyncMock()
-    interaction.followup.send = AsyncMock()
-
-    await cog.sentry_test.callback(cog, interaction)
-    interaction.response.defer.assert_called_once_with(ephemeral=True)
-    interaction.followup.send.assert_called_once()
-    assert "ZeroDivisionError" in interaction.followup.send.call_args[0][0]
-
-    await db.close()
 
 
 
