@@ -290,6 +290,12 @@ log_success "Successfully pulled code (now at commit ${NEW_COMMIT:0:7} on branch
 # STEP 3: Sync Python Dependencies
 # ------------------------------------------------------------------------------
 log_info "[3/5] Updating dependencies..."
+if [ ! -f "${PIP_BIN}" ] || [ ! -x "${PYTHON_BIN}" ]; then
+    log_warn "Virtual environment not found at '${VENV_DIR}'. Initializing a fresh virtualenv..."
+    python3 -m venv "${VENV_DIR}"
+    "${PIP_BIN}" install --upgrade pip --quiet
+fi
+
 ${PIP_BIN} install -r requirements.txt --upgrade --quiet
 
 # ------------------------------------------------------------------------------
