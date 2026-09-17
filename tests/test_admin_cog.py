@@ -857,6 +857,9 @@ async def test_admin_dashboard_toggle_email_verification(tmp_path):
     interaction = MagicMock(spec=discord.Interaction)
     interaction.guild = guild
     interaction.user = admin_user
+    interaction.response.defer = AsyncMock()
+    interaction.edit_original_response = AsyncMock()
+
     # 1. Toggle from False -> True
     await view._on_toggle_email_verification_clicked(interaction)
     assert await db.is_guild_email_verification_enabled(guild.id) is True
