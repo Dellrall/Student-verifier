@@ -17,6 +17,7 @@ import discord
 from tarveri.config import GUEST_ROLE_COLOR, GUEST_ROLE_PATTERN, get_configured_tz, now_formatted
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.services.role_manager import RoleManager
 from tarveri.utils import format_ticket_seq, parse_db_timestamp
 
 logger = logging.getLogger("tarveri")
@@ -43,14 +44,13 @@ class GuestService:
         self.db = db
         self.admin_role_name = admin_role_name
         self.rate_limiter = rate_limiter
+        self.role_manager = RoleManager(db)
         self._lock = asyncio.Lock()
         self._role_locks: dict[int, asyncio.Lock] = {}
         self._escalation_task: asyncio.Task[None] | None = None
 
     def _get_guild_role_lock(self, guild_id: int) -> asyncio.Lock:
-        if guild_id not in self._role_locks:
-            self._role_locks[guild_id] = asyncio.Lock()
-        return self._role_locks[guild_id]
+        return self.role_manager.get_guild_role_lock(guild_id)
 
     async def create_referral_code(
         self,
@@ -336,25 +336,7 @@ class GuestService:
 
             return None
 
-        # 1. Check in-memory guild.roles cache
-        guild_roles = getattr(guild, "roles", [])
-        if isinstance(guild_roles, (list, tuple)):
-            found = _match_guest_in_list(guild_roles)
-            if found is not None:
-                return found
-
-        # 2. Check live API
-        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
-            try:
-                live_roles = await guild.fetch_roles()
-                if isinstance(live_roles, (list, tuple)):
-                    found = _match_guest_in_list(live_roles)
-                    if found is not None:
-                        return found
-            except (discord.HTTPException, discord.Forbidden):
-                pass
-
-        return None
+        return await self.role_manager.find_role_in_guild(guild, _match_guest_in_list)
 
     async def get_or_create_guest_role(self, guild: discord.Guild) -> discord.Role | None:
         """
@@ -367,56 +349,51 @@ class GuestService:
         settings = await self.db.get_guild_settings(guild.id)
         configured_name = settings[2].strip() if settings and settings[2] else None
 
-        # 1. Exhaustive search across cache and live API
-        existing_role = await self.find_guest_role(guild, configured_name)
-        if existing_role is not None:
-            return existing_role
-
-        # 2. Acquire per-guild lock for atomic role creation
-        lock = self._get_guild_role_lock(guild.id)
-        async with lock:
-            # Re-check under lock (double-checked locking)
-            existing_role = await self.find_guest_role(guild, configured_name)
-            if existing_role is not None:
-                return existing_role
-
-            if not getattr(guild.me.guild_permissions, "manage_roles", False):
+        def _match_guest_in_list(roles: Sequence[discord.Role]) -> discord.Role | None:
+            if not roles:
                 return None
+            if configured_name:
+                for r in roles:
+                    if getattr(r, "name", None) == configured_name:
+                        return r
+                conf_clean = configured_name.strip().lower()
+                for r in roles:
+                    if getattr(r, "name", "").strip().lower() == conf_clean:
+                        return r
 
-            role_name_to_create = configured_name or "Guest(Approved)"
-            try:
-                permissions = discord.Permissions(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True,
-                    attach_files=True,
-                    embed_links=True,
-                    add_reactions=True,
-                    use_external_emojis=True,
-                    connect=True,
-                    speak=True,
-                    use_voice_activation=True,
-                )
-                role = await guild.create_role(
-                    name=role_name_to_create,
-                    permissions=permissions,
-                    colour=discord.Colour(GUEST_ROLE_COLOR),
-                    reason="TARVeri: Auto-created Guest(Approved) role for verified guests",
-                )
-                try:
-                    await self.db.record_bot_created_role(guild.id, role.id, role_name_to_create)
-                except Exception as e:
-                    logger.debug(f"Could not record bot created guest role: {e}")
-                await self.db.log(
-                    "INFO",
-                    "ROLE_CREATED",
-                    f"Created guest role '{role_name_to_create}' in '{guild.name}' (Guild ID: {guild.id})",
-                    guild=guild,
-                )
-                return role
-            except discord.HTTPException as e:
-                logger.warning(f"Could not create guest role '{role_name_to_create}' in '{guild.name}': {e}")
-                return None
+            matched = []
+            for r in roles:
+                r_name = getattr(r, "name", "").strip()
+                if not r_name:
+                    continue
+                if GUEST_ROLE_PATTERN.search(r_name):
+                    matched.append(r)
+
+            if matched:
+                return max(matched, key=lambda r: getattr(r, "position", 0))
+            return None
+
+        role_name_to_create = configured_name or "Guest(Approved)"
+        permissions = discord.Permissions(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            attach_files=True,
+            embed_links=True,
+            add_reactions=True,
+            use_external_emojis=True,
+            connect=True,
+            speak=True,
+            use_voice_activation=True,
+        )
+        return await self.role_manager.get_or_create_role(
+            guild,
+            role_name=role_name_to_create,
+            matcher=_match_guest_in_list,
+            colour=GUEST_ROLE_COLOR,
+            permissions=permissions,
+            reason="TARVeri: Auto-created Guest(Approved) role for verified guests",
+        )
 
     async def get_admin_role_or_fallback(self, guild: discord.Guild) -> discord.Role | None:
         """

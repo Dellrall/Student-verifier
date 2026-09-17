@@ -53,6 +53,7 @@ from tarveri.config import (
 )
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
+from tarveri.services.role_manager import RoleManager
 
 logger = logging.getLogger("tarveri")
 
@@ -81,14 +82,13 @@ class VerificationService:
         self.rate_limiter = rate_limiter
         self.settings = settings
         self.email_service = email_service
+        self.role_manager = RoleManager(db)
         self._in_flight_users: set[int] = set()
         self._lock = asyncio.Lock()
         self._role_locks: dict[int, asyncio.Lock] = {}
 
     def _get_guild_role_lock(self, guild_id: int) -> asyncio.Lock:
-        if guild_id not in self._role_locks:
-            self._role_locks[guild_id] = asyncio.Lock()
-        return self._role_locks[guild_id]
+        return self.role_manager.get_guild_role_lock(guild_id)
 
     async def get_or_fetch_member(self, guild: discord.Guild, user_id: int) -> discord.Member | None:
         """Retrieves a member from cache (O(1)), or fetches from Discord API on cache miss."""
@@ -306,81 +306,24 @@ class VerificationService:
         Finds an existing faculty role in a guild by searching in-memory cache first,
         and querying Discord REST API (fetch_roles) as a fallback to guarantee no duplicates.
         """
-        # 1. Check in-memory guild.roles cache
-        guild_roles = getattr(guild, "roles", [])
-        if isinstance(guild_roles, (list, tuple)):
-            found = self._match_faculty_role_in_list(guild_roles, role_name)
-            if found is not None:
-                return found
-
-        # 2. If not found in cache, fetch live roles from Discord API
-        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
-            try:
-                live_roles = await guild.fetch_roles()
-                if isinstance(live_roles, (list, tuple)):
-                    found = self._match_faculty_role_in_list(live_roles, role_name)
-                    if found is not None:
-                        return found
-            except (discord.HTTPException, discord.Forbidden):
-                pass
-
-        return None
+        return await self.role_manager.find_role_in_guild(
+            guild, lambda roles: self._match_faculty_role_in_list(roles, role_name)
+        )
 
     async def get_or_create_faculty_role(self, guild: discord.Guild, role_name: str) -> discord.Role | None:
         """
         Finds an existing faculty role. ONLY creates a new role if the role absolutely does not exist.
         Guarantees idempotency via double-checked locking across concurrent tasks.
         """
-        # 1. Exhaustive search across cache and live API
-        existing_role = await self.find_faculty_role(guild, role_name)
-        if existing_role is not None:
-            return existing_role
-
-        # 2. Acquire per-guild lock for atomic role creation
-        lock = self._get_guild_role_lock(guild.id)
-        async with lock:
-            # Re-check under lock (double-checked locking)
-            existing_role = await self.find_faculty_role(guild, role_name)
-            if existing_role is not None:
-                return existing_role
-
-            # 3. Check if bot has Manage Roles permission before attempting creation
-            can_manage = (
-                getattr(guild.me.guild_permissions, "manage_roles", False)
-                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
-                else False
-            )
-            if not can_manage:
-                return None
-
-            # 4. Create the role only when absolutely not found anywhere
-            try:
-                color_val = FACULTY_COLORS.get(role_name, 0x3498DB)
-                role = await guild.create_role(
-                    name=role_name,
-                    colour=discord.Colour(color_val),
-                    mentionable=True,
-                    reason="TARVeri: auto-created missing faculty role for verification",
-                )
-                try:
-                    await self.db.record_bot_created_role(guild.id, role.id, role_name)
-                except Exception as e:
-                    logger.debug(f"Could not record bot created faculty role: {e}")
-                await self.db.log(
-                    "INFO",
-                    "ROLE_CREATED",
-                    f"Created role '{role_name}' in '{guild.name}' (Guild ID: {guild.id})",
-                    guild=guild,
-                )
-                return role
-            except discord.HTTPException as e:
-                await self.db.log(
-                    "ERROR",
-                    "ROLE_CREATE_FAILED",
-                    f"Failed to create role '{role_name}' in '{guild.name}': {e}",
-                    guild=guild,
-                )
-                return None
+        color_val = FACULTY_COLORS.get(role_name, 0x3498DB)
+        return await self.role_manager.get_or_create_role(
+            guild,
+            role_name=role_name,
+            matcher=lambda roles: self._match_faculty_role_in_list(roles, role_name),
+            colour=color_val,
+            mentionable=True,
+            reason="TARVeri: auto-created missing faculty role for verification",
+        )
 
     @classmethod
     def _match_alumni_role_in_list(cls, roles: Sequence[discord.Role]) -> discord.Role | None:
@@ -427,69 +370,18 @@ class VerificationService:
         """Finds existing alumni role in guild cache or live API using multi-tier matching."""
         if not guild:
             return None
-        guild_roles = getattr(guild, "roles", [])
-        if isinstance(guild_roles, (list, tuple)):
-            found = self._match_alumni_role_in_list(guild_roles)
-            if found is not None:
-                return found
-
-        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
-            try:
-                live_roles = await guild.fetch_roles()
-                if isinstance(live_roles, (list, tuple)):
-                    found = self._match_alumni_role_in_list(live_roles)
-                    if found is not None:
-                        return found
-            except (discord.HTTPException, discord.Forbidden):
-                pass
-        return None
+        return await self.role_manager.find_role_in_guild(guild, self._match_alumni_role_in_list)
 
     async def get_or_create_alumni_role(self, guild: discord.Guild) -> discord.Role | None:
         """Finds or atomically creates the TARUMT Alumni role."""
-        existing = await self.find_alumni_role(guild)
-        if existing is not None:
-            return existing
-
-        lock = self._get_guild_role_lock(guild.id)
-        async with lock:
-            existing = await self.find_alumni_role(guild)
-            if existing is not None:
-                return existing
-
-            can_manage = (
-                getattr(guild.me.guild_permissions, "manage_roles", False)
-                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
-                else False
-            )
-            if not can_manage:
-                return None
-
-            try:
-                role = await guild.create_role(
-                    name=ALUMNI_ROLE_NAME,
-                    colour=discord.Colour(ALUMNI_ROLE_COLOR),
-                    mentionable=True,
-                    reason="TARVeri: auto-created missing TARUMT Alumni role",
-                )
-                try:
-                    await self.db.record_bot_created_role(guild.id, role.id, ALUMNI_ROLE_NAME)
-                except Exception as e:
-                    logger.debug(f"Could not record bot created alumni role: {e}")
-                await self.db.log(
-                    "INFO",
-                    "ROLE_CREATED",
-                    f"Created alumni role '{ALUMNI_ROLE_NAME}' in '{guild.name}' (Guild ID: {guild.id})",
-                    guild=guild,
-                )
-                return role
-            except discord.HTTPException as e:
-                await self.db.log(
-                    "ERROR",
-                    "ROLE_CREATE_FAILED",
-                    f"Failed to create role '{ALUMNI_ROLE_NAME}' in '{guild.name}': {e}",
-                    guild=guild,
-                )
-                return None
+        return await self.role_manager.get_or_create_role(
+            guild,
+            role_name=ALUMNI_ROLE_NAME,
+            matcher=self._match_alumni_role_in_list,
+            colour=ALUMNI_ROLE_COLOR,
+            mentionable=True,
+            reason="TARVeri: auto-created missing TARUMT Alumni role",
+        )
 
     async def sync_alumni_role_across_guilds(
         self,
@@ -547,80 +439,51 @@ class VerificationService:
                 return max(matched, key=lambda r: getattr(r, "position", 0))
             return None
 
-        guild_roles = getattr(guild, "roles", [])
-        if isinstance(guild_roles, (list, tuple)):
-            found = _match_guest_in_list(guild_roles)
-            if found is not None:
-                return found
-
-        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
-            try:
-                live_roles = await guild.fetch_roles()
-                if isinstance(live_roles, (list, tuple)):
-                    found = _match_guest_in_list(live_roles)
-                    if found is not None:
-                        return found
-            except (discord.HTTPException, discord.Forbidden):
-                pass
-        return None
+        return await self.role_manager.find_role_in_guild(guild, _match_guest_in_list)
 
     async def get_or_create_guest_role(self, guild: discord.Guild) -> discord.Role | None:
         """Retrieves or atomically creates the Guest(Approved) role for the guild."""
         settings = await self.db.get_guild_settings(guild.id)
         configured_name = settings[2].strip() if settings and settings[2] else None
 
-        existing_role = await self.find_guest_role(guild, configured_name)
-        if existing_role is not None:
-            return existing_role
+        def _match_guest_in_list(roles: Sequence[discord.Role]) -> discord.Role | None:
+            if configured_name and configured_name.strip():
+                conf_clean = configured_name.strip().lower()
+                for r in roles:
+                    if getattr(r, "name", "").strip().lower() == conf_clean:
+                        return r
+            matched = []
+            for r in roles:
+                r_name = getattr(r, "name", "").strip()
+                if not r_name:
+                    continue
+                if GUEST_ROLE_PATTERN.search(r_name):
+                    matched.append(r)
+            if matched:
+                return max(matched, key=lambda r: getattr(r, "position", 0))
+            return None
 
-        lock = self._get_guild_role_lock(guild.id)
-        async with lock:
-            existing_role = await self.find_guest_role(guild, configured_name)
-            if existing_role is not None:
-                return existing_role
-
-            can_manage = (
-                getattr(guild.me.guild_permissions, "manage_roles", False)
-                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
-                else False
-            )
-            if not can_manage:
-                return None
-
-            role_name_to_create = configured_name or "Guest(Approved)"
-            try:
-                permissions = discord.Permissions(
-                    view_channel=True,
-                    send_messages=True,
-                    read_message_history=True,
-                    attach_files=True,
-                    embed_links=True,
-                    add_reactions=True,
-                    use_external_emojis=True,
-                    connect=True,
-                    speak=True,
-                    use_voice_activation=True,
-                )
-                role = await guild.create_role(
-                    name=role_name_to_create,
-                    permissions=permissions,
-                    colour=discord.Colour(GUEST_ROLE_COLOR),
-                    reason="TARVeri: Auto-created Guest(Approved) role",
-                )
-                try:
-                    await self.db.record_bot_created_role(guild.id, role.id, role_name_to_create)
-                except Exception as e:
-                    logger.debug(f"Could not record bot created guest role: {e}")
-                await self.db.log(
-                    "INFO",
-                    "ROLE_CREATED",
-                    f"Created guest role '{role_name_to_create}' in '{guild.name}' (Guild ID: {guild.id})",
-                    guild=guild,
-                )
-                return role
-            except discord.HTTPException as e:
-                logger.warning(f"Could not create guest role '{role_name_to_create}' in '{guild.name}': {e}")
-                return None
+        role_name_to_create = configured_name or "Guest(Approved)"
+        permissions = discord.Permissions(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            attach_files=True,
+            embed_links=True,
+            add_reactions=True,
+            use_external_emojis=True,
+            connect=True,
+            speak=True,
+            use_voice_activation=True,
+        )
+        return await self.role_manager.get_or_create_role(
+            guild,
+            role_name=role_name_to_create,
+            matcher=_match_guest_in_list,
+            colour=GUEST_ROLE_COLOR,
+            permissions=permissions,
+            reason="TARVeri: Auto-created Guest(Approved) role",
+        )
 
     @classmethod
     def _match_campus_role_in_list(cls, roles: Sequence[discord.Role], target_name: str) -> discord.Role | None:
@@ -673,71 +536,23 @@ class VerificationService:
         """Finds existing campus role in guild cache or live API."""
         if not guild or not campus_name:
             return None
-        guild_roles = getattr(guild, "roles", [])
-        if isinstance(guild_roles, (list, tuple)):
-            found = self._match_campus_role_in_list(guild_roles, campus_name)
-            if found is not None:
-                return found
-        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
-            try:
-                live_roles = await guild.fetch_roles()
-                if isinstance(live_roles, (list, tuple)):
-                    found = self._match_campus_role_in_list(live_roles, campus_name)
-                    if found is not None:
-                        return found
-            except (discord.HTTPException, discord.Forbidden):
-                pass
-        return None
+        return await self.role_manager.find_role_in_guild(
+            guild, lambda roles: self._match_campus_role_in_list(roles, campus_name)
+        )
 
     async def get_or_create_campus_role(self, guild: discord.Guild, campus_name: str) -> discord.Role | None:
         """Finds or atomically creates a branch campus role."""
         if not guild or not campus_name:
             return None
-        existing = await self.find_campus_role(guild, campus_name)
-        if existing is not None:
-            return existing
-
-        lock = self._get_guild_role_lock(guild.id)
-        async with lock:
-            existing = await self.find_campus_role(guild, campus_name)
-            if existing is not None:
-                return existing
-
-            can_manage = (
-                getattr(guild.me.guild_permissions, "manage_roles", False)
-                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
-                else False
-            )
-            if not can_manage:
-                return None
-
-            try:
-                color_val = CAMPUS_COLORS.get(campus_name, 0x3498DB)
-                role = await guild.create_role(
-                    name=campus_name,
-                    colour=discord.Colour(color_val),
-                    mentionable=True,
-                    reason="TARVeri: auto-created campus branch role for student verification",
-                )
-                try:
-                    await self.db.record_bot_created_role(guild.id, role.id, campus_name)
-                except Exception as e:
-                    logger.debug(f"Could not record bot created campus role: {e}")
-                await self.db.log(
-                    "INFO",
-                    "ROLE_CREATED",
-                    f"Created campus role '{campus_name}' in '{guild.name}' (Guild ID: {guild.id})",
-                    guild=guild,
-                )
-                return role
-            except Exception as e:
-                await self.db.log(
-                    "ERROR",
-                    "ROLE_CREATE_FAILED",
-                    f"Failed to create campus role '{campus_name}' in '{guild.name}': {e}",
-                    guild=guild,
-                )
-                return None
+        color_val = CAMPUS_COLORS.get(campus_name, 0x3498DB)
+        return await self.role_manager.get_or_create_role(
+            guild,
+            role_name=campus_name,
+            matcher=lambda roles: self._match_campus_role_in_list(roles, campus_name),
+            colour=color_val,
+            mentionable=True,
+            reason="TARVeri: auto-created campus branch role for student verification",
+        )
 
     @classmethod
     def _match_study_level_role_in_list(cls, roles: Sequence[discord.Role], target_name: str) -> discord.Role | None:
@@ -790,71 +605,23 @@ class VerificationService:
         """Finds existing study level role in guild cache or live API."""
         if not guild or not level_name:
             return None
-        guild_roles = getattr(guild, "roles", [])
-        if isinstance(guild_roles, (list, tuple)):
-            found = self._match_study_level_role_in_list(guild_roles, level_name)
-            if found is not None:
-                return found
-        if hasattr(guild, "fetch_roles") and callable(guild.fetch_roles):
-            try:
-                live_roles = await guild.fetch_roles()
-                if isinstance(live_roles, (list, tuple)):
-                    found = self._match_study_level_role_in_list(live_roles, level_name)
-                    if found is not None:
-                        return found
-            except (discord.HTTPException, discord.Forbidden):
-                pass
-        return None
+        return await self.role_manager.find_role_in_guild(
+            guild, lambda roles: self._match_study_level_role_in_list(roles, level_name)
+        )
 
     async def get_or_create_study_level_role(self, guild: discord.Guild, level_name: str) -> discord.Role | None:
         """Finds or atomically creates a study level role."""
         if not guild or not level_name:
             return None
-        existing = await self.find_study_level_role(guild, level_name)
-        if existing is not None:
-            return existing
-
-        lock = self._get_guild_role_lock(guild.id)
-        async with lock:
-            existing = await self.find_study_level_role(guild, level_name)
-            if existing is not None:
-                return existing
-
-            can_manage = (
-                getattr(guild.me.guild_permissions, "manage_roles", False)
-                if hasattr(guild, "me") and hasattr(guild.me, "guild_permissions")
-                else False
-            )
-            if not can_manage:
-                return None
-
-            try:
-                color_val = STUDY_LEVEL_COLORS.get(level_name, 0x2980B9)
-                role = await guild.create_role(
-                    name=level_name,
-                    colour=discord.Colour(color_val),
-                    mentionable=True,
-                    reason="TARVeri: auto-created study level role for student verification",
-                )
-                try:
-                    await self.db.record_bot_created_role(guild.id, role.id, level_name)
-                except Exception as e:
-                    logger.debug(f"Could not record bot created study level role: {e}")
-                await self.db.log(
-                    "INFO",
-                    "ROLE_CREATED",
-                    f"Created study level role '{level_name}' in '{guild.name}' (Guild ID: {guild.id})",
-                    guild=guild,
-                )
-                return role
-            except Exception as e:
-                await self.db.log(
-                    "ERROR",
-                    "ROLE_CREATE_FAILED",
-                    f"Failed to create study level role '{level_name}' in '{guild.name}': {e}",
-                    guild=guild,
-                )
-                return None
+        color_val = STUDY_LEVEL_COLORS.get(level_name, 0x2980B9)
+        return await self.role_manager.get_or_create_role(
+            guild,
+            role_name=level_name,
+            matcher=lambda roles: self._match_study_level_role_in_list(roles, level_name),
+            colour=color_val,
+            mentionable=True,
+            reason="TARVeri: auto-created study level role for student verification",
+        )
 
     async def _assign_role_in_guild(
         self,

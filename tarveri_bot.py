@@ -10,19 +10,8 @@ import asyncio
 import logging
 import sys
 
-from tarveri.bot import TARVeriBot, run_bot
-from tarveri.config import (
-    FACULTY_ROLE_NAMES,
-    FACULTY_ROLES,
-    Settings,
-    hash_student_id,
-    mask_student_id,
-    setup_logger,
-    validate_student_id,
-)
-from tarveri.database import Database
-from tarveri.rate_limiter import RateLimiter
-from tarveri.services.verification_service import VerificationService
+from tarveri.bot import run_bot
+from tarveri.config import Settings
 
 logger = logging.getLogger("tarveri")
 

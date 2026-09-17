@@ -333,8 +333,8 @@ class ExpiryAnomalyConfirmView(discord.ui.View):
                     today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                     if card_exp and card_exp < today_iso:
                         lifecycle_view = StudentLifecycleResolutionView(self.service, self.db)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not determine student lifecycle state: %s", e)
 
         header = f"✅ **Expiry Date Confirmed**: Recorded as `{format_card_expiry_display(self.parsed_iso_date)}` (`{self.parsed_iso_date}`).\n\n"
         final_msg = header + response_text
@@ -382,8 +382,8 @@ class ExpiryAnomalyConfirmView(discord.ui.View):
                     today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                     if card_exp and card_exp < today_iso:
                         lifecycle_view = StudentLifecycleResolutionView(self.service, self.db)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not determine student lifecycle state: %s", e)
 
         if lifecycle_view:
             await interaction.followup.send(response_text, view=lifecycle_view, ephemeral=True)
@@ -464,8 +464,8 @@ class ReEnterExpiryModal(discord.ui.Modal, title="✏️ Re-enter Card Expiry Da
                     today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                     if card_exp and card_exp < today_iso:
                         lifecycle_view = StudentLifecycleResolutionView(self.service, self.db)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not determine student lifecycle state: %s", e)
 
         if lifecycle_view:
             await interaction.followup.send(response_text, view=lifecycle_view, ephemeral=True)
@@ -1011,8 +1011,8 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
                     today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                     if card_exp and card_exp < today_iso:
                         view = StudentLifecycleResolutionView(self.service, self.service.db)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Could not determine student lifecycle state: %s", e)
 
         if view:
             await interaction.followup.send(response_text, view=view, ephemeral=True)
@@ -1349,8 +1349,8 @@ class VerificationCog(commands.Cog, name="Verification"):
                         today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                         if card_exp and card_exp < today_iso:
                             view = StudentLifecycleResolutionView(self.service, self.db)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not determine student lifecycle state: %s", e)
 
             if view:
                 await interaction.followup.send(response_text, view=view, ephemeral=True)
@@ -1958,8 +1958,8 @@ class VerificationCog(commands.Cog, name="Verification"):
                                 today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                                 if card_exp and card_exp < today_iso:
                                     view = StudentLifecycleResolutionView(self.service, self.db)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug("Could not determine student lifecycle state: %s", e)
                     if view:
                         await message.author.send(response, view=view)
                     else:

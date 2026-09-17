@@ -419,343 +419,99 @@ class Settings:
 
     @classmethod
     def from_env(cls, validate: bool = True) -> Settings:
-        bot_token = (
-            os.getenv("TARVERI_BOT_TOKEN")
-            or os.getenv("DISCORD_BOT_TOKEN")
-            or os.getenv("BOT_TOKEN")
-            or os.getenv("DISCORD_TOKEN")
-            or ""
-        ).strip()
+        def _env_str(*keys: str, default: str = "") -> str:
+            for key in keys:
+                val = os.getenv(key)
+                if val is not None and val.strip():
+                    return val.strip()
+            return default
 
-        id_hash_secret = (
-            os.getenv("TARVERI_ID_HASH_SECRET")
-            or os.getenv("ID_HASH_SECRET")
-            or os.getenv("HASH_SECRET")
-            or ""
-        ).strip()
+        def _env_int(*keys: str, default: int = 0) -> int:
+            for key in keys:
+                val = os.getenv(key)
+                if val is not None and val.strip():
+                    cleaned = val.strip()
+                    if cleaned.isdigit() or (cleaned.startswith("-") and cleaned[1:].isdigit()):
+                        return int(cleaned)
+            return default
 
-        db_path = (
-            os.getenv("TARVERI_DB_PATH")
-            or os.getenv("DB_PATH")
-            or os.getenv("DATABASE_PATH")
-            or "tarveri.db"
-        ).strip()
+        def _env_optional_int(*keys: str) -> int | None:
+            for key in keys:
+                val = os.getenv(key)
+                if val is not None and val.strip():
+                    cleaned = val.strip()
+                    if cleaned.isdigit():
+                        return int(cleaned)
+            return None
 
-        admin_role_name = (
-            os.getenv("TARVERI_ADMIN_ROLE_NAME")
-            or os.getenv("ADMIN_ROLE_NAME")
-            or os.getenv("ADMIN_ROLE")
-            or "TARVeri Admin"
-        ).strip()
+        def _env_bool(*keys: str, default: bool = False) -> bool:
+            for key in keys:
+                val = os.getenv(key)
+                if val is not None and val.strip():
+                    return val.strip().lower() in ("true", "1", "yes", "t")
+            return default
 
-        logs_dir = (
-            os.getenv("TARVERI_LOGS_DIR")
-            or os.getenv("LOGS_DIR")
-            or "logs"
-        ).strip()
+        bot_token = _env_str("TARVERI_BOT_TOKEN", "DISCORD_BOT_TOKEN", "BOT_TOKEN", "DISCORD_TOKEN")
+        id_hash_secret = _env_str("TARVERI_ID_HASH_SECRET", "ID_HASH_SECRET", "HASH_SECRET")
+        db_path = _env_str("TARVERI_DB_PATH", "DB_PATH", "DATABASE_PATH", default="tarveri.db")
+        admin_role_name = _env_str("TARVERI_ADMIN_ROLE_NAME", "ADMIN_ROLE_NAME", "ADMIN_ROLE", default="TARVeri Admin")
+        logs_dir = _env_str("TARVERI_LOGS_DIR", "LOGS_DIR", default="logs")
+        log_file = _env_str("TARVERI_LOG_FILE", "LOG_FILE", default="tarveri.log")
+        log_archive_days = _env_int("TARVERI_LOG_ARCHIVE_DAYS", "LOG_ARCHIVE_DAYS", default=10)
+        enable_log_rotator = _env_bool("TARVERI_ENABLE_LOG_ROTATOR", "ENABLE_LOG_ROTATOR", default=True)
+        hoster_discord_id = _env_optional_int("TARVERI_HOSTER_DISCORD_ID", "HOSTER_DISCORD_ID", "HOSTER_ID")
 
-        log_file = (
-            os.getenv("TARVERI_LOG_FILE")
-            or os.getenv("LOG_FILE")
-            or "tarveri.log"
-        ).strip()
+        enable_update_checker = _env_bool("TARVERI_ENABLE_UPDATE_CHECKER", "ENABLE_UPDATE_CHECKER", default=True)
+        update_check_interval_hours = _env_int("TARVERI_UPDATE_CHECK_INTERVAL_HOURS", "UPDATE_CHECK_INTERVAL_HOURS", default=24)
+        update_stream = _env_str("TARVERI_UPDATE_STREAM", "TARVERI_UPDATE_BRANCH", "UPDATE_STREAM", "UPDATE_BRANCH", default="auto")
 
-        archive_days_raw = (
-            os.getenv("TARVERI_LOG_ARCHIVE_DAYS")
-            or os.getenv("LOG_ARCHIVE_DAYS")
-            or "10"
-        ).strip()
-        log_archive_days = int(archive_days_raw) if archive_days_raw.isdigit() else 10
+        help_channel_id = _env_optional_int("TARVERI_HELP_CHANNEL_ID", "HELP_CHANNEL_ID")
+        welcome_channel_id = _env_optional_int("TARVERI_WELCOME_CHANNEL_ID", "WELCOME_CHANNEL_ID")
+        timezone_name = _env_str("TARVERI_TIMEZONE", "TIMEZONE", "TZ", default="Asia/Kuala_Lumpur")
 
-        enable_rotator_raw = (
-            os.getenv("TARVERI_ENABLE_LOG_ROTATOR")
-            or os.getenv("ENABLE_LOG_ROTATOR")
-            or "true"
-        ).lower().strip()
-        enable_log_rotator = enable_rotator_raw in ("true", "1", "yes")
+        backup_dir = _env_str("TARVERI_BACKUP_DIR", "BACKUP_DIR", default="backups")
+        max_backups = _env_int("TARVERI_MAX_BACKUPS", "MAX_BACKUPS", default=10)
 
-        hoster_id_raw = (
-            os.getenv("TARVERI_HOSTER_DISCORD_ID")
-            or os.getenv("HOSTER_DISCORD_ID")
-            or os.getenv("HOSTER_ID")
-            or ""
-        ).strip()
-        hoster_discord_id = int(hoster_id_raw) if hoster_id_raw.isdigit() else None
+        enable_outage_watchdog = _env_bool("TARVERI_ENABLE_OUTAGE_WATCHDOG", "ENABLE_OUTAGE_WATCHDOG", default=True)
+        outage_timeout_seconds = _env_int("TARVERI_OUTAGE_TIMEOUT_SECONDS", "OUTAGE_TIMEOUT_SECONDS", default=300)
+        outage_probe_interval_seconds = _env_int("TARVERI_OUTAGE_PROBE_INTERVAL_SECONDS", "OUTAGE_PROBE_INTERVAL_SECONDS", default=15)
+        outage_alert_grace_seconds = _env_int("TARVERI_OUTAGE_ALERT_GRACE_SECONDS", "OUTAGE_ALERT_GRACE_SECONDS", default=20)
 
-        enable_checker_raw = (
-            os.getenv("TARVERI_ENABLE_UPDATE_CHECKER")
-            or os.getenv("ENABLE_UPDATE_CHECKER")
-            or "true"
-        ).lower().strip()
-        enable_update_checker = enable_checker_raw in ("true", "1", "yes")
+        enable_graduation_watchdog = _env_bool("TARVERI_ENABLE_GRADUATION_WATCHDOG", "ENABLE_GRADUATION_WATCHDOG", default=True)
+        graduation_check_interval_hours = _env_int("TARVERI_GRADUATION_CHECK_INTERVAL_HOURS", "GRADUATION_CHECK_INTERVAL_HOURS", default=24)
+        graduation_prompt_cooldown_days = _env_int("TARVERI_GRADUATION_PROMPT_COOLDOWN_DAYS", "GRADUATION_PROMPT_COOLDOWN_DAYS", default=7)
 
-        interval_raw = (
-            os.getenv("TARVERI_UPDATE_CHECK_INTERVAL_HOURS")
-            or os.getenv("UPDATE_CHECK_INTERVAL_HOURS")
-            or "24"
-        ).strip()
-        update_check_interval_hours = int(interval_raw) if interval_raw.isdigit() else 24
-
-        update_stream_raw = (
-            os.getenv("TARVERI_UPDATE_STREAM")
-            or os.getenv("TARVERI_UPDATE_BRANCH")
-            or os.getenv("UPDATE_STREAM")
-            or os.getenv("UPDATE_BRANCH")
-            or "auto"
-        ).strip()
-        update_stream = update_stream_raw if update_stream_raw else "auto"
-
-        help_channel_raw = (
-            os.getenv("TARVERI_HELP_CHANNEL_ID")
-            or os.getenv("HELP_CHANNEL_ID")
-            or ""
-        ).strip()
-        help_channel_id = int(help_channel_raw) if help_channel_raw.isdigit() else None
-
-        welcome_channel_raw = (
-            os.getenv("TARVERI_WELCOME_CHANNEL_ID")
-            or os.getenv("WELCOME_CHANNEL_ID")
-            or ""
-        ).strip()
-        welcome_channel_id = int(welcome_channel_raw) if welcome_channel_raw.isdigit() else None
-
-        timezone_name = (
-            os.getenv("TARVERI_TIMEZONE")
-            or os.getenv("TIMEZONE")
-            or os.getenv("TZ")
-            or "Asia/Kuala_Lumpur"
-        ).strip()
-
-        backup_dir = (
-            os.getenv("TARVERI_BACKUP_DIR")
-            or os.getenv("BACKUP_DIR")
-            or "backups"
-        ).strip()
-
-        max_backups_raw = (
-            os.getenv("TARVERI_MAX_BACKUPS")
-            or os.getenv("MAX_BACKUPS")
-            or "10"
-        ).strip()
-        max_backups = int(max_backups_raw) if max_backups_raw.isdigit() else 10
-
-        enable_outage_raw = (
-            os.getenv("TARVERI_ENABLE_OUTAGE_WATCHDOG")
-            or os.getenv("ENABLE_OUTAGE_WATCHDOG")
-            or "true"
-        ).lower().strip()
-        enable_outage_watchdog = enable_outage_raw in ("true", "1", "yes")
-
-        outage_timeout_raw = (
-            os.getenv("TARVERI_OUTAGE_TIMEOUT_SECONDS")
-            or os.getenv("OUTAGE_TIMEOUT_SECONDS")
-            or "300"
-        ).strip()
-        outage_timeout_seconds = int(outage_timeout_raw) if outage_timeout_raw.isdigit() else 300
-
-        outage_probe_raw = (
-            os.getenv("TARVERI_OUTAGE_PROBE_INTERVAL_SECONDS")
-            or os.getenv("OUTAGE_PROBE_INTERVAL_SECONDS")
-            or "15"
-        ).strip()
-        outage_probe_interval_seconds = int(outage_probe_raw) if outage_probe_raw.isdigit() else 15
-
-        outage_grace_raw = (
-            os.getenv("TARVERI_OUTAGE_ALERT_GRACE_SECONDS")
-            or os.getenv("OUTAGE_ALERT_GRACE_SECONDS")
-            or "20"
-        ).strip()
-        outage_alert_grace_seconds = int(outage_grace_raw) if outage_grace_raw.isdigit() else 20
-
-        enable_grad_raw = (
-            os.getenv("TARVERI_ENABLE_GRADUATION_WATCHDOG")
-            or os.getenv("ENABLE_GRADUATION_WATCHDOG")
-            or "true"
-        ).lower().strip()
-        enable_graduation_watchdog = enable_grad_raw in ("true", "1", "yes")
-
-        grad_interval_raw = (
-            os.getenv("TARVERI_GRADUATION_CHECK_INTERVAL_HOURS")
-            or os.getenv("GRADUATION_CHECK_INTERVAL_HOURS")
-            or "24"
-        ).strip()
-        graduation_check_interval_hours = int(grad_interval_raw) if grad_interval_raw.isdigit() else 24
-
-        grad_cooldown_raw = (
-            os.getenv("TARVERI_GRADUATION_PROMPT_COOLDOWN_DAYS")
-            or os.getenv("GRADUATION_PROMPT_COOLDOWN_DAYS")
-            or "7"
-        ).strip()
-        graduation_prompt_cooldown_days = int(grad_cooldown_raw) if grad_cooldown_raw.isdigit() else 7
-
-        enable_email_veri_raw = (
-            os.getenv("TARVERI_EMAIL_VERIFICATION_ENABLED")
-            or os.getenv("EMAIL_VERIFICATION_ENABLED")
-            or os.getenv("ENABLE_EMAIL_VERIFICATION")
-            or "false"
-        ).lower().strip()
-        enable_email_verification = enable_email_veri_raw in ("true", "1", "yes")
-
-        email_domains_raw = (
-            os.getenv("TARVERI_EMAIL_ALLOWED_DOMAINS")
-            or os.getenv("EMAIL_ALLOWED_DOMAINS")
-            or "student.tarc.edu.my,tarc.edu.my"
-        ).strip()
+        enable_email_verification = _env_bool("TARVERI_EMAIL_VERIFICATION_ENABLED", "EMAIL_VERIFICATION_ENABLED", "ENABLE_EMAIL_VERIFICATION", default=False)
+        email_domains_raw = _env_str("TARVERI_EMAIL_ALLOWED_DOMAINS", "EMAIL_ALLOWED_DOMAINS", default="student.tarc.edu.my,tarc.edu.my")
         email_allowed_domains = tuple(
             d.strip().lower() for d in email_domains_raw.split(",") if d.strip()
         ) or ("student.tarc.edu.my", "tarc.edu.my")
+        email_encryption_key = _env_str("TARVERI_EMAIL_ENCRYPTION_KEY", "EMAIL_ENCRYPTION_KEY")
 
-        email_encryption_key = (
-            os.getenv("TARVERI_EMAIL_ENCRYPTION_KEY")
-            or os.getenv("EMAIL_ENCRYPTION_KEY")
-            or ""
-        ).strip()
+        smtp_host = _env_str("TARVERI_SMTP_HOST", "SMTP_HOST", default="mail.smtp2go.com")
+        smtp_port = _env_int("TARVERI_SMTP_PORT", "SMTP_PORT", default=587)
+        smtp_user = _env_str("TARVERI_SMTP_USER", "SMTP_USER")
+        smtp_password = _env_str("TARVERI_SMTP_PASSWORD", "SMTP_PASSWORD")
+        smtp_from_email = _env_str("TARVERI_SMTP_FROM_EMAIL", "SMTP_FROM_EMAIL", default="noreply@muwa.work")
+        smtp_from_name = _env_str("TARVERI_SMTP_FROM_NAME", "SMTP_FROM_NAME", default="TARVeri Student Verification").strip('"').strip("'")
+        smtp_use_tls = _env_bool("TARVERI_SMTP_USE_TLS", "SMTP_USE_TLS", default=True)
 
-        smtp_host = (
-            os.getenv("TARVERI_SMTP_HOST")
-            or os.getenv("SMTP_HOST")
-            or "mail.smtp2go.com"
-        ).strip()
+        smtp_fallback_host = _env_str("TARVERI_SMTP_FALLBACK_HOST", "SMTP_FALLBACK_HOST")
+        smtp_fallback_port = _env_int("TARVERI_SMTP_FALLBACK_PORT", "SMTP_FALLBACK_PORT", default=587)
+        smtp_fallback_user = _env_str("TARVERI_SMTP_FALLBACK_USER", "SMTP_FALLBACK_USER")
+        smtp_fallback_password = _env_str("TARVERI_SMTP_FALLBACK_PASSWORD", "SMTP_FALLBACK_PASSWORD")
+        smtp_fallback_from_email = _env_str("TARVERI_SMTP_FALLBACK_FROM_EMAIL", "SMTP_FALLBACK_FROM_EMAIL")
+        smtp_fallback_from_name = _env_str("TARVERI_SMTP_FALLBACK_FROM_NAME", "SMTP_FALLBACK_FROM_NAME").strip('"').strip("'")
+        smtp_fallback_use_tls = _env_bool("TARVERI_SMTP_FALLBACK_USE_TLS", "SMTP_FALLBACK_USE_TLS", default=True)
 
-        smtp_port_raw = (
-            os.getenv("TARVERI_SMTP_PORT")
-            or os.getenv("SMTP_PORT")
-            or "587"
-        ).strip()
-        smtp_port = int(smtp_port_raw) if smtp_port_raw.isdigit() else 587
+        email_otp_ttl_seconds = _env_int("TARVERI_EMAIL_OTP_TTL_SECONDS", "EMAIL_OTP_TTL_SECONDS", default=600)
+        email_otp_max_attempts = _env_int("TARVERI_EMAIL_OTP_MAX_ATTEMPTS", "EMAIL_OTP_MAX_ATTEMPTS", default=3)
+        email_otp_resend_cooldown_seconds = _env_int("TARVERI_EMAIL_OTP_RESEND_COOLDOWN_SECONDS", "EMAIL_OTP_RESEND_COOLDOWN_SECONDS", default=60)
+        email_restrict_smtp_usage = _env_bool("TARVERI_EMAIL_RESTRICT_SMTP_USAGE", "EMAIL_RESTRICT_SMTP_USAGE", "TARVERI_RESTRICT_SMTP_USAGE", "RESTRICT_SMTP_USAGE", default=True)
 
-        smtp_user = (
-            os.getenv("TARVERI_SMTP_USER")
-            or os.getenv("SMTP_USER")
-            or ""
-        ).strip()
-
-        smtp_password = (
-            os.getenv("TARVERI_SMTP_PASSWORD")
-            or os.getenv("SMTP_PASSWORD")
-            or ""
-        ).strip()
-
-        smtp_from_email = (
-            os.getenv("TARVERI_SMTP_FROM_EMAIL")
-            or os.getenv("SMTP_FROM_EMAIL")
-            or "noreply@muwa.work"
-        ).strip()
-
-        smtp_from_name = (
-            os.getenv("TARVERI_SMTP_FROM_NAME")
-            or os.getenv("SMTP_FROM_NAME")
-            or "TARVeri Student Verification"
-        ).strip().strip('"').strip("'")
-
-        smtp_tls_raw = (
-            os.getenv("TARVERI_SMTP_USE_TLS")
-            or os.getenv("SMTP_USE_TLS")
-            or "true"
-        ).lower().strip()
-        smtp_use_tls = smtp_tls_raw in ("true", "1", "yes")
-
-        smtp_fallback_host = (
-            os.getenv("TARVERI_SMTP_FALLBACK_HOST")
-            or os.getenv("SMTP_FALLBACK_HOST")
-            or ""
-        ).strip()
-
-        smtp_fallback_port_raw = (
-            os.getenv("TARVERI_SMTP_FALLBACK_PORT")
-            or os.getenv("SMTP_FALLBACK_PORT")
-            or "587"
-        ).strip()
-        smtp_fallback_port = (
-            int(smtp_fallback_port_raw) if smtp_fallback_port_raw.isdigit() else 587
-        )
-
-        smtp_fallback_user = (
-            os.getenv("TARVERI_SMTP_FALLBACK_USER")
-            or os.getenv("SMTP_FALLBACK_USER")
-            or ""
-        ).strip()
-
-        smtp_fallback_password = (
-            os.getenv("TARVERI_SMTP_FALLBACK_PASSWORD")
-            or os.getenv("SMTP_FALLBACK_PASSWORD")
-            or ""
-        ).strip()
-
-        smtp_fallback_from_email = (
-            os.getenv("TARVERI_SMTP_FALLBACK_FROM_EMAIL")
-            or os.getenv("SMTP_FALLBACK_FROM_EMAIL")
-            or ""
-        ).strip()
-
-        smtp_fallback_from_name = (
-            os.getenv("TARVERI_SMTP_FALLBACK_FROM_NAME")
-            or os.getenv("SMTP_FALLBACK_FROM_NAME")
-            or ""
-        ).strip().strip('"').strip("'")
-
-        smtp_fallback_tls_raw = (
-            os.getenv("TARVERI_SMTP_FALLBACK_USE_TLS")
-            or os.getenv("SMTP_FALLBACK_USE_TLS")
-            or "true"
-        ).lower().strip()
-        smtp_fallback_use_tls = smtp_fallback_tls_raw in ("true", "1", "yes")
-
-        otp_ttl_raw = (
-            os.getenv("TARVERI_EMAIL_OTP_TTL_SECONDS")
-            or os.getenv("EMAIL_OTP_TTL_SECONDS")
-            or "600"
-        ).strip()
-        email_otp_ttl_seconds = int(otp_ttl_raw) if otp_ttl_raw.isdigit() else 600
-
-        otp_attempts_raw = (
-            os.getenv("TARVERI_EMAIL_OTP_MAX_ATTEMPTS")
-            or os.getenv("EMAIL_OTP_MAX_ATTEMPTS")
-            or "3"
-        ).strip()
-        email_otp_max_attempts = int(otp_attempts_raw) if otp_attempts_raw.isdigit() else 3
-
-        otp_cooldown_raw = (
-            os.getenv("TARVERI_EMAIL_OTP_RESEND_COOLDOWN_SECONDS")
-            or os.getenv("EMAIL_OTP_RESEND_COOLDOWN_SECONDS")
-            or "60"
-        ).strip()
-        email_otp_resend_cooldown_seconds = (
-            int(otp_cooldown_raw) if otp_cooldown_raw.isdigit() else 60
-        )
-
-        restrict_smtp_raw = (
-            os.getenv("TARVERI_EMAIL_RESTRICT_SMTP_USAGE")
-            or os.getenv("EMAIL_RESTRICT_SMTP_USAGE")
-            or os.getenv("TARVERI_RESTRICT_SMTP_USAGE")
-            or os.getenv("RESTRICT_SMTP_USAGE")
-            or "true"
-        ).lower().strip()
-        email_restrict_smtp_usage = restrict_smtp_raw in ("true", "1", "yes", "t")
-
-        sentry_dsn = (
-            os.getenv("TARVERI_SENTRY_DSN")
-            or os.getenv("SENTRY_DSN")
-            or ""
-        ).strip()
-
-        cb_fail_max_raw = (
-            os.getenv("TARVERI_CIRCUIT_BREAKER_FAIL_MAX")
-            or os.getenv("CIRCUIT_BREAKER_FAIL_MAX")
-            or "3"
-        ).strip()
-        circuit_breaker_fail_max = (
-            int(cb_fail_max_raw) if cb_fail_max_raw.isdigit() else 3
-        )
-
-        cb_reset_timeout_raw = (
-            os.getenv("TARVERI_CIRCUIT_BREAKER_RESET_TIMEOUT")
-            or os.getenv("CIRCUIT_BREAKER_RESET_TIMEOUT")
-            or "300"
-        ).strip()
-        circuit_breaker_reset_timeout = (
-            int(cb_reset_timeout_raw) if cb_reset_timeout_raw.isdigit() else 300
-        )
+        sentry_dsn = _env_str("TARVERI_SENTRY_DSN", "SENTRY_DSN")
+        circuit_breaker_fail_max = _env_int("TARVERI_CIRCUIT_BREAKER_FAIL_MAX", "CIRCUIT_BREAKER_FAIL_MAX", default=3)
+        circuit_breaker_reset_timeout = _env_int("TARVERI_CIRCUIT_BREAKER_RESET_TIMEOUT", "CIRCUIT_BREAKER_RESET_TIMEOUT", default=300)
 
         if validate:
             if not bot_token:

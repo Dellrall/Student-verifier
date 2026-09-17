@@ -30,6 +30,66 @@ from tarveri.utils import AsyncCircuitBreaker, CircuitBreakerError
 
 logger = logging.getLogger("tarveri")
 
+EMAIL_OTP_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TARVeri Code</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #F8FAFC; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #0F172A;">
+    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #F8FAFC; padding: 40px 12px;">
+        <tr>
+            <td align="center">
+                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 440px; background-color: #FFFFFF; border-radius: 12px; border: 1px solid #E2E8F0; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04); overflow: hidden;">
+                    <!-- Subtle Accent Line -->
+                    <tr>
+                        <td height="4" style="background-color: #C8102E; line-height: 4px; font-size: 1px;">&nbsp;</td>
+                    </tr>
+                    <!-- Card Body -->
+                    <tr>
+                        <td style="padding: 32px 32px 28px 32px;">
+                            <!-- University Header -->
+                            <div style="margin-bottom: 24px;">
+                                <span style="font-size: 16px; font-weight: 800; color: #0F172A; letter-spacing: 0.5px;">TARUMT</span>
+                                <span style="font-size: 13px; font-weight: 500; color: #64748B; margin-left: 4px;">Student Verification</span>
+                            </div>
+                            <h1 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700; color: #0F172A; letter-spacing: -0.2px;">
+                                Verification code
+                            </h1>
+                            <p style="margin: 0 0 20px 0; font-size: 14px; line-height: 20px; color: #475569;">
+                                Enter this code to verify your student status on <strong>{server_name}</strong>:
+                            </p>
+                            <!-- Modern OTP Box -->
+                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 20px;">
+                                <tr>
+                                    <td align="center" style="background-color: #F1F5F9; border-radius: 8px; padding: 16px 20px;">
+                                        <div style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #C8102E; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+                                            {otp_code}
+                                        </div>
+                                    </td>
+                                </tr>
+                            </table>
+                            <p style="margin: 0; font-size: 13px; color: #64748B;">
+                                This code expires in <strong>{ttl_minutes} minutes</strong>.
+                            </p>
+                        </td>
+                    </tr>
+                    <!-- Minimal Footer -->
+                    <tr>
+                        <td style="padding: 16px 32px; background-color: #F8FAFC; border-top: 1px solid #E2E8F0;">
+                            <p style="margin: 0; font-size: 11px; line-height: 16px; color: #94A3B8;">
+                                If you did not request this code, you can safely ignore this email.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>"""
+
 
 @dataclass(slots=True)
 class PendingOtp:
@@ -294,72 +354,11 @@ class EmailService:
 
     def _render_html_template(self, otp_code: str, server_name: str, ttl_minutes: int) -> str:
         """Renders ultra-clean, minimalist TARUMT verification email."""
-        return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TARVeri Code</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #F8FAFC; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #0F172A;">
-    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #F8FAFC; padding: 40px 12px;">
-        <tr>
-            <td align="center">
-                <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 440px; background-color: #FFFFFF; border-radius: 12px; border: 1px solid #E2E8F0; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04); overflow: hidden;">
-                    
-                    <!-- Subtle Accent Line -->
-                    <tr>
-                        <td height="4" style="background-color: #C8102E; line-height: 4px; font-size: 1px;">&nbsp;</td>
-                    </tr>
-
-                    <!-- Card Body -->
-                    <tr>
-                        <td style="padding: 32px 32px 28px 32px;">
-                            <!-- University Header -->
-                            <div style="margin-bottom: 24px;">
-                                <span style="font-size: 16px; font-weight: 800; color: #0F172A; letter-spacing: 0.5px;">TARUMT</span>
-                                <span style="font-size: 13px; font-weight: 500; color: #64748B; margin-left: 4px;">Student Verification</span>
-                            </div>
-
-                            <h1 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700; color: #0F172A; letter-spacing: -0.2px;">
-                                Verification code
-                            </h1>
-                            <p style="margin: 0 0 20px 0; font-size: 14px; line-height: 20px; color: #475569;">
-                                Enter this code to verify your student status on <strong>{server_name}</strong>:
-                            </p>
-
-                            <!-- Modern OTP Box -->
-                            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 20px;">
-                                <tr>
-                                    <td align="center" style="background-color: #F1F5F9; border-radius: 8px; padding: 16px 20px;">
-                                        <div style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #C8102E; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
-                                            {otp_code}
-                                        </div>
-                                    </td>
-                                </tr>
-                            </table>
-
-                            <p style="margin: 0; font-size: 13px; color: #64748B;">
-                                This code expires in <strong>{ttl_minutes} minutes</strong>.
-                            </p>
-                        </td>
-                    </tr>
-
-                    <!-- Minimal Footer -->
-                    <tr>
-                        <td style="padding: 16px 32px; background-color: #F8FAFC; border-top: 1px solid #E2E8F0;">
-                            <p style="margin: 0; font-size: 11px; line-height: 16px; color: #94A3B8;">
-                                If you did not request this code, you can safely ignore this email.
-                            </p>
-                        </td>
-                    </tr>
-
-                </table>
-            </td>
-        </tr>
-    </table>
-</body>
-</html>"""
+        return EMAIL_OTP_HTML_TEMPLATE.format(
+            server_name=server_name,
+            otp_code=otp_code,
+            ttl_minutes=ttl_minutes,
+        )
 
     async def _send_to_smtp_endpoint(
         self,

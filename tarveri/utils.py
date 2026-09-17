@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, tzinfo
 import logging
+import re
+import time
 
 import discord
 
@@ -106,8 +108,6 @@ def parse_ticket_seq(seq: int | str | None) -> int | None:
             val = int(cleaned)
             return val if val > 0 else None
 
-        import re
-
         match = re.match(r"^([A-Za-z]+)(\d+)$", cleaned)
         if match:
             letters = match.group(1).upper()
@@ -166,13 +166,11 @@ class AsyncCircuitBreaker:
         self.name = name
         self._state: str = "closed"
         self._fail_count: int = 0
-        import time
         self._last_state_change: float = time.monotonic()
         self._lock = asyncio.Lock()
 
     @property
     def current_state(self) -> str:
-        import time
         now = time.monotonic()
         if self._state == "open" and (now - self._last_state_change) >= self.reset_timeout:
             return "half_open"
@@ -183,14 +181,12 @@ class AsyncCircuitBreaker:
         return self._fail_count
 
     async def record_success(self) -> None:
-        import time
         async with self._lock:
             self._fail_count = 0
             self._state = "closed"
             self._last_state_change = time.monotonic()
 
     async def record_failure(self) -> None:
-        import time
         async with self._lock:
             self._fail_count += 1
             if self._fail_count >= self.fail_max or self._state == "half_open":
