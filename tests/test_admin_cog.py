@@ -857,10 +857,14 @@ async def test_admin_dashboard_toggle_email_verification(tmp_path):
     interaction = MagicMock(spec=discord.Interaction)
     interaction.guild = guild
     interaction.user = admin_user
-    interaction.response.defer = AsyncMock()
-    interaction.edit_original_response = AsyncMock()
+    # 1. Toggle from False -> True
+    await view._on_toggle_email_verification_clicked(interaction)
+    assert await db.is_guild_email_verification_enabled(guild.id) is True
+    interaction.edit_original_response.assert_called_once()
+    embed = interaction.edit_original_response.call_args[1]["embed"]
+    assert "MANDATORY" in embed.description
 
-    # Toggle from True -> False
+    # 2. Toggle from True -> False
     interaction.edit_original_response.reset_mock()
     await view._on_toggle_email_verification_clicked(interaction)
     assert await db.is_guild_email_verification_enabled(guild.id) is False
@@ -869,6 +873,7 @@ async def test_admin_dashboard_toggle_email_verification(tmp_path):
     assert "OPTIONAL" in embed.description
 
     await db.close()
+
 
 
 
