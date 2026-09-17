@@ -1,147 +1,212 @@
-# TARVeri
+# 🎓 TARVeri — Student & Guest Verification Bot
 
-A Discord verification bot for TARUMT students that assigns faculty roles based on student IDs.
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
+[![Discord.py](https://img.shields.io/badge/discord.py-v2.4-5865F2.svg)](https://discordpy.readthedocs.io/)
+[![SQLite WAL](https://img.shields.io/badge/sqlite-WAL%20mode-003B57.svg)](https://www.sqlite.org/wal.html)
+[![Tests Passing](https://img.shields.io/badge/tests-211%20passed-success.svg)](https://github.com/Dellrall/Student-verifier)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Setup & Running
+> **TARVeri** is a production-grade Discord student and guest verification bot engineered for **TARUMT (Tunku Abdul Rahman University of Management and Technology)**. It automatically parses student IDs, verifies institutional email ownership with dual-relay OTP failover, renders high-DPI digital campus cards, and orchestrates guest referral ticket reviews.
+
+---
+
+## 🏗️ System Architecture
+
+```mermaid
+flowchart TD
+
+subgraph group_runtime["Runtime"]
+  node_entry["CLI entry points<br/>Python entry<br/>[tarveri_bot.py]"]
+  node_bot["Bot assembly<br/>Discord bot<br/>[bot.py]"]
+end
+
+subgraph group_discord["Discord boundary"]
+  node_discord_api{{"Discord API & gateway<br/>external platform"}}
+  node_verification_cog["Verification cog<br/>Discord commands"]
+  node_guest_cog["Guest cog<br/>Discord workflows<br/>[guest_cog.py]"]
+  node_admin_cog["Admin cog<br/>Discord commands<br/>[admin_cog.py]"]
+  node_admin_dashboard["Admin dashboard<br/>admin UI<br/>[admin_dashboard.py]"]
+end
+
+subgraph group_domain["Domain services"]
+  node_verification_service["Verification service<br/>identity lifecycle"]
+  node_email_service["Email service<br/>OTP delivery<br/>[email_service.py]"]
+  node_guest_service["Guest service<br/>guest workflow<br/>[guest_service.py]"]
+  node_rate_limiter["Rate limiter<br/>abuse control<br/>[rate_limiter.py]"]
+  node_database[("SQLite system of record<br/>persistence<br/>[database.py]")]
+  node_log_service["Audit logging<br/>audit service<br/>[log_service.py]"]
+  node_smtp{{"SMTP relays<br/>external email"}}
+end
+
+subgraph group_operations["Operations"]
+  node_watchdog["Graduation watchdog<br/>background service"]
+  node_outage["Outage monitor<br/>background service<br/>[outage_service.py]"]
+  node_litestream["Litestream replication<br/>SQLite backup<br/>[litestream.yml]"]
+  node_systemd["System service<br/>deployment unit<br/>[tarveri.service]"]
+  node_updater["Update automation<br/>deployment script<br/>[update.sh]"]
+  node_network{{"Network probes<br/>external connectivity"}}
+end
+
+node_entry -->|"starts"| node_bot
+node_systemd -->|"runs"| node_entry
+node_bot -->|"registers"| node_verification_cog
+node_bot -->|"registers"| node_guest_cog
+node_bot -->|"registers"| node_admin_cog
+node_bot -->|"starts"| node_watchdog
+node_bot -->|"starts"| node_outage
+node_discord_api -->|"interactions & events"| node_verification_cog
+node_discord_api -->|"interactions & events"| node_guest_cog
+node_discord_api -->|"commands"| node_admin_cog
+node_verification_cog -->|"verifies identities"| node_verification_service
+node_verification_cog -->|"checks limits"| node_rate_limiter
+node_guest_cog -->|"runs guest workflow"| node_guest_service
+node_admin_cog -->|"opens"| node_admin_dashboard
+node_admin_dashboard -->|"diagnostics & operations"| node_database
+node_verification_service -->|"initiates OTP"| node_email_service
+node_verification_service -->|"identity state & roles"| node_database
+node_guest_service -->|"checks verified referrers"| node_verification_service
+node_guest_service -->|"tickets & guest state"| node_database
+node_email_service -->|"encrypted email & blind index"| node_database
+node_email_service -->|"sends OTP"| node_smtp
+node_log_service -->|"writes audit events"| node_database
+node_watchdog -->|"resolves expiry"| node_verification_service
+node_outage -->|"probes"| node_network
+node_litestream -.->|"replicates"| node_database
+node_updater -->|"updates service"| node_systemd
+
+click node_entry "https://github.com/dellrall/student-verifier/blob/main/tarveri_bot.py"
+click node_bot "https://github.com/dellrall/student-verifier/blob/main/tarveri/bot.py"
+click node_verification_cog "https://github.com/dellrall/student-verifier/blob/main/tarveri/cogs/verification_cog.py"
+click node_guest_cog "https://github.com/dellrall/student-verifier/blob/main/tarveri/cogs/guest_cog.py"
+click node_admin_cog "https://github.com/dellrall/student-verifier/blob/main/tarveri/cogs/admin_cog.py"
+click node_admin_dashboard "https://github.com/dellrall/student-verifier/blob/main/tarveri/cogs/admin_dashboard.py"
+click node_verification_service "https://github.com/dellrall/student-verifier/blob/main/tarveri/services/verification_service.py"
+click node_email_service "https://github.com/dellrall/student-verifier/blob/main/tarveri/services/email_service.py"
+click node_guest_service "https://github.com/dellrall/student-verifier/blob/main/tarveri/services/guest_service.py"
+click node_rate_limiter "https://github.com/dellrall/student-verifier/blob/main/tarveri/rate_limiter.py"
+click node_database "https://github.com/dellrall/student-verifier/blob/main/tarveri/database.py"
+click node_log_service "https://github.com/dellrall/student-verifier/blob/main/tarveri/services/log_service.py"
+click node_watchdog "https://github.com/dellrall/student-verifier/blob/main/tarveri/services/graduation_watchdog_service.py"
+click node_outage "https://github.com/dellrall/student-verifier/blob/main/tarveri/services/outage_service.py"
+click node_litestream "https://github.com/dellrall/student-verifier/blob/main/litestream.yml"
+click node_systemd "https://github.com/dellrall/student-verifier/blob/main/deploy/tarveri.service"
+click node_updater "https://github.com/dellrall/student-verifier/blob/main/scripts/update.sh"
+
+classDef toneNeutral fill:#f8fafc,stroke:#334155,stroke-width:1.5px,color:#0f172a
+classDef toneBlue fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#172554
+classDef toneAmber fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f
+classDef toneMint fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px,color:#14532d
+classDef toneRose fill:#ffe4e6,stroke:#e11d48,stroke-width:1.5px,color:#881337
+classDef toneIndigo fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#312e81
+classDef toneTeal fill:#ccfbf1,stroke:#0f766e,stroke-width:1.5px,color:#134e4a
+class node_entry,node_bot toneBlue
+class node_discord_api,node_verification_cog,node_guest_cog,node_admin_cog,node_admin_dashboard toneAmber
+class node_verification_service,node_email_service,node_guest_service,node_rate_limiter,node_database,node_log_service,node_smtp toneMint
+class node_watchdog,node_outage,node_litestream,node_systemd,node_updater,node_network toneRose
+```
+
+---
+
+## ✨ Core Highlights
+
+| Feature | Description |
+| :--- | :--- |
+| 🛡️ **Zero-Knowledge Security** | HMAC-SHA256 blind indexing for student IDs and emails. AES-256 Fernet authenticated encryption at rest. Raw PII is never stored in plaintext. |
+| ⚡ **Zero-Waste Dual SMTP** | Non-blocking `aiosmtplib` with `AsyncCircuitBreaker`. Automatically fails over from Primary (Resend/SMTP2GO) to Direct SMTP with 0ms penalty. |
+| 🎓 **Century-Safe Lifecycle** | Sliding century windowing (`1969`–`2068+`), 8-year expiry anomaly protection, and dynamic graduation auto-expiry sweeps. |
+| 🎟️ **Guest Referral Workflow** | Alphanumeric tracking (`#A0001`), double verification vouching, and intelligent auto-escalating staff review threads. |
+| 🎛️ **Admin Control Center** | Interactive `/admin dashboard` with live telemetry, diagnostics, role backfilling, and one-click database management. |
+| 💾 **Disaster Recovery** | SQLite in WAL mode with native [Litestream](https://litestream.io) cloud replication (Cloudflare R2 / AWS S3) and power outage (`SIGPWR`) flushing. |
+
+---
+
+## 🚀 Quick Start
 
 ### 1. Requirements
-* Python 3.10+
-* A Discord bot with **Server Members Intent** and **Message Content Intent** enabled in the Developer Portal.
-* Bot needs **Manage Roles** permission (placed above faculty roles in the server role list).
+* Python 3.10+ (Tested on Python 3.13)
+* A Discord bot with **Server Members Intent** and **Message Content Intent** enabled.
+* Bot role placed above all managed faculty/branch roles in Discord's role hierarchy.
 
 ### 2. Installation
 
 ```bash
+# Clone the repository
 git clone https://github.com/Dellrall/Student-verifier.git
 cd Student-verifier
 
+# Create virtual environment & install dependencies
 python3 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
 ### 3. Configuration
 
-Copy the sample environment file:
-
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
-* `TARVERI_BOT_TOKEN`: Your Discord bot token.
-* `TARVERI_ID_HASH_SECRET`: A random secret string used to hash student IDs at rest (generate with `python3 -c "import secrets; print(secrets.token_hex(32))"`).
-* `TARVERI_TIMEZONE`: Timezone for logs and database timestamps (default: `Asia/Kuala_Lumpur` / local system time).
-* `TARVERI_MAX_BACKUPS`: Number of recent database backups to keep in `backups/` (default: `10`).
+Edit `.env` with your credentials:
+```env
+TARVERI_BOT_TOKEN="your_discord_bot_token"
+TARVERI_ID_HASH_SECRET="generate_with_secrets_token_hex_32"
+TARVERI_TIMEZONE="Asia/Kuala_Lumpur"
+```
 
-### 4. Start the Bot
+### 4. Run the Bot
 
 ```bash
 python tarveri_bot.py
-# Or run as a Python module:
+# Or run as a module:
 python -m tarveri
 ```
 
-### 5. Updating the Bot
-
-To safely pull upstream updates with automatic database backup (10-file rotation), dependency sync, and pre-flight testing:
+### 5. Automated Updates
 
 ```bash
-# Update according to configured stream in .env (or current upstream)
+# Pull upstream updates with backup, venv sync & preflight tests:
 ./scripts/update.sh
-
-# Or target a specific stream/branch directly
-./scripts/update.sh main
-./scripts/update.sh beta
 ```
 
-*(To check if updates are available without applying: `./scripts/update.sh --check` or `./scripts/update.sh --check main`)*
+---
 
-## Usage
+## ⚡ Quick Command Summary
 
-### Students & Members
-* **`/verify [student_id] [expiry_date] [email]`** — Opens a private modal popup (or verifies directly via slash arguments).
-  * *Institutional Email OTP Verification*: On opted-in servers, generates a 6-digit one-time code to your official `@student.tarc.edu.my` or `@tarc.edu.my` inbox with dynamic Discord countdown timers (`<t:{expire_ts}:R>`).
-  * *Flexible Date Support*: Accepts `DD/MM/YYYY`, `DD-MM-YYYY`, `DD.MM.YYYY`, `DD/MM/YY`, `MM/YY`, `MM/YYYY`, `YYYY-MM-DD`, or `DD Month YYYY`.
-  * *8-Year Anomaly Guard*: Ambiguous entries (like `06/07` for 6th July interpreted as June 2007) or dates exceeding $\pm 8$ years prompt an interactive confirmation view (`[Confirm Date]`, `[Re-enter Date]`, `[Auto-Calculate]`) with a 1-click re-input modal to prevent false alumni triggers.
-  * *Zero-Effort Card Expiry*: Leaving the expiry date blank automatically estimates card validity based on intake year and study level (`F`: +1y, `D`: +2y, `R`: +3y, `P`: +2y).
-  * *Smart Academic Transition*: Progressing to Degree or Masters? Simply enter your new Student ID to atomically update your study level and roles with full audit history.
-  * *Real-Time Lifecycle Detection*: If your intake year or card expiry date is in the past, TARVeri automatically attaches an interactive resolution menu (🎓 Graduated Alumni / 📚 Further Studies / ⏳ Extend Expiry).
-* **`/otp <code>`** — Direct slash command to verify your 6-digit email OTP verification code immediately.
-* **Direct Messages (DMs)** — Send your student ID (e.g. `24WMR12345` or `24WMR12345 10/27`) directly to the bot for private verification.
-* **`/graduate [year] [programme]`** — Instant alumni claim for verified students. Discovers existing server `Alumni` roles or provisions the official `#D4AF37` role, updating your Digital Campus Card to Alumni status.
-* **`/dropout`** — Voluntarily withdraw student verification and release roles with an explicit confirmation phrase (`"Yes, I am dropping out."`).
-* **`/card [member] [hidden]`** — Generate and share high-DPI digital student/guest/alumni campus ID cards rendered with glassmorphism design, verification checkmarks, and achievement badges (`public` by default, or `hidden: True`).
-* **Context Menu App**: Right-click (or long-press) any member $\to$ **Apps** $\to$ **"View Campus Card"**.
-* **`/referral generate [ttl_hours]`** — Verified students generate a single-use guest referral code for friends (max 3 active).
-* **`/referral list`** — View active and past generated referral codes.
+| Command | Scope | Description |
+| :--- | :---: | :--- |
+| `/verify [id] [expiry] [email]` | User | Verify student identity via modal or direct parameters. |
+| `/otp <code>` | User | Submit 6-digit email OTP verification code. |
+| `/graduate [year] [programme]` | User | Claim verified TARUMT Alumni role and badge. |
+| `/card [member] [hidden]` | User | Generate high-DPI digital campus ID card. |
+| `/referral generate` | User | Generate a single-use guest referral code. |
+| `/admin dashboard` | Admin | Open the interactive Control Center dashboard. |
+| `/admin diagnose` | Admin | Run role hierarchy and database self-healing diagnostics. |
+| `/admin panel` | Admin | Post persistent 3-button verification gateway panel. |
+| `/admin unverify @user` | Admin | Unlink student ID and revoke roles across servers. |
 
-### 📧 Institutional Email Verification & Security
-* **2-Factor Email OTP Verification**: Verifies ownership of official TARUMT institutional mailboxes (`<abbr>-<branch><fac><intake>@student.tarc.edu.my`, e.g. `yaplz-wm23@student.tarc.edu.my` or `@tarc.edu.my`).
-* **AES-256 Symmetric Encryption at Rest**: Student email addresses are encrypted with Fernet AES-256 authenticated encryption before persisting to SQLite.
-* **HMAC-SHA256 Blind Indexing**: Uses deterministic salted blind hashes (`student_email_hash`) to enforce 1-to-1 account binding and prevent cross-account duplicate email usage without storing plaintext emails.
-* **Primary & Fallback Dual-SMTP Engine**: Dispatches emails via high-deliverability primary relay (e.g. SMTP2GO) with seamless automatic failover to a direct secondary SMTP server on quota depletion or network timeout.
-* **Pre-Flight Validation Pipeline**: Validates user rate limits, Student ID structure, and blind index duplicate checks (both Student ID and Email) **before** touching the SMTP relay, eliminating wasted quota on typos or duplicate attempts.
-* **Alumni Email Confirmation Gate**: Automatically intercepts graduated cohorts (where card expiry is dynamically in the past) before OTP dispatch, giving alumni the option to verify directly and claim their `TARUMT Alumni` role without being blocked by deactivated university inboxes.
-* **Per-Server Opt-In / Opt-Out & Quota Protection**: Server administrators can mandate email verification per-server (`/admin email_verification enabled:True|False`). When `TARVERI_EMAIL_RESTRICT_SMTP_USAGE=true` (default), opted-out servers verify students immediately without wasting SMTP quota, while still storing encrypted emails at rest.
+---
 
-### 🎓 Academic Lifecycle & Graduation Watchdog Engine
-* **Automated Expiry Sweeps (`GraduationWatchdogService`)**: Periodic background checks (every 24h) monitor card validity and send polite lifecycle resolution DMs with a 7-day cooldown.
-* **Smart Expiry Anomaly Interception**: Flags unusual expiry dates exceeding 8 years relative to current year/intake without prematurely modifying roles, allowing immediate interactive correction or confirmed graduation.
-* **Active-Chat Graduation Prompt**: When a student with an expired card participates in server channels, the bot delivers the interactive lifecycle resolution UI to guide their status update.
-* **Sliding Century Windowing**: Dynamically handles historical and future intake years (`1969 <= year <= datetime.now().year + 5`) with zero hardcoded time-locks.
+## 📚 Detailed Documentation
 
-### Guests & Non-TARUMT Outsiders
-* **Referral Entry**: Outsiders with a referral code click **"Enter Referral Code"** on the gateway panel or use the modal to enter the code.
-* **Direct Application**: Outsiders without a code click **"Apply as Guest"** to submit their name and reason for joining.
-* **Double Verification Process & Multi-Action Review Panel**:
-  1. **Step 1 (Voucher)**: The referring student submits their vouch statement/context via **`[Confirm Vouch]`**.
-  2. **Step 2 (Admin Team Actions)**: Server admins review the context and can:
-     * **`[Approve Guest]`**: Admits the applicant, assigns the `Guest(Approved)` role, and locks/archives the thread.
-     * **`[Reject / Veto]`**: Rejects the application with a reason notice, kicks the applicant from the server, and locks/archives the thread.
-     * **`[Close Ticket]`**: **Manual Close / Dismissal Without Kicking** — Closes and archives the review ticket with custom notes while leaving the applicant in the server (no role changes or expulsion). Ideal for spam suppression, duplicate applications, inquiries, or manual reconsideration.
-* **Alphanumeric Ticket Tracking**: Private review threads and audit records use alphanumeric sequence numbers (`#A0001`, `#A0002` ... `#Z9999` $\to$ `#AA0001`).
-* **User-Accessible Thread Channel Discovery**: Always spawns private review threads in parent channels accessible to normal/unverified users (e.g. `#ask-for-help`, `#help`, `#support`). Automatically creates a public `#ask-for-help` channel with pinned guidance if no accessible parent channel exists, avoiding inaccessible admin/staff-locked channels.
-* **Intelligent Staff Tagging & 1-Hour Escalation**: The bot tags a batch of 2 admins (active/online moderators first, then highest authority). If 1 hour passes without admin response, it automatically escalates by tagging the next 2 admins.
-* **Audit Trail**: All reason notes, comments, voucher IDs, and admin verdicts are stored with timestamps in the database.
-* **Automatic Revocation**: Guest access and active tickets are automatically revoked if a member leaves, is kicked, or is banned from the server.
+For full architectural breakdowns, security models, and operational runbooks, explore the `docs/` directory:
 
-### 🛡️ Self-Healing & Auto-Recovery Engine
-* **Database Auto-Healing**: Executes `PRAGMA integrity_check` on connection startup and truncates SQLite WAL (`PRAGMA wal_checkpoint(TRUNCATE)`) on startup/shutdown.
-* **Channel Drift & Deleted Channel Recovery**: If configured review, help, or welcome channels are deleted, TARVeri clears stale database IDs, falls back smoothly to user-accessible channels, or auto-creates `#ask-for-help`.
-* **Dynamic Role Auto-Creation & Fuzzy Discovery**: If faculty, campus, study level, or guest roles are deleted from Discord, the bot automatically recreates them with official palette colors without failing verifications.
-* **Duplicate Role Cleanup & Migration**: Scans servers for duplicate faculty roles, migrates members to the primary role, and deletes bot-created duplicates while strictly protecting admin-created roles.
-* **SRC & Council Role Protection**: Functional student council roles (`FAFB SRC`, `FOCS SRC`, etc.) are protected from deduplication and automatically recreated if missing.
-* **Downtime Manual Grant Detection**: If an admin manually grants the `Guest(Approved)` role during maintenance, open tickets are automatically transitioned to `APPROVED` and review threads archived.
-* **Returning Student & Alumni Role Restoration**: Automatically restores missing faculty and alumni roles for verified members who rejoined during maintenance.
-* **Network & Power Outage Watchdog**: Probes external gateway connectivity with a 5-minute debounce window and cleanly checkpoints SQLite on UPS power failure signals (`SIGPWR`).
+* 🎓 [**Student Verification & Lifecycle**](docs/student-verification.md) — Student ID syntax, century windowing, OTP flows, and alumni transitions.
+* 🎟️ [**Guest Onboarding & Review**](docs/guest-workflow.md) — Referral vouchers, private review threads, and auto-escalation.
+* 🛡️ [**Administrator Manual**](docs/admin-manual.md) — Interactive dashboard, diagnostics, role backfilling, and command matrix.
+* 🏗️ [**Architecture & Resilience**](docs/architecture-and-resilience.md) — SQLite WAL, Litestream replication, Sentry telemetry, and Circuit Breaker failover.
 
-### Automated Server Assistance
-* **Interactive Gateway Panel**: Admins can post a persistent 3-button verification panel (`/admin panel`) in the welcome channel.
-* **New Member Onboarding**: When a new unverified student joins the server, the bot tags them in the welcome channel with permanent verification instructions.
-* **Smart Role Help Tips**: When an unverified user asks questions like *"How to get role"* or *"nak verify"* in support channels, the bot replies with permanent tips explaining how to verify.
+---
 
-### 🛡️ Administrator Control Center (`/admin`)
-* **`/admin dashboard`** — Opens the rich interactive **TARVeri Administrator Control Center** UI (with category navigation dropdowns, live telemetry, diagnostics execution, channel/role pickers, email toggle, unverify/revoke modals, and one-click backups).
-* **`/admin stats`** — View student verification numbers, alumni metrics, faculty distribution percentages, and server health.
-* **`/admin email_verification [enabled]`** — Enable or disable mandatory institutional email OTP verification for the current server.
-* **`/admin email_stats`** — View server-level and global institutional email verification rates and opt-in statistics.
-* **`/admin diagnose`** — Run role hierarchy diagnostics, duplicate role reconciliation, and auto-heal missing faculty/alumni/SRC roles.
-* **`/admin backfill_roles [default_campus] [default_level] [all_servers]`** — Batch sync and assign missing branch campus and study level roles to all verified members.
-* **`/admin unverify @user [reason]`** — Unlink a student ID and remove their faculty/alumni roles across mutual servers.
-* **`/admin alumni_revoke @user [reason]`** — Revoke Alumni status and remove the `TARUMT Alumni` role across mutual servers.
-* **`/admin set_channel [type] [channel]`** — Configure or reset the server's `welcome`, `help`, or guest `review` channels in a single command.
-* **`/admin set_role [type] [role/name]`** — Configure or reset the server's `guest` or `admin` reviewer roles.
-* **`/admin panel [channel]`** — Post the persistent 3-button verification gateway panel (Student Verify / Referral Code / Guest Apply).
-* **`/admin tickets [status] [limit]`** — Query guest review tickets with clickable links to threads and verdict notes.
-* **`/admin close_ticket [reason] [ticket]`** — Manually close and archive current guest review thread ticket (or specify `ticket` e.g. `A0001`, `42`, `#A0001`) without kicking the user.
-* **`/admin backup [action]`** — Create immediate snapshots, list historical backups, or restore previous settings.
-* **`/admin logs [action]`** — Inspect active daily logs, list 10-day `.tar.gz` archives, or tail recent log lines.
-* **`/admin audit [limit] [event_type]`** — Inspect database audit logs with optional event type filtering.
-* **`/admin resync`** — Re-check and synchronize roles across mutual servers.
-* **`/admin updates [stream]`** — Check for new git updates on a specific or default stream directly from Discord.
-* **`/admin sync_commands`** — Clean duplicate slash commands and force sync with Discord.
+## 🧪 Testing
 
+Run the full automated test suite with all warnings treated as errors:
 
+```bash
+.venv/bin/pytest -v
+```
 
+---
 
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).

@@ -1,0 +1,80 @@
+# 🎓 Student Verification & Academic Lifecycle Guide
+
+TARVeri automates student verification and role provisioning for Tunku Abdul Rahman University of Management and Technology (TARUMT) students across branch campuses and faculties.
+
+---
+
+## 📋 Table of Contents
+1. [Student ID Format & Parsing](#student-id-format--parsing)
+2. [Dynamic Century Windowing](#dynamic-century-windowing)
+3. [Institutional Email OTP Verification](#institutional-email-otp-verification)
+4. [8-Year Expiry Anomaly Guard](#8-year-expiry-anomaly-guard)
+5. [Academic Level Progression](#academic-level-progression)
+6. [Graduation & Alumni Status](#graduation--alumni-status)
+
+---
+
+## 1. Student ID Format & Parsing
+
+TARUMT student IDs follow the pattern `YY[Campus][Faculty][Level]XXXXX` (e.g., `24WMR01234`):
+
+| Component | Code | Meaning | Role Assigned |
+| :--- | :---: | :--- | :--- |
+| **Intake Year** | `24` | 2024 Intake | — |
+| **Campus Branch** | `W` | KL Main Campus | `KL Main Campus` |
+| | `P` | Penang Branch | `Penang Branch` |
+| | `A` | Perak Branch | `Perak Branch` |
+| | `J` | Johor Branch | `Johor Branch` |
+| | `S` | Sabah Branch | `Sabah Branch` |
+| **Faculty** | `M` | Faculty of Computing & Information Technology | `FOCS` |
+| | `B` | Faculty of Accountancy, Finance & Business | `FAFB` |
+| | `P` | Centre for Pre-University Studies | `CPUS` |
+| | `K` | Faculty of Communication & Creative Industries | `FCCI` |
+| | `L` | Faculty of Applied Sciences | `FOAS` |
+| | `V` | Faculty of Built Environment | `FOBE` |
+| | `J` | Faculty of Social Science & Humanities | `FSSH` |
+| | `G` | Faculty of Engineering & Technology | `FOET` |
+| **Study Level** | `F` | Foundation | `Foundation` |
+| | `D` | Diploma | `Diploma` |
+| | `R` | Bachelor Degree | `Degree` |
+| | `P` | Postgraduate | `Postgraduate` |
+
+---
+
+## 2. Dynamic Century Windowing
+
+TARVeri uses a sliding century window algorithm (`< 70 -> 20xx`, `>= 70 -> 19xx`) to parse 2-digit years. This supports historical TAR College alumni records from **1969** up to **2068+** without hardcoded year limits.
+
+---
+
+## 3. Institutional Email OTP Verification
+
+When enabled (`TARVERI_EMAIL_VERIFICATION_ENABLED=true`):
+1. User enters Student ID and official institutional email (`@student.tarc.edu.my` or `@tarc.edu.my`).
+2. **Pre-Flight Validation**: Checks rate limits, duplicate blind hashes, and format before contacting SMTP servers.
+3. **6-Digit Secure OTP**: Dispatched via `aiosmtplib` with dynamic Discord countdown timers.
+4. **Encryption at Rest**: Student email addresses are encrypted with AES-256 Fernet in SQLite, with an HMAC-SHA256 blind index preventing duplicate registrations.
+
+---
+
+## 4. 8-Year Expiry Anomaly Guard
+
+If a student enters an unusual expiry date exceeding $\pm 8$ years relative to their intake (such as typing `06/07` intending July 6th, which parses as June 2007), TARVeri presents an interactive panel:
+- `[Confirm Date]`: Keeps the date if the student graduated in the past.
+- `[Re-enter Date]`: Opens a modal to re-input the correct date.
+- `[Auto-Calculate]`: Estimates graduation date based on study level (+1y for Foundation, +2y for Diploma, +3y for Degree).
+
+---
+
+## 5. Academic Level Progression
+
+Students transitioning between levels (e.g. Diploma $\to$ Degree):
+- Simply run `/verify student_id:<new_id>`.
+- Atomically strips previous study level/alumni roles and updates all mutual server roles with audit logging in `verification_transitions`.
+
+---
+
+## 6. Graduation & Alumni Status
+
+- **`/graduate [year] [programme]`**: Verified students claim their `TARUMT Alumni` role and gold card badge.
+- **Graduation Watchdog**: Scans daily for expired card dates and sends polite DM resolution prompts.
