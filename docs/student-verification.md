@@ -25,6 +25,7 @@ TARUMT student IDs follow the pattern `YY[Campus][Faculty][Level]XXXXX` (e.g., `
 | | `P` | Penang Branch | `Penang Branch` |
 | | `A` | Perak Branch | `Perak Branch` |
 | | `J` | Johor Branch | `Johor Branch` |
+| | `C` / `K` | Pahang Branch | `Pahang Branch` |
 | | `S` | Sabah Branch | `Sabah Branch` |
 | **Faculty** | `M` | Faculty of Computing & Information Technology | `FOCS` |
 | | `B` | Faculty of Accountancy, Finance & Business | `FAFB` |
