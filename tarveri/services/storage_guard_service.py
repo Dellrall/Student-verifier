@@ -114,9 +114,12 @@ class StorageGuardService:
             total = 0
             try:
                 if os.path.isdir(dir_path):
-                    for entry in os.scandir(dir_path):
-                        if entry.is_file():
-                            total += entry.stat().st_size
+                    for root, _, files in os.walk(dir_path):
+                        for f in files:
+                            try:
+                                total += os.path.getsize(os.path.join(root, f))
+                            except OSError:
+                                pass
             except OSError:
                 pass
             return total

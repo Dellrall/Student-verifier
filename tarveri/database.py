@@ -4,8 +4,10 @@ Asynchronous SQLite database layer with WAL mode, indexing, schema versioning, a
 
 from __future__ import annotations
 
+import gzip
 import logging
 import os
+import shutil
 import sqlite3
 from datetime import datetime, timedelta
 from typing import Any
@@ -20,19 +22,20 @@ logger = logging.getLogger("tarveri")
 SCHEMA_VERSION = 1
 
 
-def rotate_backups(backup_dir: str = "backups", max_backups: int = 10) -> list[str]:
+def rotate_update_backups(update_dir: str, max_backups: int = 5) -> list[str]:
     """
-    Keeps only the `max_backups` most recent backup database files in `backup_dir`,
-    deleting older backups. Returns the list of deleted backup file paths.
+    Keeps only the `max_backups` most recent pre-update backups in `update_dir` (e.g. backups/updates/).
+    Any older update backups exceeding `max_backups` are permanently deleted.
+    Returns the list of deleted backup file paths.
     """
-    if not os.path.exists(backup_dir) or max_backups <= 0:
+    if not os.path.exists(update_dir) or max_backups <= 0:
         return []
 
-    backup_files: list[str] = []
-    for entry in os.listdir(backup_dir):
-        full_path = os.path.join(backup_dir, entry)
-        if os.path.isfile(full_path) and entry.endswith(".db"):
-            backup_files.append(full_path)
+    backup_files: list[str] = [
+        os.path.join(update_dir, entry)
+        for entry in os.listdir(update_dir)
+        if os.path.isfile(os.path.join(update_dir, entry)) and entry.endswith(".db")
+    ]
 
     # Sort files by modification time descending (newest first)
     backup_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
@@ -44,35 +47,184 @@ def rotate_backups(backup_dir: str = "backups", max_backups: int = 10) -> list[s
             try:
                 os.remove(path)
                 deleted.append(path)
-                logger.info(f"Rotated old database backup: {path}")
+                logger.info(f"Deleted old pre-update backup: {path}")
             except OSError as e:
-                logger.warning(f"Failed to remove old backup file '{path}': {e}")
+                logger.warning(f"Failed to remove pre-update backup '{path}': {e}")
 
     return deleted
 
 
+def rotate_daily_backups(
+    daily_dir: str,
+    max_uncompressed: int = 5,
+    max_archives: int = 30,
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Manages daily backups in `daily_dir` (e.g. backups/daily/):
+    1. Keeps the `max_uncompressed` most recent .db files uncompressed in `daily_dir`.
+    2. Any .db files beyond `max_uncompressed` are compressed via gzip into `daily_dir/archives/` (.gz)
+       and removed from the raw .db folder.
+    3. Keeps up to `max_archives` compressed files in `daily_dir/archives/`, deleting older ones.
+
+    Returns:
+        (compressed_paths, deleted_db_paths, deleted_archive_paths)
+    """
+    if not os.path.exists(daily_dir):
+        return [], [], []
+
+    archives_dir = os.path.join(daily_dir, "archives")
+    compressed_paths: list[str] = []
+    deleted_db_paths: list[str] = []
+    deleted_archive_paths: list[str] = []
+
+    # 1. Scan uncompressed .db files in daily_dir (ignoring subdirectories)
+    raw_db_files: list[str] = [
+        os.path.join(daily_dir, entry)
+        for entry in os.listdir(daily_dir)
+        if os.path.isfile(os.path.join(daily_dir, entry)) and entry.endswith(".db")
+    ]
+    raw_db_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+
+    # 2. If there are more than max_uncompressed, compress the older ones into archives/
+    if len(raw_db_files) > max_uncompressed:
+        os.makedirs(archives_dir, exist_ok=True)
+        to_compress = raw_db_files[max_uncompressed:]
+        for db_path in to_compress:
+            base_name = os.path.basename(db_path)
+            gz_path = os.path.join(archives_dir, f"{base_name}.gz")
+            try:
+                with open(db_path, "rb") as f_in, gzip.open(gz_path, "wb", compresslevel=9) as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+                os.remove(db_path)
+                compressed_paths.append(gz_path)
+                deleted_db_paths.append(db_path)
+                logger.info(f"Compressed older daily backup into archive: {gz_path}")
+            except Exception as e:
+                logger.warning(f"Failed to compress backup '{db_path}' to '{gz_path}': {e}")
+
+    # 3. Rotate compressed archives in archives_dir
+    if os.path.exists(archives_dir) and max_archives > 0:
+        archive_files = [
+            os.path.join(archives_dir, entry)
+            for entry in os.listdir(archives_dir)
+            if os.path.isfile(os.path.join(archives_dir, entry)) and (entry.endswith(".gz") or entry.endswith(".tar.gz"))
+        ]
+        archive_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        if len(archive_files) > max_archives:
+            to_delete = archive_files[max_archives:]
+            for arch_path in to_delete:
+                try:
+                    os.remove(arch_path)
+                    deleted_archive_paths.append(arch_path)
+                    logger.info(f"Pruned old daily archive: {arch_path}")
+                except OSError as e:
+                    logger.warning(f"Failed to prune old archive '{arch_path}': {e}")
+
+    return compressed_paths, deleted_db_paths, deleted_archive_paths
+
+
+def rotate_backups(
+    backup_dir: str = "backups",
+    max_backups: int = 5,
+    max_archives: int = 30,
+) -> list[str]:
+    """
+    Unified backup rotation helper.
+    Rotates daily backups (compressing >5 into archives/) and update backups (deleting >5).
+    Also rotates legacy root .db files if present.
+    Returns all deleted file paths.
+    """
+    if not os.path.exists(backup_dir) or max_backups <= 0:
+        return []
+
+    all_deleted: list[str] = []
+
+    # 1. Rotate daily subfolder
+    daily_dir = os.path.join(backup_dir, "daily")
+    if os.path.isdir(daily_dir):
+        _, del_dbs, del_archs = rotate_daily_backups(
+            daily_dir, max_uncompressed=max_backups, max_archives=max_archives
+        )
+        all_deleted.extend(del_dbs)
+        all_deleted.extend(del_archs)
+
+    # 2. Rotate updates subfolder
+    updates_dir = os.path.join(backup_dir, "updates")
+    if os.path.isdir(updates_dir):
+        del_updates = rotate_update_backups(updates_dir, max_backups=max_backups)
+        all_deleted.extend(del_updates)
+
+    # 3. Rotate legacy root .db files (if any exist)
+    root_db_files = [
+        os.path.join(backup_dir, entry)
+        for entry in os.listdir(backup_dir)
+        if os.path.isfile(os.path.join(backup_dir, entry)) and entry.endswith(".db")
+    ]
+    root_db_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    if len(root_db_files) > max_backups:
+        for path in root_db_files[max_backups:]:
+            try:
+                os.remove(path)
+                all_deleted.append(path)
+            except OSError as e:
+                logger.warning(f"Failed to remove root backup file '{path}': {e}")
+
+    return all_deleted
+
+
 def list_backups(backup_dir: str = "backups") -> list[dict[str, Any]]:
     """
-    Returns a list of available backup files in `backup_dir` sorted newest to oldest.
-    Each item contains 'filename', 'path', 'mtime', 'size_bytes', and 'timestamp'.
+    Returns a comprehensive list of available backups across daily, archives, updates, and root.
+    Sorted newest to oldest.
+    Each item contains 'filename', 'path', 'category', 'is_compressed', 'mtime', 'size_bytes', and 'timestamp'.
     """
     if not os.path.exists(backup_dir):
         return []
+
     backup_files: list[dict[str, Any]] = []
-    for entry in os.listdir(backup_dir):
-        full_path = os.path.join(backup_dir, entry)
-        if os.path.isfile(full_path) and entry.endswith(".db"):
-            mtime = os.path.getmtime(full_path)
-            size = os.path.getsize(full_path)
-            backup_files.append(
-                {
-                    "filename": entry,
-                    "path": full_path,
-                    "mtime": mtime,
-                    "size_bytes": size,
-                    "timestamp": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                }
-            )
+
+    def _collect(directory: str, category: str, is_compressed: bool = False) -> None:
+        if not os.path.isdir(directory):
+            return
+        for entry in os.listdir(directory):
+            full_path = os.path.join(directory, entry)
+            if not os.path.isfile(full_path):
+                continue
+            if is_compressed and (entry.endswith(".gz") or entry.endswith(".tar.gz")):
+                mtime = os.path.getmtime(full_path)
+                size = os.path.getsize(full_path)
+                backup_files.append(
+                    {
+                        "filename": entry,
+                        "path": full_path,
+                        "category": category,
+                        "is_compressed": True,
+                        "mtime": mtime,
+                        "size_bytes": size,
+                        "timestamp": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                )
+            elif not is_compressed and entry.endswith(".db"):
+                mtime = os.path.getmtime(full_path)
+                size = os.path.getsize(full_path)
+                backup_files.append(
+                    {
+                        "filename": entry,
+                        "path": full_path,
+                        "category": category,
+                        "is_compressed": False,
+                        "mtime": mtime,
+                        "size_bytes": size,
+                        "timestamp": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                )
+
+    # Collect from subfolders
+    _collect(os.path.join(backup_dir, "daily"), category="daily", is_compressed=False)
+    _collect(os.path.join(backup_dir, "daily", "archives"), category="archive", is_compressed=True)
+    _collect(os.path.join(backup_dir, "updates"), category="update", is_compressed=False)
+    _collect(backup_dir, category="legacy", is_compressed=False)
+
     backup_files.sort(key=lambda x: x["mtime"], reverse=True)
     return backup_files
 
@@ -405,19 +557,31 @@ class Database:
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.close()
 
-    async def create_backup(self, backup_dir: str = "backups", max_backups: int = 10) -> str:
+    async def create_backup(
+        self,
+        backup_dir: str = "backups",
+        subfolder: str = "daily",
+        max_backups: int = 5,
+        max_archives: int = 30,
+    ) -> str:
         """
-        Creates a consistent, point-in-time point-and-restore snapshot of the database
-        even while WAL writes are occurring, and rotates older backups so only the
-        `max_backups` most recent backups are kept.
+        Creates a consistent, point-in-time snapshot of the database using SQLite VACUUM INTO.
+        - If `subfolder == "daily"`: Saves to `backups/daily/tarveri_backup_*.db`. Keeps up to 5 uncompressed
+          .db files, compresses older ones into `backups/daily/archives/*.db.gz`, and prunes archives > 30.
+        - If `subfolder == "updates"`: Saves to `backups/updates/tarveri_pre_update_*.db`. Keeps up to 5 files,
+          deleting older update backups.
+        - Completely separates update backups from daily backups so updating never deletes daily backups.
         """
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
 
-        os.makedirs(backup_dir, exist_ok=True)
+        target_dir = os.path.join(backup_dir, subfolder) if subfolder else backup_dir
+        os.makedirs(target_dir, exist_ok=True)
+
         timestamp = now_formatted(fmt="%Y%m%d_%H%M%S")
-        backup_filename = f"tarveri_backup_{timestamp}.db"
-        backup_path = os.path.join(backup_dir, backup_filename)
+        prefix = "tarveri_pre_update" if subfolder == "updates" else "tarveri_backup"
+        backup_filename = f"{prefix}_{timestamp}.db"
+        backup_path = os.path.join(target_dir, backup_filename)
 
         if os.path.exists(backup_path):
             os.remove(backup_path)
@@ -426,9 +590,13 @@ class Database:
         safe_path = backup_path.replace("'", "''")
         await self._conn.execute(f"VACUUM INTO '{safe_path}';")
 
-        # Rotate older backups keeping only the most recent max_backups
-        if max_backups > 0:
-            rotate_backups(backup_dir=backup_dir, max_backups=max_backups)
+        # Execute folder-specific rotation
+        if subfolder == "daily":
+            rotate_daily_backups(target_dir, max_uncompressed=max_backups, max_archives=max_archives)
+        elif subfolder == "updates":
+            rotate_update_backups(target_dir, max_backups=max_backups)
+        elif max_backups > 0:
+            rotate_backups(backup_dir=backup_dir, max_backups=max_backups, max_archives=max_archives)
 
         return backup_path
 
@@ -440,7 +608,7 @@ class Database:
         self, backup_path: str, guild_id: int | None = None
     ) -> dict[str, Any]:
         """
-        Restores guild_settings from a specified backup database into the current active database.
+        Restores guild_settings from a specified backup database (.db or .gz archive) into the current active database.
         If guild_id is provided, only that guild's settings are restored; otherwise all guilds are restored.
         Returns a dictionary summarizing the restored settings.
         """
@@ -449,17 +617,47 @@ class Database:
 
         candidate_path = backup_path
         if not os.path.isabs(candidate_path) and not os.path.exists(candidate_path):
-            in_backup_dir = os.path.join("backups", candidate_path)
-            if os.path.exists(in_backup_dir):
-                candidate_path = in_backup_dir
+            for candidate in (
+                os.path.join("backups", candidate_path),
+                os.path.join("backups", "daily", candidate_path),
+                os.path.join("backups", "daily", "archives", candidate_path),
+                os.path.join("backups", "updates", candidate_path),
+            ):
+                if os.path.exists(candidate):
+                    candidate_path = candidate
+                    break
 
         if not os.path.isfile(candidate_path):
             raise FileNotFoundError(f"Backup file not found at '{backup_path}'.")
 
+        temp_decompressed: str | None = None
+        db_to_open = candidate_path
+
+        # If it's a gzip compressed archive (.gz), decompress to a temporary file
+        if candidate_path.endswith(".gz"):
+            import tempfile
+            fd, temp_decompressed = tempfile.mkstemp(suffix=".db")
+            os.close(fd)
+            with gzip.open(candidate_path, "rb") as f_in, open(temp_decompressed, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+            db_to_open = temp_decompressed
+
+        try:
+            return await self._restore_guild_settings_from_db_file(db_to_open, guild_id=guild_id)
+        finally:
+            if temp_decompressed and os.path.exists(temp_decompressed):
+                try:
+                    os.remove(temp_decompressed)
+                except OSError:
+                    pass
+
+    async def _restore_guild_settings_from_db_file(
+        self, db_path: str, guild_id: int | None = None
+    ) -> dict[str, Any]:
         restored_guilds = 0
         details: list[dict[str, Any]] = []
 
-        async with aiosqlite.connect(candidate_path) as b_conn:
+        async with aiosqlite.connect(db_path) as b_conn:
             cursor = await b_conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='guild_settings';"
             )

@@ -199,11 +199,12 @@ fi
 # ------------------------------------------------------------------------------
 # STEP 1: Pre-Update Database Backup
 # ------------------------------------------------------------------------------
-mkdir -p "${BACKUP_DIR}"
+UPDATES_BACKUP_DIR="${BACKUP_DIR}/updates"
+mkdir -p "${UPDATES_BACKUP_DIR}"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-SNAPSHOT_PATH="${BACKUP_DIR}/tarveri_pre_update_${TIMESTAMP}.db"
+SNAPSHOT_PATH="${UPDATES_BACKUP_DIR}/tarveri_pre_update_${TIMESTAMP}.db"
 
-log_info "[1/5] Creating pre-update database backup..."
+log_info "[1/5] Creating pre-update database backup in ${UPDATES_BACKUP_DIR}..."
 if [ -f "${DB_PATH}" ]; then
     ${PYTHON_BIN} -c "
 import os, sqlite3, sys
@@ -219,24 +220,25 @@ except Exception as e:
     print(f'Backup error: {e}', file=sys.stderr)
     sys.exit(1)
 
-# Rotate backups keeping only the 10 most recent
-backup_dir = '${BACKUP_DIR}'
-max_backups = 10
-if os.path.exists(backup_dir):
+# Rotate update backups keeping strictly the 5 most recent in updates/
+updates_dir = '${UPDATES_BACKUP_DIR}'
+max_update_backups = 5
+if os.path.exists(updates_dir):
     files = [
-        os.path.join(backup_dir, f)
-        for f in os.listdir(backup_dir)
-        if os.path.isfile(os.path.join(backup_dir, f)) and f.endswith('.db')
+        os.path.join(updates_dir, f)
+        for f in os.listdir(updates_dir)
+        if os.path.isfile(os.path.join(updates_dir, f)) and f.endswith('.db')
     ]
     files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    if len(files) > max_backups:
-        for old_f in files[max_backups:]:
+    if len(files) > max_update_backups:
+        for old_f in files[max_update_backups:]:
             try:
                 os.remove(old_f)
+                print(f'Pruned older pre-update snapshot: {os.path.basename(old_f)}')
             except Exception:
                 pass
 "
-    log_success "Database snapshot saved to ${SNAPSHOT_PATH} (rotated to 10 most recent)"
+    log_success "Database snapshot saved to ${SNAPSHOT_PATH} (retained up to 5 most recent in updates/)"
 else
     log_info "No existing database file at ${DB_PATH}. Skipping backup."
 fi

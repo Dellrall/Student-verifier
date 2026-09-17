@@ -85,7 +85,7 @@ async def test_database_backup(tmp_path):
 
 @pytest.mark.asyncio
 async def test_database_backup_rotation(tmp_path):
-    from tarveri.database import rotate_backups
+    from tarveri.database import rotate_backups, rotate_daily_backups, rotate_update_backups, list_backups
     db_file = str(tmp_path / "original_rot.db")
     backup_dir = str(tmp_path / "backups_rot")
     os.makedirs(backup_dir, exist_ok=True)
@@ -94,41 +94,99 @@ async def test_database_backup_rotation(tmp_path):
     await db.connect()
     await db.record_verification(3001, "hash3001", "M")
 
-    # Create 15 dummy backup files with timestamps in sequence
-    created_files = []
-    for i in range(15):
-        b_file = os.path.join(backup_dir, f"tarveri_backup_20260908_{i:02d}0000.db")
+    # 1. Test Daily Backup Rotation & Compression (Keep 5 raw, compress older into archives/)
+    daily_dir = os.path.join(backup_dir, "daily")
+    os.makedirs(daily_dir, exist_ok=True)
+    for i in range(12):
+        b_file = os.path.join(daily_dir, f"tarveri_backup_20260908_{i:02d}0000.db")
         with open(b_file, "w") as f:
-            f.write(f"backup content {i}")
-        # Set artificial mtime so ordering is strictly preserved
+            f.write(f"daily backup content {i}")
         os.utime(b_file, (1700000000 + i * 100, 1700000000 + i * 100))
-        created_files.append(b_file)
 
-    assert len(os.listdir(backup_dir)) == 15
+    comp, del_db, del_arch = rotate_daily_backups(daily_dir=daily_dir, max_uncompressed=5, max_archives=10)
+    assert len(comp) == 7
+    assert len(del_db) == 7
 
-    # Run backup rotation with max_backups=10
-    deleted = rotate_backups(backup_dir=backup_dir, max_backups=10)
-    assert len(deleted) == 5
+    # Exactly 5 uncompressed .db files remain in daily/
+    raw_dbs = [f for f in os.listdir(daily_dir) if f.endswith(".db")]
+    assert len(raw_dbs) == 5
 
-    remaining_files = sorted(os.listdir(backup_dir))
-    assert len(remaining_files) == 10
+    # 7 compressed .gz files exist in daily/archives/
+    archives_dir = os.path.join(daily_dir, "archives")
+    assert os.path.exists(archives_dir)
+    arch_files = [f for f in os.listdir(archives_dir) if f.endswith(".gz")]
+    assert len(arch_files) == 7
 
-    # The 5 oldest (index 00 to 04) should have been deleted
-    for i in range(5):
-        old_filename = f"tarveri_backup_20260908_{i:02d}0000.db"
-        assert old_filename not in remaining_files
-        assert not os.path.exists(os.path.join(backup_dir, old_filename))
+    # 2. Test Update Backup Rotation (Keep 5, delete older, separate folder)
+    updates_dir = os.path.join(backup_dir, "updates")
+    os.makedirs(updates_dir, exist_ok=True)
+    for i in range(8):
+        u_file = os.path.join(updates_dir, f"tarveri_pre_update_20260908_{i:02d}0000.db")
+        with open(u_file, "w") as f:
+            f.write(f"update backup content {i}")
+        os.utime(u_file, (1700000000 + i * 100, 1700000000 + i * 100))
 
-    # The 10 newest (index 05 to 14) should remain
-    for i in range(5, 15):
-        new_filename = f"tarveri_backup_20260908_{i:02d}0000.db"
-        assert new_filename in remaining_files
-        assert os.path.exists(os.path.join(backup_dir, new_filename))
+    del_updates = rotate_update_backups(update_dir=updates_dir, max_backups=5)
+    assert len(del_updates) == 3
 
-    # Also test create_backup() rotates automatically
-    await db.create_backup(backup_dir=backup_dir, max_backups=10)
-    # After creating 1 more snapshot with max_backups=10, the total count should still be 10
-    assert len(os.listdir(backup_dir)) == 10
+    remaining_updates = [f for f in os.listdir(updates_dir) if f.endswith(".db")]
+    assert len(remaining_updates) == 5
+
+    # Verify daily backups were completely unaffected by update rotation
+    assert len([f for f in os.listdir(daily_dir) if f.endswith(".db")]) == 5
+
+    # 3. Test list_backups categories
+    all_backups = list_backups(backup_dir=backup_dir)
+    categories = {b["category"] for b in all_backups}
+    assert "daily" in categories
+    assert "archive" in categories
+    assert "update" in categories
+
+    # 4. Test create_backup() with daily and update subfolders
+    created_daily = await db.create_backup(backup_dir=backup_dir, subfolder="daily", max_backups=5)
+    assert "daily" in created_daily
+    assert os.path.exists(created_daily)
+
+    created_update = await db.create_backup(backup_dir=backup_dir, subfolder="updates", max_backups=5)
+    assert "updates" in created_update
+    assert os.path.exists(created_update)
+
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_database_restore_from_compressed_archive(tmp_path):
+    db_file = str(tmp_path / "restore_arch.db")
+    backup_dir = str(tmp_path / "backups_arch")
+    db = Database(db_file)
+    await db.connect()
+
+    await db.set_guild_welcome_channel(777, 1001)
+    await db.set_guild_help_channel(777, 1002)
+    await db.set_guild_guest_role(777, "Guest(Verified)")
+    await db.set_guild_review_channel(777, 1003)
+
+    # Create backup with max_backups=0 to automatically compress into archives/
+    backup_path = await db.create_backup(backup_dir=backup_dir, subfolder="daily", max_backups=0)
+    archives_dir = os.path.join(backup_dir, "daily", "archives")
+    assert os.path.exists(archives_dir)
+    arch_files = [f for f in os.listdir(archives_dir) if f.endswith(".gz")]
+    assert len(arch_files) == 1
+    archive_path = os.path.join(archives_dir, arch_files[0])
+    assert archive_path.endswith(".gz")
+
+    # Clear current settings
+    await db._conn.execute("DELETE FROM guild_settings;")
+    await db._conn.commit()
+
+    # Restore from the .gz compressed archive
+    result = await db.restore_guild_settings_from_backup(archive_path, guild_id=777)
+    assert result["restored_guilds"] == 1
+
+    settings = await db.get_guild_settings(777)
+    assert settings is not None
+    assert settings[0] == 1001
+    assert settings[2] == "Guest(Verified)"
 
     await db.close()
 
