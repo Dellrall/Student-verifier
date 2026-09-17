@@ -1,16 +1,18 @@
+# Tip: To automatically generate and install this unit for your current directory and user, run:
+#      ./scripts/install_service.sh --user --with-litestream --enable-now
+
 [Unit]
 Description=Litestream SQLite Continuous Cloud Replication
 After=network.target
 
 [Service]
 Type=simple
-# Replace 'username' and paths with your host server's user and directory
-# When running as a user service (~/.config/systemd/user/litestream.service),
-# User= is omitted and managed by systemctl --user.
+# For system-wide (/etc/systemd/system): Replace with your server username and path
+# For user mode (~/.config/systemd/user): Omit User= and use %h for home directory
 User=username
-WorkingDirectory=/opt/Student-verifier
-EnvironmentFile=/opt/Student-verifier/.env
-ExecStart=/usr/local/bin/litestream replicate -config /opt/Student-verifier/litestream.yml
+WorkingDirectory=/path/to/TARVeri-bot
+EnvironmentFile=/path/to/TARVeri-bot/.env
+ExecStart=/usr/local/bin/litestream replicate -config /path/to/TARVeri-bot/litestream.yml
 Restart=always
 RestartSec=5
 

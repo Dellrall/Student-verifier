@@ -1,20 +1,24 @@
+# Tip: To automatically generate and install this unit for your current directory and user, run:
+#      ./scripts/install_service.sh --user --enable-now
+
 [Unit]
 Description=TARVeri Discord Student Verification Bot
 After=network.target
 
 [Service]
 Type=simple
-# Replace 'username' and paths with your host server's user and directory
+# For system-wide (/etc/systemd/system): Replace with your server username and path
+# For user mode (~/.config/systemd/user): Omit User= and use %h for home directory
 User=username
-WorkingDirectory=/opt/Student-verifier
-ExecStart=/opt/Student-verifier/.venv/bin/python /opt/Student-verifier/tarveri_bot.py
+WorkingDirectory=/path/to/TARVeri-bot
+ExecStart=/path/to/TARVeri-bot/.venv/bin/python /path/to/TARVeri-bot/tarveri_bot.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=15
 KillSignal=SIGINT
 
 # Environment
-EnvironmentFile=/opt/Student-verifier/.env
+EnvironmentFile=/path/to/TARVeri-bot/.env
 StandardOutput=journal
 StandardError=journal
 

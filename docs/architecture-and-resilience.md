@@ -83,7 +83,14 @@ dbs:
    - **Pane 2 (Litestream Daemon)**: `litestream replicate -config litestream.yml`
 
 3. **Systemd Service (24/7 Background Management)**:
-   Deploy with `deploy/litestream.service` or user service (`~/.config/systemd/user/litestream.service`).
+   Deploy instantly for any user and directory using the universal installer:
+   ```bash
+   # User mode (rootless, no sudo required, runs 24/7)
+   ./scripts/install_service.sh --user --with-litestream --enable-now
+
+   # Or system-wide mode (requires sudo)
+   ./scripts/install_service.sh --system --with-litestream --enable-now
+   ```
    - Logs are isolated in `journalctl`:
      ```bash
      journalctl --user -u litestream -f       # Live log tail

@@ -36,13 +36,13 @@ if [ -f "${PROJECT_ROOT}/.env" ]; then
 fi
 
 # Configuration
-VENV_DIR="${PROJECT_ROOT}/.venv"
-PYTHON_BIN="${VENV_DIR}/bin/python"
-PYTEST_BIN="${VENV_DIR}/bin/pytest"
-PIP_BIN="${VENV_DIR}/bin/pip"
-BACKUP_DIR="${PROJECT_ROOT}/backups"
+VENV_DIR="${TARVERI_VENV_DIR:-${PROJECT_ROOT}/.venv}"
+PYTHON_BIN="${TARVERI_PYTHON_BIN:-${VENV_DIR}/bin/python}"
+PYTEST_BIN="${TARVERI_PYTEST_BIN:-${VENV_DIR}/bin/pytest}"
+PIP_BIN="${TARVERI_PIP_BIN:-${VENV_DIR}/bin/pip}"
+BACKUP_DIR="${TARVERI_BACKUP_DIR:-${PROJECT_ROOT}/backups}"
 DB_PATH="${TARVERI_DB_PATH:-tarveri.db}"
-SERVICE_NAME="tarveri"
+SERVICE_NAME="${TARVERI_SERVICE_NAME:-tarveri}"
 
 # Colors for terminal output
 RED='\033[0;31m'
@@ -107,7 +107,7 @@ if ! command -v git >/dev/null 2>&1; then
     exit 1
 fi
 
-DEFAULT_REPO_URL="https://github.com/Dellrall/Student-verifier.git"
+DEFAULT_REPO_URL="https://github.com/Dellrall/TARVeri-bot.git"
 REPO_URL="${TARVERI_REPO_URL:-${DEFAULT_REPO_URL}}"
 
 # Auto-initialize git if .git directory is missing
@@ -316,15 +316,33 @@ trap - ERR
 # ------------------------------------------------------------------------------
 # STEP 5: Restart Service
 # ------------------------------------------------------------------------------
-log_info "[5/5] Restarting TARVeri service..."
+log_info "[5/5] Checking and restarting service '${SERVICE_NAME}'..."
 
-if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
-    log_info "Restarting systemd service '${SERVICE_NAME}'..."
-    systemctl restart "${SERVICE_NAME}"
-    log_success "Service '${SERVICE_NAME}' restarted."
-else
+RESTARTED=false
+if command -v systemctl >/dev/null 2>&1; then
+    # 1. Check user service (systemctl --user)
+    if systemctl --user is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+        log_info "Restarting systemd user service '${SERVICE_NAME}'..."
+        systemctl --user restart "${SERVICE_NAME}"
+        log_success "Systemd user service '${SERVICE_NAME}' restarted."
+        RESTARTED=true
+    fi
+    # 2. Check system-wide service
+    if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+        log_info "Restarting system-wide service '${SERVICE_NAME}'..."
+        if [ "$EUID" -eq 0 ]; then
+            systemctl restart "${SERVICE_NAME}"
+        else
+            sudo systemctl restart "${SERVICE_NAME}" 2>/dev/null || systemctl restart "${SERVICE_NAME}"
+        fi
+        log_success "System service '${SERVICE_NAME}' restarted."
+        RESTARTED=true
+    fi
+fi
+
+if [ "${RESTARTED}" = false ]; then
     log_info "No active systemd service '${SERVICE_NAME}' detected."
-    log_info "If running manually, restart your bot process now:"
+    log_info "If running manually (e.g. in tmux or screen), restart your bot process now:"
     echo -e "      ${GREEN}python tarveri_bot.py${NC}"
 fi
 

@@ -171,7 +171,15 @@ python tarveri_bot.py
 litestream replicate -log-level warn -config litestream.yml -exec ".venv/bin/python tarveri_bot.py"
 ```
 
-### 5. Automated Updates
+### 5. Production Service Deployment (Optional)
+
+Install and run as a 24/7 background service for your user without needing root/sudo:
+```bash
+# Install bot and Litestream cloud replication as user services:
+./scripts/install_service.sh --user --with-litestream --enable-now
+```
+
+### 6. Automated Updates
 
 ```bash
 # Pull upstream updates with backup, venv sync & preflight tests:
