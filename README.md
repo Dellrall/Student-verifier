@@ -164,9 +164,11 @@ TARVERI_TIMEZONE="Asia/Kuala_Lumpur"
 ### 4. Run the Bot
 
 ```bash
+# Standard run:
 python tarveri_bot.py
-# Or run as a module:
-python -m tarveri
+
+# Or with continuous Litestream cloud replication to Cloudflare R2 / AWS S3:
+litestream replicate -log-level warn -config litestream.yml -exec ".venv/bin/python tarveri_bot.py"
 ```
 
 ### 5. Automated Updates
