@@ -6,7 +6,7 @@
 [![SQLite WAL](https://img.shields.io/badge/sqlite-WAL%20mode-003B57.svg)](https://www.sqlite.org/wal.html)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **TARVeri** is a production-grade Discord student and guest verification bot engineered for **TARUMT (Tunku Abdul Rahman University of Management and Technology)**. It automatically parses student IDs, verifies institutional email ownership with dual-relay OTP failover, renders high-DPI digital campus cards, and orchestrates guest referral ticket reviews.
+> **TARVeri** is a production-grade Discord student and guest verification bot engineered for **TARUMT (Tunku Abdul Rahman University of Management and Technology)**. It parses structured student IDs, provides optional institutional email OTP verification with dual-relay failover, renders high-DPI digital campus cards, and orchestrates two-step guest referral ticket reviews.
 
 ---
 

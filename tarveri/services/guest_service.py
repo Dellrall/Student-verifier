@@ -287,8 +287,8 @@ class GuestService:
                     msg = await new_ch.send(embed=embed)
                     if hasattr(msg, "pin"):
                         await msg.pin(reason="TARVeri: Pinned help channel guidance")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed pinning guidance message in new help channel: %s", exc)
 
                 await self.db.log(
                     "INFO",
@@ -1098,8 +1098,8 @@ class GuestService:
                                 open_applicant_ticket, guild, None, status_override=revocation_status
                             )
                             await starter_msg.edit(embed=embed, view=discord.ui.View())
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed updating applicant review message: %s", exc)
 
                     try:
                         await thread.edit(archived=True, locked=True, reason=f"TARVeri: Applicant {reason_msg} server")
@@ -1133,8 +1133,8 @@ class GuestService:
                                     t, guild, applicant_member, status_override=revocation_status
                                 )
                                 await starter_msg.edit(embed=embed, view=discord.ui.View())
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("Failed updating referrer review message: %s", exc)
 
                         try:
                             await thread.edit(archived=True, locked=True, reason=f"TARVeri: Referrer {reason_msg} server")
@@ -1194,8 +1194,8 @@ class GuestService:
             if hasattr(guild, "chunk") and not getattr(guild, "chunked", True):
                 try:
                     await guild.chunk()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed chunking guild members during downtime reconciliation: %s", exc)
 
             applicant_id = t["applicant_id"]
             applicant_member = guild.get_member(applicant_id)

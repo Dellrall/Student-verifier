@@ -8,6 +8,8 @@ import gzip
 import logging
 import os
 import shutil
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -482,7 +484,7 @@ class Database:
                     try:
                         dt = datetime.fromisoformat(v_at.replace(" ", "T"))
                         calc_year = dt.year
-                    except Exception:
+                    except (ValueError, TypeError):
                         pass
                 if not calc_year:
                     calc_year = datetime.now().year
@@ -534,20 +536,32 @@ class Database:
                 await self._conn.close()
                 self._conn = None
 
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """
+        Async context manager providing atomic SQLite transaction semantics.
+        Automatically commits on successful block exit, and rolls back on exception.
+        """
+        if not self._conn:
+            raise RuntimeError("Database connection is not open.")
+        try:
+            yield self._conn
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
+
     async def checkpoint_wal(self) -> None:
         """Flushes and truncates the SQLite write-ahead log (WAL) into the main database file."""
         if self._conn:
             await self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-            await self._conn.commit()
 
     async def prune_audit_logs(self, older_than_days: int = 90) -> int:
         """Prunes audit log rows older than the specified number of days."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         cutoff = (datetime.now(get_configured_tz()) - timedelta(days=older_than_days)).strftime("%Y-%m-%d %H:%M:%S")
-        cursor = await self._conn.execute("DELETE FROM audit_log WHERE timestamp < ?;", (cutoff,))
-        await self._conn.commit()
-        return cursor.rowcount
+        async with self.transaction() as conn:
+            cursor = await conn.execute("DELETE FROM audit_log WHERE timestamp < ?;", (cutoff,))
+            return cursor.rowcount
 
     async def __aenter__(self) -> Database:
         await self.connect()
@@ -647,8 +661,8 @@ class Database:
             if temp_decompressed and os.path.exists(temp_decompressed):
                 try:
                     os.remove(temp_decompressed)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.debug("Could not remove temp decompressed backup: %s", exc)
 
     async def _restore_guild_settings_from_db_file(
         self, db_path: str, guild_id: int | None = None
@@ -675,35 +689,34 @@ class Database:
             cursor = await b_conn.execute(query, params)
             rows = await cursor.fetchall()
 
-            for row in rows:
-                g_id, w_id, h_id, g_role, r_id, adm_role, u_at = row
-                await self._conn.execute(
-                    """
-                    INSERT INTO guild_settings (guild_id, welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(guild_id) DO UPDATE SET
-                        welcome_channel_id = excluded.welcome_channel_id,
-                        help_channel_id = excluded.help_channel_id,
-                        guest_role_name = excluded.guest_role_name,
-                        review_channel_id = excluded.review_channel_id,
-                        admin_role_name = excluded.admin_role_name,
-                        updated_at = excluded.updated_at;
-                    """,
-                    (g_id, w_id, h_id, g_role, r_id, adm_role, u_at or now_formatted()),
-                )
-                restored_guilds += 1
-                details.append(
-                    {
-                        "guild_id": g_id,
-                        "welcome_channel_id": w_id,
-                        "help_channel_id": h_id,
-                        "guest_role_name": g_role,
-                        "review_channel_id": r_id,
-                        "admin_role_name": adm_role,
-                    }
-                )
-
-            await self._conn.commit()
+            async with self.transaction() as conn:
+                for row in rows:
+                    g_id, w_id, h_id, g_role, r_id, adm_role, u_at = row
+                    await conn.execute(
+                        """
+                        INSERT INTO guild_settings (guild_id, welcome_channel_id, help_channel_id, guest_role_name, review_channel_id, admin_role_name, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(guild_id) DO UPDATE SET
+                            welcome_channel_id = excluded.welcome_channel_id,
+                            help_channel_id = excluded.help_channel_id,
+                            guest_role_name = excluded.guest_role_name,
+                            review_channel_id = excluded.review_channel_id,
+                            admin_role_name = excluded.admin_role_name,
+                            updated_at = excluded.updated_at;
+                        """,
+                        (g_id, w_id, h_id, g_role, r_id, adm_role, u_at or now_formatted()),
+                    )
+                    restored_guilds += 1
+                    details.append(
+                        {
+                            "guild_id": g_id,
+                            "welcome_channel_id": w_id,
+                            "help_channel_id": h_id,
+                            "guest_role_name": g_role,
+                            "review_channel_id": r_id,
+                            "admin_role_name": adm_role,
+                        }
+                    )
 
         return {"restored_guilds": restored_guilds, "details": details}
 
@@ -739,15 +752,13 @@ class Database:
             if os.path.exists(f):
                 try:
                     os.remove(f)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.debug("Could not remove old wal/shm file %s during restore: %s", f, exc)
 
         await self.connect()
 
     async def record_bot_created_role(self, guild_id: int, role_id: int, role_name: str) -> None:
         """Records a role created by the bot so it can be distinguished from admin-created roles."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         try:
             g_id = int(guild_id)
             r_id = int(role_id)
@@ -755,17 +766,17 @@ class Database:
         except (ValueError, TypeError):
             return
         ts = now_formatted()
-        await self._conn.execute(
-            """
-            INSERT INTO bot_created_roles (guild_id, role_id, role_name, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(role_id) DO UPDATE SET
-                role_name = excluded.role_name,
-                created_at = excluded.created_at;
-            """,
-            (g_id, r_id, r_name, ts),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO bot_created_roles (guild_id, role_id, role_name, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(role_id) DO UPDATE SET
+                    role_name = excluded.role_name,
+                    created_at = excluded.created_at;
+                """,
+                (g_id, r_id, r_name, ts),
+            )
 
     async def get_bot_created_role_ids(self, guild_id: int) -> set[int]:
         """Returns set of role IDs in a guild that were created by the bot."""
@@ -784,17 +795,15 @@ class Database:
 
     async def delete_bot_created_role(self, role_id: int) -> None:
         """Deletes a role tracking entry after the role is deleted."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         try:
             r_id = int(role_id)
         except (ValueError, TypeError):
             return
-        await self._conn.execute(
-            "DELETE FROM bot_created_roles WHERE role_id = ?",
-            (r_id,),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                "DELETE FROM bot_created_roles WHERE role_id = ?",
+                (r_id,),
+            )
 
     async def log(
         self,
@@ -833,21 +842,21 @@ class Database:
                 u_id = None
 
         try:
-            await self._conn.execute(
-                """INSERT INTO audit_log
-                   (timestamp, level, event_type, guild_id, guild_name, user_id, message)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    ts,
-                    level,
-                    event_type,
-                    g_id,
-                    g_name,
-                    u_id,
-                    message,
-                ),
-            )
-            await self._conn.commit()
+            async with self.transaction() as conn:
+                await conn.execute(
+                    """INSERT INTO audit_log
+                       (timestamp, level, event_type, guild_id, guild_name, user_id, message)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        ts,
+                        level,
+                        event_type,
+                        g_id,
+                        g_name,
+                        u_id,
+                        message,
+                    ),
+                )
         except Exception as e:
             logger.error(f"Failed to insert audit log entry into DB: {e}")
 
@@ -890,30 +899,28 @@ class Database:
         student_email_encrypted: str | None = None,
         student_email_hash: str | None = None,
     ) -> None:
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
-        await self._conn.execute(
-            """INSERT INTO verifications (
-                   discord_user_id, student_id_hash, faculty_code, verified_at,
-                   campus_code, level_code, card_expiry_date, lifecycle_prompt_status,
-                   student_email_encrypted, student_email_hash
-               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                discord_user_id,
-                student_id_hash,
-                faculty_code,
-                ts,
-                campus_code,
-                level_code,
-                card_expiry_date,
-                lifecycle_prompt_status,
-                student_email_encrypted,
-                student_email_hash,
-            ),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                """INSERT INTO verifications (
+                       discord_user_id, student_id_hash, faculty_code, verified_at,
+                       campus_code, level_code, card_expiry_date, lifecycle_prompt_status,
+                       student_email_encrypted, student_email_hash
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    discord_user_id,
+                    student_id_hash,
+                    faculty_code,
+                    ts,
+                    campus_code,
+                    level_code,
+                    card_expiry_date,
+                    lifecycle_prompt_status,
+                    student_email_encrypted,
+                    student_email_hash,
+                ),
+            )
 
     async def get_verification_details(self, discord_user_id: int) -> dict[str, Any] | None:
         """Retrieves complete verification details (faculty, campus, level, expiry, alumni status, email) for a user."""
@@ -949,16 +956,14 @@ class Database:
 
     async def backfill_legacy_verifications(self, default_campus: str = "W") -> int:
         """Backfills legacy verifications missing campus_code to the specified campus code."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
-        cursor = await self._conn.execute(
-            """UPDATE verifications
-               SET campus_code = ?
-               WHERE campus_code IS NULL""",
-            (default_campus,),
-        )
-        await self._conn.commit()
-        return cursor.rowcount
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE verifications
+                   SET campus_code = ?
+                   WHERE campus_code IS NULL""",
+                (default_campus,),
+            )
+            return cursor.rowcount
 
     async def update_verification_details(
         self,
@@ -972,8 +977,6 @@ class Database:
         student_email_hash: str | None = None,
     ) -> bool:
         """Updates optional fields for an existing verified student."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         updates: list[str] = []
         params: list[Any] = []
         if campus_code is not None:
@@ -1001,9 +1004,9 @@ class Database:
             return False
         params.append(discord_user_id)
         sql = f"UPDATE verifications SET {', '.join(updates)} WHERE discord_user_id = ?"
-        cursor = await self._conn.execute(sql, tuple(params))
-        await self._conn.commit()
-        return cursor.rowcount > 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(sql, tuple(params))
+            return cursor.rowcount > 0
 
     async def record_academic_transition(
         self,
@@ -1019,31 +1022,29 @@ class Database:
         notes: str | None = None,
     ) -> int:
         """Archives a student's previous academic level/faculty profile into transition history."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
-        cursor = await self._conn.execute(
-            """INSERT INTO verification_transitions (
-                   discord_user_id, from_id_hash, from_faculty_code, from_campus_code, from_level_code,
-                   to_id_hash, to_faculty_code, to_campus_code, to_level_code, transitioned_at, notes
-               )
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                discord_user_id,
-                from_id_hash,
-                from_faculty_code,
-                from_campus_code,
-                from_level_code,
-                to_id_hash,
-                to_faculty_code,
-                to_campus_code,
-                to_level_code,
-                ts,
-                notes,
-            ),
-        )
-        await self._conn.commit()
-        return cursor.lastrowid
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """INSERT INTO verification_transitions (
+                       discord_user_id, from_id_hash, from_faculty_code, from_campus_code, from_level_code,
+                       to_id_hash, to_faculty_code, to_campus_code, to_level_code, transitioned_at, notes
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    discord_user_id,
+                    from_id_hash,
+                    from_faculty_code,
+                    from_campus_code,
+                    from_level_code,
+                    to_id_hash,
+                    to_faculty_code,
+                    to_campus_code,
+                    to_level_code,
+                    ts,
+                    notes,
+                ),
+            )
+            return cursor.lastrowid or 0
 
     async def get_academic_transitions_for_user(
         self, discord_user_id: int
@@ -1092,9 +1093,6 @@ class Database:
         student_email_hash: str | None = None,
     ) -> bool:
         """Updates the active verification record during an academic level transition or lifecycle prompt update."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
-
         updates: list[str] = []
         params: list[Any] = []
 
@@ -1145,9 +1143,9 @@ class Database:
 
         params.append(discord_user_id)
         sql = f"UPDATE verifications SET {', '.join(updates)} WHERE discord_user_id = ?"
-        cursor = await self._conn.execute(sql, tuple(params))
-        await self._conn.commit()
-        return cursor.rowcount > 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(sql, tuple(params))
+            return cursor.rowcount > 0
 
     async def get_expired_student_verifications(
         self, before_date: str | None = None
@@ -1196,30 +1194,26 @@ class Database:
         programme: str | None = None,
     ) -> bool:
         """Records a verified student's transition to alumni status."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
-        cursor = await self._conn.execute(
-            """UPDATE verifications
-               SET is_alumni = 1, graduated_year = ?, programme = ?, graduated_at = ?
-               WHERE discord_user_id = ?""",
-            (graduated_year, programme, ts, discord_user_id),
-        )
-        await self._conn.commit()
-        return cursor.rowcount > 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE verifications
+                   SET is_alumni = 1, graduated_year = ?, programme = ?, graduated_at = ?
+                   WHERE discord_user_id = ?""",
+                (graduated_year, programme, ts, discord_user_id),
+            )
+            return cursor.rowcount > 0
 
     async def revoke_alumni_status(self, discord_user_id: int) -> bool:
         """Revokes alumni status from a student in the database."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
-        cursor = await self._conn.execute(
-            """UPDATE verifications
-               SET is_alumni = 0, graduated_year = NULL, programme = NULL, graduated_at = NULL
-               WHERE discord_user_id = ?""",
-            (discord_user_id,),
-        )
-        await self._conn.commit()
-        return cursor.rowcount > 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE verifications
+                   SET is_alumni = 0, graduated_year = NULL, programme = NULL, graduated_at = NULL
+                   WHERE discord_user_id = ?""",
+                (discord_user_id,),
+            )
+            return cursor.rowcount > 0
 
     async def get_alumni_info_by_user(self, discord_user_id: int) -> dict[str, Any] | None:
         """Retrieves alumni details for a user if they have claimed alumni status."""
@@ -1262,13 +1256,11 @@ class Database:
 
     async def delete_verification(self, discord_user_id: int) -> bool:
         """Unlinks a Discord account from its student ID. Returns True if record existed."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
-        cursor = await self._conn.execute(
-            "DELETE FROM verifications WHERE discord_user_id = ?", (discord_user_id,)
-        )
-        await self._conn.commit()
-        return cursor.rowcount > 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM verifications WHERE discord_user_id = ?", (discord_user_id,)
+            )
+            return cursor.rowcount > 0
 
     async def total_verified(self) -> int:
         if not self._conn:
@@ -1363,8 +1355,6 @@ class Database:
 
     async def set_guild_email_verification(self, guild_id: int | Any, enabled: bool) -> None:
         """Sets the per-guild email verification requirement (opt-in = True, opt-out = False)."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         if not isinstance(guild_id, int):
             try:
                 guild_id = int(guild_id)
@@ -1372,15 +1362,15 @@ class Database:
                 return
         ts = now_formatted()
         val = 1 if enabled else 0
-        await self._conn.execute(
-            """INSERT INTO guild_settings (guild_id, require_email_verification, updated_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   require_email_verification = excluded.require_email_verification,
-                   updated_at = excluded.updated_at""",
-            (guild_id, val, ts),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                """INSERT INTO guild_settings (guild_id, require_email_verification, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET
+                       require_email_verification = excluded.require_email_verification,
+                       updated_at = excluded.updated_at""",
+                (guild_id, val, ts),
+            )
 
     async def get_email_verification_stats(self, guild_id: int | Any = None) -> dict[str, Any]:
         """
@@ -1422,89 +1412,76 @@ class Database:
 
     async def set_guild_welcome_channel(self, guild_id: int, channel_id: int | None) -> None:
         """Sets or clears the welcome channel ID for a guild."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
-        await self._conn.execute(
-            """INSERT INTO guild_settings (guild_id, welcome_channel_id, updated_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   welcome_channel_id = excluded.welcome_channel_id,
-                   updated_at = excluded.updated_at""",
-            (guild_id, channel_id, ts),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                """INSERT INTO guild_settings (guild_id, welcome_channel_id, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET
+                       welcome_channel_id = excluded.welcome_channel_id,
+                       updated_at = excluded.updated_at""",
+                (guild_id, channel_id, ts),
+            )
 
     async def set_guild_help_channel(self, guild_id: int, channel_id: int | None) -> None:
         """Sets or clears the help channel ID for a guild."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
-        await self._conn.execute(
-            """INSERT INTO guild_settings (guild_id, help_channel_id, updated_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   help_channel_id = excluded.help_channel_id,
-                   updated_at = excluded.updated_at""",
-            (guild_id, channel_id, ts),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                """INSERT INTO guild_settings (guild_id, help_channel_id, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET
+                       help_channel_id = excluded.help_channel_id,
+                       updated_at = excluded.updated_at""",
+                (guild_id, channel_id, ts),
+            )
 
     async def set_guild_guest_role(self, guild_id: int, guest_role_name: str | None) -> None:
         """Sets or clears the custom guest role name for a guild (defaults to 'Guest' if None)."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
         role_to_set = guest_role_name.strip() if guest_role_name else "Guest"
-        await self._conn.execute(
-            """INSERT INTO guild_settings (guild_id, guest_role_name, updated_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   guest_role_name = excluded.guest_role_name,
-                   updated_at = excluded.updated_at""",
-            (guild_id, role_to_set, ts),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                """INSERT INTO guild_settings (guild_id, guest_role_name, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET
+                       guest_role_name = excluded.guest_role_name,
+                       updated_at = excluded.updated_at""",
+                (guild_id, role_to_set, ts),
+            )
 
     async def set_guild_review_channel(self, guild_id: int, channel_id: int | None) -> None:
         """Sets or clears the designated parent review channel for private guest threads."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
-        await self._conn.execute(
-            """INSERT INTO guild_settings (guild_id, review_channel_id, updated_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   review_channel_id = excluded.review_channel_id,
-                   updated_at = excluded.updated_at""",
-            (guild_id, channel_id, ts),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                """INSERT INTO guild_settings (guild_id, review_channel_id, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET
+                       review_channel_id = excluded.review_channel_id,
+                       updated_at = excluded.updated_at""",
+                (guild_id, channel_id, ts),
+            )
 
     async def set_guild_admin_role(self, guild_id: int, admin_role_name: str | None) -> None:
         """Sets or clears the custom admin role name for a guild."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
         role_to_set = admin_role_name.strip() if admin_role_name else None
-        await self._conn.execute(
-            """INSERT INTO guild_settings (guild_id, admin_role_name, updated_at)
-               VALUES (?, ?, ?)
-               ON CONFLICT(guild_id) DO UPDATE SET
-                   admin_role_name = excluded.admin_role_name,
-                   updated_at = excluded.updated_at""",
-            (guild_id, role_to_set, ts),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                """INSERT INTO guild_settings (guild_id, admin_role_name, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(guild_id) DO UPDATE SET
+                       admin_role_name = excluded.admin_role_name,
+                       updated_at = excluded.updated_at""",
+                (guild_id, role_to_set, ts),
+            )
 
     async def clear_stale_channel_setting(self, guild_id: int, channel_type: str) -> bool:
         """
         Clears a deleted or invalid channel setting (welcome, help, or review) from guild_settings.
         Returns True if a setting was successfully cleared.
         """
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
-
         col_map = {
             "welcome": "welcome_channel_id",
             "welcome_channel_id": "welcome_channel_id",
@@ -1521,14 +1498,15 @@ class Database:
             raise ValueError(f"Invalid channel/setting type: {channel_type}")
 
         ts = now_formatted()
-        cursor = await self._conn.execute(
-            f"""UPDATE guild_settings
-                SET {target_col} = NULL, updated_at = ?
-                WHERE guild_id = ? AND {target_col} IS NOT NULL""",
-            (ts, guild_id),
-        )
-        await self._conn.commit()
-        cleared = cursor.rowcount > 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                f"""UPDATE guild_settings
+                    SET {target_col} = NULL, updated_at = ?
+                    WHERE guild_id = ? AND {target_col} IS NOT NULL""",
+                (ts, guild_id),
+            )
+            cleared = cursor.rowcount > 0
+
         if cleared:
             await self.log(
                 "INFO",
@@ -1542,15 +1520,13 @@ class Database:
         self, code: str, guild_id: int, referrer_discord_id: int, expires_at: str
     ) -> None:
         """Saves a newly generated referral code."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
-        await self._conn.execute(
-            """INSERT INTO referral_codes (code, guild_id, referrer_discord_id, created_at, expires_at, status)
-               VALUES (?, ?, ?, ?, ?, 'ACTIVE')""",
-            (code, guild_id, referrer_discord_id, ts, expires_at),
-        )
-        await self._conn.commit()
+        async with self.transaction() as conn:
+            await conn.execute(
+                """INSERT INTO referral_codes (code, guild_id, referrer_discord_id, created_at, expires_at, status)
+                   VALUES (?, ?, ?, ?, ?, 'ACTIVE')""",
+                (code, guild_id, referrer_discord_id, ts, expires_at),
+            )
 
     async def get_referral_code(self, code: str, guild_id: int) -> dict[str, Any] | None:
         """Fetches referral code information."""
@@ -1630,25 +1606,23 @@ class Database:
         self, code: str, guild_id: int, status: str, used_by_discord_id: int | None = None
     ) -> bool:
         """Updates referral code status (e.g., PENDING_APPROVAL, USED, REJECTED, ACTIVE)."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
-        if used_by_discord_id is not None:
-            cursor = await self._conn.execute(
-                """UPDATE referral_codes
-                   SET status = ?, used_by_discord_id = ?, used_at = ?
-                   WHERE code = ? AND guild_id = ?""",
-                (status, used_by_discord_id, ts, code.strip().upper(), guild_id),
-            )
-        else:
-            cursor = await self._conn.execute(
-                """UPDATE referral_codes
-                   SET status = ?
-                   WHERE code = ? AND guild_id = ?""",
-                (status, code.strip().upper(), guild_id),
-            )
-        await self._conn.commit()
-        return cursor.rowcount > 0
+        async with self.transaction() as conn:
+            if used_by_discord_id is not None:
+                cursor = await conn.execute(
+                    """UPDATE referral_codes
+                       SET status = ?, used_by_discord_id = ?, used_at = ?
+                       WHERE code = ? AND guild_id = ?""",
+                    (status, used_by_discord_id, ts, code.strip().upper(), guild_id),
+                )
+            else:
+                cursor = await conn.execute(
+                    """UPDATE referral_codes
+                       SET status = ?
+                       WHERE code = ? AND guild_id = ?""",
+                    (status, code.strip().upper(), guild_id),
+                )
+            return cursor.rowcount > 0
 
     async def get_next_guild_ticket_seq(self, guild_id: int) -> int:
         """Returns the next sequence number (1-indexed) for guest tickets in the given guild."""
@@ -1698,18 +1672,16 @@ class Database:
         last_pinged_at: str | None = None,
     ) -> int:
         """Creates a guest ticket record and returns its ticket_id."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
         seq = ticket_seq if ticket_seq is not None else await self.get_next_guild_ticket_seq(guild_id)
-        cursor = await self._conn.execute(
-            """INSERT INTO guest_tickets
-               (guild_id, ticket_seq, applicant_id, referrer_id, channel_id, referral_code, reason, status, created_at, pinged_admin_ids, last_pinged_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)""",
-            (guild_id, seq, applicant_id, referrer_id, channel_id, referral_code, reason, ts, pinged_admin_ids, last_pinged_at or ts),
-        )
-        await self._conn.commit()
-        return cursor.lastrowid or 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """INSERT INTO guest_tickets
+                   (guild_id, ticket_seq, applicant_id, referrer_id, channel_id, referral_code, reason, status, created_at, pinged_admin_ids, last_pinged_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)""",
+                (guild_id, seq, applicant_id, referrer_id, channel_id, referral_code, reason, ts, pinged_admin_ids, last_pinged_at or ts),
+            )
+            return cursor.lastrowid or 0
 
     async def get_guest_ticket_by_channel(self, channel_id: int) -> dict[str, Any] | None:
         """Fetches guest ticket by thread/channel ID."""
@@ -1817,33 +1789,29 @@ class Database:
         self, ticket_id: int, pinged_admin_ids: str, last_pinged_at: str | None = None
     ) -> bool:
         """Updates the list of pinged admin IDs and last pinged timestamp for a ticket."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = last_pinged_at or now_formatted()
-        cursor = await self._conn.execute(
-            """UPDATE guest_tickets
-               SET pinged_admin_ids = ?, last_pinged_at = ?
-               WHERE ticket_id = ?""",
-            (pinged_admin_ids, ts, ticket_id),
-        )
-        await self._conn.commit()
-        return cursor.rowcount > 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE guest_tickets
+                   SET pinged_admin_ids = ?, last_pinged_at = ?
+                   WHERE ticket_id = ?""",
+                (pinged_admin_ids, ts, ticket_id),
+            )
+            return cursor.rowcount > 0
 
     async def update_guest_ticket_vouch(
         self, ticket_id: int, vouch_note: str, vouched_by_id: int | None = None
     ) -> bool:
         """Saves a student vouch statement along with the voucher ID and timestamp on a guest ticket."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
-        cursor = await self._conn.execute(
-            """UPDATE guest_tickets
-               SET vouch_note = ?, vouched_by_id = ?, vouched_at = ?
-               WHERE ticket_id = ?""",
-            (vouch_note, vouched_by_id, ts, ticket_id),
-        )
-        await self._conn.commit()
-        return cursor.rowcount > 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE guest_tickets
+                   SET vouch_note = ?, vouched_by_id = ?, vouched_at = ?
+                   WHERE ticket_id = ?""",
+                (vouch_note, vouched_by_id, ts, ticket_id),
+            )
+            return cursor.rowcount > 0
 
     async def close_guest_ticket(
         self,
@@ -1854,18 +1822,16 @@ class Database:
         only_if_open: bool = False,
     ) -> bool:
         """Closes a guest ticket with status ('APPROVED', 'REJECTED', 'EXPIRED'), admin ID, and reason/comment."""
-        if not self._conn:
-            raise RuntimeError("Database connection is not open.")
         ts = now_formatted()
         where_clause = "WHERE ticket_id = ? AND status = 'OPEN'" if only_if_open else "WHERE ticket_id = ?"
-        cursor = await self._conn.execute(
-            f"""UPDATE guest_tickets
-               SET status = ?, closed_at = ?, closed_by_admin_id = ?, close_reason = ?
-               {where_clause}""",
-            (status, ts, closed_by_admin_id, close_reason, ticket_id),
-        )
-        await self._conn.commit()
-        return cursor.rowcount > 0
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                f"""UPDATE guest_tickets
+                   SET status = ?, closed_at = ?, closed_by_admin_id = ?, close_reason = ?
+                   {where_clause}""",
+                (status, ts, closed_by_admin_id, close_reason, ticket_id),
+            )
+            return cursor.rowcount > 0
 
     async def list_guest_tickets(
         self, guild_id: int, status: str | None = None, limit: int = 10
@@ -1901,13 +1867,13 @@ class Database:
         if not self._conn:
             return 0
         ts = now_formatted()
-        cursor = await self._conn.execute(
-            """UPDATE referral_codes SET status = 'EXPIRED'
-               WHERE status = 'ACTIVE' AND expires_at <= ?""",
-            (ts,),
-        )
-        await self._conn.commit()
-        return cursor.rowcount
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE referral_codes SET status = 'EXPIRED'
+                   WHERE status = 'ACTIVE' AND expires_at <= ?""",
+                (ts,),
+            )
+            return cursor.rowcount
 
     async def revoke_guest_tickets_for_user(
         self, guild_id: int, user_id: int, status: str = "REVOKED", close_reason: str | None = None
@@ -1916,14 +1882,14 @@ class Database:
         if not self._conn:
             return 0
         ts = now_formatted()
-        cursor = await self._conn.execute(
-            """UPDATE guest_tickets
-               SET status = ?, closed_at = ?, close_reason = ?
-               WHERE guild_id = ? AND applicant_id = ? AND status IN ('OPEN', 'APPROVED')""",
-            (status, ts, close_reason, guild_id, user_id),
-        )
-        await self._conn.commit()
-        return cursor.rowcount
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE guest_tickets
+                   SET status = ?, closed_at = ?, close_reason = ?
+                   WHERE guild_id = ? AND applicant_id = ? AND status IN ('OPEN', 'APPROVED')""",
+                (status, ts, close_reason, guild_id, user_id),
+            )
+            return cursor.rowcount
 
     async def revoke_active_referrals_for_user(
         self, guild_id: int, user_id: int, status: str = "REVOKED"
@@ -1931,14 +1897,14 @@ class Database:
         """Revokes all active referral codes generated by a user in a guild."""
         if not self._conn:
             return 0
-        cursor = await self._conn.execute(
-            """UPDATE referral_codes
-               SET status = ?
-               WHERE guild_id = ? AND referrer_discord_id = ? AND status = 'ACTIVE'""",
-            (status, guild_id, user_id),
-        )
-        await self._conn.commit()
-        return cursor.rowcount
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE referral_codes
+                   SET status = ?
+                   WHERE guild_id = ? AND referrer_discord_id = ? AND status = 'ACTIVE'""",
+                (status, guild_id, user_id),
+            )
+            return cursor.rowcount
 
     async def cancel_open_tickets_referred_by_user(
         self, guild_id: int, referrer_id: int, close_reason: str = "Referring student left or was removed from server"
@@ -1947,14 +1913,14 @@ class Database:
         if not self._conn:
             return 0
         ts = now_formatted()
-        cursor = await self._conn.execute(
-            """UPDATE guest_tickets
-               SET status = 'REVOKED', closed_at = ?, close_reason = ?
-               WHERE guild_id = ? AND referrer_id = ? AND status = 'OPEN'""",
-            (ts, close_reason, guild_id, referrer_id),
-        )
-        await self._conn.commit()
-        return cursor.rowcount
+        async with self.transaction() as conn:
+            cursor = await conn.execute(
+                """UPDATE guest_tickets
+                   SET status = 'REVOKED', closed_at = ?, close_reason = ?
+                   WHERE guild_id = ? AND referrer_id = ? AND status = 'OPEN'""",
+                (ts, close_reason, guild_id, referrer_id),
+            )
+            return cursor.rowcount
 
     async def get_all_active_referrals(self) -> list[dict[str, Any]]:
         """Fetches all referral codes with status 'ACTIVE' or 'PENDING_APPROVAL' for maintenance reconciliation."""

@@ -125,21 +125,21 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageF
             if os.path.exists(path):
                 try:
                     return ImageFont.truetype(path, size)
-                except Exception:
-                    pass
+                except (OSError, Exception) as exc:
+                    logger.debug("Failed loading candidate bold font %s: %s", path, exc)
         elif not bold and os.path.exists(path):
             try:
                 return ImageFont.truetype(path, size)
-            except Exception:
-                pass
+            except (OSError, Exception) as exc:
+                logger.debug("Failed loading candidate font %s: %s", path, exc)
 
     # Fallback to any existing candidate
     for path in FONT_CANDIDATES:
         if os.path.exists(path):
             try:
                 return ImageFont.truetype(path, size)
-            except Exception:
-                pass
+            except (OSError, Exception) as exc:
+                logger.debug("Failed loading fallback font %s: %s", path, exc)
 
     return ImageFont.load_default()
 

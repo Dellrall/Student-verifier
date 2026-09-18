@@ -106,8 +106,8 @@ class OutageService:
                 writer.close()
                 try:
                     await writer.wait_closed()
-                except Exception:
-                    pass
+                except (OSError, asyncio.CancelledError) as exc:
+                    logger.debug("Socket wait_closed ignored in network probe: %s", exc)
                 latency_ms = (time.monotonic() - t0) * 1000.0
                 self._last_probe_success = True
                 self._last_probe_latency_ms = latency_ms
@@ -208,8 +208,8 @@ class OutageService:
                                     "OUTAGE_SHUTDOWN",
                                     f"Emergency graceful shutdown triggered after {elapsed:.1f}s continuous outage. {probe_desc}.",
                                 )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("Failed logging emergency outage shutdown to db: %s", exc)
 
                         asyncio.create_task(self.bot.close(), name="tarveri_outage_graceful_shutdown")
                         break

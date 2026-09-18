@@ -261,8 +261,8 @@ def list_log_archives(
                     with tarfile.open(full_path, "r:gz") as tar:
                         members = [m.name for m in tar.getmembers() if m.isfile()]
                         file_count = len(members)
-                except Exception:
-                    pass
+                except (tarfile.TarError, OSError) as exc:
+                    logger.debug("Failed reading tar archive %s members: %s", full_path, exc)
 
                 archives.append({
                     "filename": entry,

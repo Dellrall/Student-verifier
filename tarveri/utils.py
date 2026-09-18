@@ -30,13 +30,13 @@ async def delete_after_delay(
         if isinstance(target, discord.Interaction):
             try:
                 await target.delete_original_response()
-            except Exception:
-                pass
+            except (discord.NotFound, discord.HTTPException, discord.Forbidden) as exc:
+                logger.debug("TTL interaction deletion ignored: %s", exc)
         elif hasattr(target, "delete"):
             try:
                 await target.delete()
-            except Exception:
-                pass
+            except (discord.NotFound, discord.HTTPException, discord.Forbidden) as exc:
+                logger.debug("TTL message deletion ignored: %s", exc)
     except (asyncio.CancelledError, discord.NotFound, discord.HTTPException, discord.Forbidden):
         pass
     except Exception as e:

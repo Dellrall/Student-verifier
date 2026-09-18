@@ -373,8 +373,8 @@ async def run_bot(settings: Settings | None = None) -> None:
     for sig in signals_to_handle:
         try:
             loop.add_signal_handler(sig, lambda s=sig: handle_signal(s))
-        except (NotImplementedError, RuntimeError):
-            pass
+        except (NotImplementedError, RuntimeError) as exc:
+            logger.debug("Signal handler registration skipped for %s: %s", sig, exc)
 
     async with bot:
         await bot.start(settings.bot_token)

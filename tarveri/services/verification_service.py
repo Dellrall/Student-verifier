@@ -1248,8 +1248,8 @@ class VerificationService:
                         student_email_encrypted=email_encrypted,
                         student_email_hash=email_hash,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed updating verification details during refresh: %s", exc)
                 summary = self.format_role_summary(sync_result)
                 return summary or "ℹ️ You're already verified and up to date in every server I share with you."
 
@@ -1379,8 +1379,8 @@ class VerificationService:
         if hasattr(guild, "chunk") and not getattr(guild, "chunked", True):
             try:
                 await guild.chunk()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Guild chunking skipped during reconciliation: %s", exc)
 
         all_verifications = await self.db.get_all_verifications()
         if not all_verifications:
@@ -1455,8 +1455,8 @@ class VerificationService:
                 try:
                     await self.db.update_verification_details(discord_user_id, campus_code=existing_campus_code)
                     c_code = existing_campus_code
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed updating campus code in reconciliation: %s", exc)
 
             if not c_code:
                 c_code = default_campus
@@ -1489,8 +1489,8 @@ class VerificationService:
                 try:
                     await self.db.update_verification_details(discord_user_id, level_code=existing_level_code)
                     l_code = existing_level_code
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed updating study level code in reconciliation: %s", exc)
 
             if not l_code and default_level:
                 l_code = default_level
@@ -1823,8 +1823,8 @@ class VerificationService:
         if hasattr(guild, "chunk") and not getattr(guild, "chunked", True):
             try:
                 await guild.chunk()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Guild chunking skipped during duplicate role reconciliation: %s", exc)
 
         me = getattr(guild, "me", None)
         can_manage = (
@@ -1970,8 +1970,8 @@ class VerificationService:
                         )
                         try:
                             await self.db.delete_bot_created_role(red_role.id)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.debug("Failed deleting bot-created role from DB tracking: %s", exc)
                         stats["deleted_roles"] += 1
                         detail_msg = f"Deleted bot-created duplicate role '{red_role.name}' (migrated {len(red_members)} member(s) to '{primary_role.name}')"
                         stats["details"].append(detail_msg)

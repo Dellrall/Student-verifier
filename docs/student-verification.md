@@ -40,6 +40,9 @@ TARUMT student IDs follow the pattern `YY[Campus][Faculty][Level]XXXXX` (e.g., `
 | | `R` | Bachelor Degree | `Degree` |
 | | `P` | Postgraduate | `Postgraduate` |
 
+> [!NOTE]
+> Student ID, faculty, campus, and study-level attributes are self-declared via structured student ID syntax parsing and attested via institutional email OTP challenge rather than a direct university SIS/LDAP database integration. To assist server administrators with auditability and spot-checking, TARVeri logs both the masked student ID and masked email address on every verification event (`/admin audit`).
+
 ---
 
 ## 2. Dynamic Century Windowing

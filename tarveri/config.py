@@ -646,7 +646,7 @@ class DailyRotatingFileHandler(logging.Handler):
             try:
                 self._stream.flush()
                 self._stream.close()
-            except Exception:
+            except OSError:
                 pass
         self.current_date_str = date_str
         self._current_file_path = os.path.join(self.logs_dir, f"{self.prefix}-{date_str}.log")
@@ -682,7 +682,7 @@ class DailyRotatingFileHandler(logging.Handler):
                 try:
                     self._stream.flush()
                     self._stream.close()
-                except Exception:
+                except OSError:
                     pass
                 self._stream = None
             super().close()
@@ -1025,8 +1025,8 @@ def format_card_expiry_display(iso_date: str | None) -> str | None:
             year_short = parts[0][-2:]
             month = parts[1].zfill(2)
             return f"{month}/{year_short}"
-    except Exception:
-        pass
+    except (IndexError, ValueError):
+        return None
     return None
 
 
