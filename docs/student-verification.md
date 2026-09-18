@@ -54,7 +54,7 @@ When enabled (`TARVERI_EMAIL_VERIFICATION_ENABLED=true`):
 1. User enters Student ID and official institutional email (`@student.tarc.edu.my` or `@tarc.edu.my`).
 2. **Pre-Flight Validation**: Checks rate limits, duplicate blind hashes, and format before contacting SMTP servers.
 3. **6-Digit Secure OTP**: Dispatched via `aiosmtplib` with dynamic Discord countdown timers.
-4. **Encryption at Rest**: Student email addresses are encrypted with AES-256 Fernet in SQLite, with an HMAC-SHA256 blind index preventing duplicate registrations.
+4. **Encryption at Rest**: Student email addresses are encrypted at rest with Fernet (AES-128-CBC with HMAC-SHA256 authenticated encryption) in SQLite, with an HMAC-SHA256 blind index preventing duplicate registrations.
 
 ---
 

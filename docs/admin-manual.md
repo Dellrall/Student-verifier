@@ -51,6 +51,9 @@ Opens the interactive Administrator Control Center featuring:
 ## 5. Database Backups & Audit Logs
 
 - **`/admin backup [action]`**: Creates an immediate SQLite snapshot or lists previous backup archives.
+- **Dual Backup Isolation**:
+  - **Daily Backups (`backups/daily/`)**: Retains the 5 most recent uncompressed daily snapshots. Older snapshots are automatically compressed into `.tar.gz` archives inside `backups/daily/archives/`.
+  - **Update Backups (`backups/updates/`)**: Retains the 5 most recent pre-update snapshots created by `scripts/update.sh` (older update backups > 5 are pruned).
 - **`/admin logs [action]`**: Tails live logs or inspects 10-day `.tar.gz` compressed archives.
 - **`/admin audit [limit] [event_type]`**: Queries structured database audit records with filter support.
 

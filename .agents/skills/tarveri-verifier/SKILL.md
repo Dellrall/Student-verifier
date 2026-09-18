@@ -23,7 +23,7 @@ Student-verifier/
 │   ├── utils.py                  # Ticket formatting (#A0001), TTL schedulers, timestamp parsers
 │   ├── services/
 │   │   ├── verification_service.py      # Student verification logic, role auto-creation, reconciliation, academic transition
-│   │   ├── email_service.py             # Institutional student email OTP generator, dual SMTP relay, and Fernet AES-256 encryption
+│   │   ├── email_service.py             # Institutional student email OTP generator, dual SMTP relay, and Fernet authenticated encryption
 │   │   ├── graduation_watchdog_service.py # Periodic graduation & card expiry watchdog daemon
 │   │   ├── card_service.py              # Digital campus card rendering, Pillow glassmorphism, badge system
 │   │   ├── guest_service.py             # Referral codes, double verification, batch staff tagging, escalation
@@ -190,8 +190,8 @@ flowchart TD
   - Enforces 3-attempt brute-force protection (invalidating the code on the 3rd wrong attempt) and a 60-second resend rate limit.
   - **Smart Cooldown Bypass on Correction**: If a user corrects a mistyped email or ID, the 60-second cooldown is automatically bypassed to avoid frustrating legitimate users.
   - **Lazy Memory Pruning**: In-memory transient OTP entries are pruned automatically upon any service access.
-- **AES-256 Symmetric Encryption at Rest (Fernet)**:
-  - All student email addresses are encrypted with a Fernet AES-256 authenticated key before storing in the SQLite `verifications` table (`student_email_encrypted`).
+- **Authenticated Encryption at Rest (Fernet)**:
+  - All student email addresses are encrypted at rest with Fernet (AES-128-CBC with HMAC-SHA256 authenticated encryption) before storing in the SQLite `verifications` table (`student_email_encrypted`).
 - **HMAC-SHA256 Blind Indexing (`student_email_hash`)**:
   - Deterministic HMAC-SHA256 blind indexing allows fast $O(1)$ duplicate email collision checks at rest without decrypting or storing plaintext emails.
 - **Primary & Fallback Dual-SMTP Architecture**:
@@ -595,7 +595,7 @@ echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is li
 - Configurable via `.env` with comprehensive defaults:
   - `ENABLE_EMAIL_VERIFICATION=true` (Toggle OTP requirement)
   - `EMAIL_ALLOWED_DOMAINS=student.tarc.edu.my,tarc.edu.my` (Allowed domains)
-  - `EMAIL_ENCRYPTION_KEY=<fernet_base64_or_hex_key>` (AES-256 Fernet authenticated encryption key)
+  - `EMAIL_ENCRYPTION_KEY=<fernet_base64_or_hex_key>` (Fernet authenticated encryption key)
   - `SMTP_HOST=mail.smtp2go.com` (SMTP relay host e.g. SMTP2GO)
   - `SMTP_PORT=587` (SMTP port: 587 STARTTLS or 465 SSL)
   - `SMTP_USER=...` (SMTP username / account)
@@ -607,7 +607,7 @@ echo "🎉 Zero-Downtime Deployment Successfully Completed! [$TARGET_SLOT] is li
   - `EMAIL_OTP_RESEND_COOLDOWN_SECONDS=60` (1-minute resend cooldown)
 
 ### 2. Dual-Layer Cryptographic Security
-- **Reversible AES-256 Authenticated Encryption (Fernet)**: Student email addresses are encrypted at rest using AES-128-CBC with HMAC-SHA256 authenticated integrity (Fernet specification), derived from `EMAIL_ENCRYPTION_KEY` or hashed system secret.
+- **Reversible Authenticated Encryption (Fernet)**: Student email addresses are encrypted at rest using AES-128-CBC with HMAC-SHA256 authenticated integrity (Fernet specification), derived from `EMAIL_ENCRYPTION_KEY` or hashed system secret.
 - **Blind Index for Fast Duplicate Checks**: An HMAC-SHA256 digest (`student_email_hash`) is indexed in SQLite, enabling $O(1)$ duplicate prevention across Discord accounts without decrypting or exposing emails.
 - **Privacy Masking**: Displayed emails in logs and UI embeds are masked (e.g. `24***67@student.tarc.edu.my`).
 
@@ -645,7 +645,7 @@ TARVeri employs a layered configuration system combining global environment togg
 
 | Environment Variable | Dataclass Field | Default | Subsystem | Description & Behavioral Impact |
 | :--- | :--- | :---: | :--- | :--- |
-| `TARVERI_EMAIL_VERIFICATION_ENABLED` | `enable_email_verification` | `false` | Auth / Security | **False**: Instant verification via Modal/Slash ID input.<br>**True**: Enforces `@student.tarc.edu.my` OTP challenge with AES-256 encrypted storage. |
+| `TARVERI_EMAIL_VERIFICATION_ENABLED` | `enable_email_verification` | `false` | Auth / Security | **False**: Instant verification via Modal/Slash ID input.<br>**True**: Enforces `@student.tarc.edu.my` OTP challenge with Fernet authenticated encryption storage. |
 | `TARVERI_CIRCUIT_BREAKER_FAIL_MAX` | `circuit_breaker_fail_max` | `3` | Email / Resiliency | Number of consecutive Primary SMTP errors before tripping circuit breaker to OPEN. |
 | `TARVERI_CIRCUIT_BREAKER_RESET_TIMEOUT` | `circuit_breaker_reset_timeout` | `300` | Email / Resiliency | Seconds to keep circuit breaker OPEN before probing Primary SMTP recovery in HALF_OPEN. |
 | `TARVERI_SENTRY_DSN` | `sentry_dsn` | `""` | Observability | Optional Sentry DSN for real-time error tracking and Discord interaction crash reporting. |
