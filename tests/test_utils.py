@@ -1,7 +1,8 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
-import pytest
+
 import discord
+import pytest
 
 from tarveri.utils import (
     delete_after_delay,

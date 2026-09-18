@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import discord
 from discord import ui
@@ -13,7 +13,11 @@ from tarveri.config import (
     FACULTY_ROLES,
     STUDY_LEVEL_ROLE_NAMES,
 )
-from tarveri.services.log_service import archive_old_logs, list_daily_logs, list_log_archives
+from tarveri.services.log_service import (
+    archive_old_logs,
+    list_daily_logs,
+    list_log_archives,
+)
 from tarveri.services.update_checker import UpdateCheckerService
 from tarveri.utils import format_ticket_seq, schedule_ttl_delete
 
@@ -994,7 +998,7 @@ class AdminDashboardView(ui.View):
 
         latest_log_path = daily_logs[0]["path"]
         try:
-            with open(latest_log_path, "r", encoding="utf-8", errors="replace") as f:
+            with open(latest_log_path, encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
             tail_lines = lines[-15:] if len(lines) > 15 else lines
             content = "".join(tail_lines)

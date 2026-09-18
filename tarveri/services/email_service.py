@@ -8,10 +8,8 @@ import asyncio
 import email.utils
 import logging
 import secrets
-import smtplib
 import time
 from dataclasses import dataclass
-from email.header import Header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Any
@@ -26,7 +24,7 @@ from tarveri.config import (
     is_valid_student_email,
     mask_email,
 )
-from tarveri.utils import AsyncCircuitBreaker, CircuitBreakerError
+from tarveri.utils import AsyncCircuitBreaker
 
 logger = logging.getLogger("tarveri")
 

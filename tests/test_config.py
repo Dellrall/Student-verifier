@@ -1,7 +1,4 @@
 from tarveri.config import (
-    CAMPUS_ROLES,
-    FACULTY_ROLES,
-    STUDY_LEVEL_ROLES,
     hash_student_id,
     mask_student_id,
     parse_student_id,
@@ -185,8 +182,8 @@ def test_role_help_keywords_pattern():
 
 def test_timezone_configuration_and_formatter():
     import logging
-    import time
     import zoneinfo
+
     from tarveri.config import TimezoneFormatter, get_configured_tz, now_formatted
 
     # Default timezone is Asia/Kuala_Lumpur
@@ -218,6 +215,7 @@ def test_timezone_configuration_and_formatter():
 
 def test_settings_validation_missing_tokens(monkeypatch):
     import pytest
+
     from tarveri.config import Settings
 
     monkeypatch.delenv("TARVERI_BOT_TOKEN", raising=False)

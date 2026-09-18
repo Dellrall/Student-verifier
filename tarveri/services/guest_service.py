@@ -9,12 +9,18 @@ import inspect
 import logging
 import secrets
 import string
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
 import discord
 
-from tarveri.config import GUEST_ROLE_COLOR, GUEST_ROLE_PATTERN, get_configured_tz, now_formatted
+from tarveri.config import (
+    GUEST_ROLE_COLOR,
+    GUEST_ROLE_PATTERN,
+    get_configured_tz,
+    now_formatted,
+)
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.role_manager import RoleManager

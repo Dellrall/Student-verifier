@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import asyncio
 import calendar
-from datetime import date, datetime, timedelta
 import logging
 import os
 import re
 import shutil
 import tarfile
 import tempfile
+from datetime import date, datetime
 from typing import Any
 
-from tarveri.config import get_configured_tz, now_formatted
+from tarveri.config import get_configured_tz
 
 logger = logging.getLogger("tarveri")
 
@@ -182,7 +182,7 @@ def archive_old_logs(
                     members = {m.name for m in verify_tar.getmembers()}
                     for entry_name in files_to_add:
                         if entry_name not in members:
-                            raise IOError(f"Verification failed: {entry_name} missing from created archive")
+                            raise OSError(f"Verification failed: {entry_name} missing from created archive")
 
                 # Atomically replace target archive
                 shutil.move(tmp_archive_path, archive_path)
@@ -301,7 +301,7 @@ def list_daily_logs(
             stat = os.stat(full_path)
             line_count = 0
             try:
-                with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(full_path, encoding="utf-8", errors="replace") as f:
                     line_count = sum(1 for _ in f)
             except OSError:
                 pass
@@ -318,7 +318,7 @@ def list_daily_logs(
         except OSError:
             pass
 
-    logs.sort(key=lambda l: (l["date"], l["mtime"]), reverse=True)
+    logs.sort(key=lambda item: (item["date"], item["mtime"]), reverse=True)
     return logs
 
 

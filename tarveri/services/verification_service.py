@@ -5,12 +5,13 @@ Verification business logic, concurrency control, and cross-guild role synchroni
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 import logging
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence
+from datetime import datetime
+from typing import Any
 
 import aiosqlite
 import discord
@@ -31,7 +32,6 @@ from tarveri.config import (
     GUEST_ROLE_COLOR,
     GUEST_ROLE_PATTERN,
     ROLE_QUALIFIER_PATTERN,
-    SRC_ROLE_NAMES,
     SRC_ROLES,
     STUDY_LEVEL_ALIASES,
     STUDY_LEVEL_COLORS,
@@ -49,7 +49,6 @@ from tarveri.config import (
     mask_student_id,
     parse_card_expiry_date,
     parse_student_id,
-    validate_student_id,
 )
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
@@ -713,7 +712,7 @@ class VerificationService:
             has_level = any(self._match_study_level_role_in_list([r], level_role_name) is not None for r in member_roles)
             conflicting_level_roles = [
                 r for r in member_roles
-                if any(self._match_study_level_role_in_list([r], l) is not None for l in STUDY_LEVEL_ROLE_NAMES if l != level_role_name)
+                if any(self._match_study_level_role_in_list([r], lvl_name) is not None for lvl_name in STUDY_LEVEL_ROLE_NAMES if lvl_name != level_role_name)
             ]
             for conf_l in conflicting_level_roles:
                 conf_l_pos = getattr(conf_l, "position", 0)
@@ -857,7 +856,7 @@ class VerificationService:
 
         from_faculty_name = FACULTY_ROLES.get(from_faculty, from_faculty)
         from_level_name = STUDY_LEVEL_ROLES.get(from_level, from_level)
-        from_campus_name = CAMPUS_ROLES.get(from_campus, from_campus)
+        CAMPUS_ROLES.get(from_campus, from_campus)
 
         # 1. Archive transition in verification_transitions
         await self.db.record_academic_transition(
@@ -941,7 +940,7 @@ class VerificationService:
             }
 
         details = await self.db.get_verification_details(user_id)
-        stored_hash = details.get("student_id_hash") if details else verif[0]
+        details.get("student_id_hash") if details else verif[0]
         stored_faculty = details.get("faculty_code") if details else verif[1]
         stored_campus = (details.get("campus_code") if details else None) or "W"
         stored_level = (details.get("level_code") if details else None) or "R"
@@ -1328,8 +1327,8 @@ class VerificationService:
                                             await member.remove_roles(
                                                 r, reason="TARVeri: Rollback due to database collision"
                                             )
-                                        except discord.HTTPException:
-                                            pass
+                                        except discord.HTTPException as exc:
+                                            logger.debug("Failed removing role during rollback: %s", exc)
                     await self.db.log(
                         "ERROR",
                         "INTEGRITY_CONFLICT",
@@ -1902,9 +1901,7 @@ class VerificationService:
             r_name = getattr(r, "name", "")
             if not r_name or ROLE_QUALIFIER_PATTERN.search(r_name):
                 continue
-            if configured_guest_name and r_name.strip().lower() == configured_guest_name.lower():
-                guest_roles.append(r)
-            elif GUEST_ROLE_PATTERN.search(r_name):
+            if configured_guest_name and r_name.strip().lower() == configured_guest_name.lower() or GUEST_ROLE_PATTERN.search(r_name):
                 guest_roles.append(r)
 
         if guest_roles:

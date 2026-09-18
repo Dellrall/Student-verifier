@@ -1,8 +1,13 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
-import discord
 
-from tarveri.cogs.guest_cog import GuestCog, VerificationGatewayView, GuestReviewThreadView, build_review_embed
+import discord
+import pytest
+
+from tarveri.cogs.guest_cog import (
+    GuestCog,
+    GuestReviewThreadView,
+    build_review_embed,
+)
 from tarveri.database import Database
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService

@@ -23,7 +23,6 @@ logger = logging.getLogger("tarveri")
 
 class StorageLimitExceededError(Exception):
     """Raised/reported to Sentry when storage usage exceeds the configured threshold."""
-    pass
 
 
 @dataclass(slots=True)

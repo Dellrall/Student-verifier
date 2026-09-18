@@ -1,7 +1,9 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from tarveri.services.update_checker import UpdateCheckerService
+
+import pytest
+
 from tarveri.database import Database
+from tarveri.services.update_checker import UpdateCheckerService
 
 
 @pytest.mark.asyncio

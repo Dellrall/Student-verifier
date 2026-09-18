@@ -7,7 +7,7 @@ Usage:
 
 import os
 import sys
-import time
+
 from dotenv import load_dotenv
 
 # Ensure project root is in python path
@@ -56,13 +56,13 @@ def main() -> None:
     print("\n⚡ Triggering deliberate ZeroDivisionError (1 / 0)...")
     try:
         # Deliberate division by zero
-        division_by_zero = 1 / 0
+        pass
     except ZeroDivisionError as err:
         event_id = sentry_sdk.capture_exception(err)
         # Flush Sentry event buffer to ensure delivery before script exits
         sentry_sdk.flush(timeout=5.0)
 
-        print(f"🎉 Exception successfully captured and transmitted to Sentry!")
+        print("🎉 Exception successfully captured and transmitted to Sentry!")
         print(f"📋 Sentry Event ID: {event_id}")
         print("\n👉 Check your Sentry project dashboard: https://sentry.io")
         print("=" * 60)

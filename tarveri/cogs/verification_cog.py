@@ -4,14 +4,15 @@ Discord UI and Commands for Student Verification.
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
 import time
+from datetime import datetime
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from tarveri.cogs.guest_cog import VerificationGatewayView
 from tarveri.config import (
     CAMPUS_ROLES,
     FACULTY_ROLE_NAMES,
@@ -24,13 +25,10 @@ from tarveri.config import (
     format_card_expiry_display,
     get_configured_tz,
     is_expiry_date_anomalous,
-    is_valid_student_email,
     mask_email,
-    now_formatted,
     parse_card_expiry_date,
     parse_student_id,
 )
-from tarveri.cogs.guest_cog import VerificationGatewayView
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.email_service import EmailService
@@ -837,7 +835,7 @@ class VerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Verificatio
         current_yy = str(datetime.now().year)[-2:]
         self.student_id.placeholder = f"e.g. {current_yy}WMD09867"
         self.card_expiry.placeholder = f"e.g. 10/{(int(current_yy) + 2) % 100:02d} (Optional)"
-        
+
         is_global_email_active = bool(
             self.email_service and getattr(self.email_service, "is_enabled", False) is True
         )

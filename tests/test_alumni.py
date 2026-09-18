@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import io
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+
 import discord
-from PIL import Image
 import pytest
+from PIL import Image
 
 from tarveri.cogs.admin_cog import AdminCog
 from tarveri.cogs.verification_cog import AlumniClaimModal, VerificationCog
@@ -213,7 +214,7 @@ async def test_card_service_alumni_badge_and_cohort(tmp_path):
         member.guild_permissions.administrator = False
         member.roles = []
         member.premium_since = None
-        member.joined_at = datetime(2023, 1, 1, tzinfo=timezone.utc)
+        member.joined_at = datetime(2023, 1, 1, tzinfo=UTC)
 
         card_data = await service.get_user_card_data(guild, member)
 

@@ -4,16 +4,13 @@ Tests for Student Academic Lifecycle transitions, UI modals, views, and card exp
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
 
 from tarveri.cogs.verification_cog import (
     ExpiryAnomalyConfirmView,
-    ExtendExpiryAnomalyConfirmView,
     ExtendExpiryModal,
     FurtherStudyTransitionModal,
     ReEnterExpiryModal,
@@ -21,7 +18,6 @@ from tarveri.cogs.verification_cog import (
     StudentLifecycleResolutionView,
     VerificationCog,
     VerificationModal,
-    build_expiry_anomaly_embed,
 )
 from tarveri.config import (
     format_card_expiry_display,

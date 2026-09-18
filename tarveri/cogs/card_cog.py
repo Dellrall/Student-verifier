@@ -5,7 +5,6 @@ CardCog: Digital Student and Guest ID Card slash commands and UI interactions.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import discord
 from discord import app_commands

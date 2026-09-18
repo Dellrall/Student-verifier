@@ -119,7 +119,7 @@ class node_watchdog,node_outage,node_litestream,node_systemd,node_updater,node_n
 
 | Feature | Description |
 | :--- | :--- |
-| 🛡️ **Zero-Knowledge Security** | HMAC-SHA256 blind indexing for student IDs and emails. AES-256 Fernet authenticated encryption at rest. Raw PII is never stored in plaintext. |
+| 🛡️ **Privacy & Encryption at Rest** | HMAC-SHA256 blind indexing for student IDs and emails. AES-128-CBC with HMAC-SHA256 (Fernet) authenticated encryption at rest. Raw PII is never stored in plaintext. |
 | ⚡ **Zero-Waste Dual SMTP** | Non-blocking `aiosmtplib` with `AsyncCircuitBreaker`. Automatically fails over from Primary (Resend/SMTP2GO) to Direct SMTP with 0ms penalty. |
 | 🎓 **Century-Safe Lifecycle** | Sliding century windowing (`1969`–`2068+`), 8-year expiry anomaly protection, and dynamic graduation auto-expiry sweeps. |
 | 🎟️ **Guest Referral Workflow** | Alphanumeric tracking (`#A0001`), double verification vouching, and intelligent auto-escalating staff review threads. |

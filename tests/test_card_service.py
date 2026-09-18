@@ -1,14 +1,15 @@
 import io
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
+
 import discord
-from PIL import Image
 import pytest
+from PIL import Image
 
 from tarveri.cogs.card_cog import CardCog
 from tarveri.config import get_configured_tz
 from tarveri.database import Database
-from tarveri.services.card_service import CardService, _draw_card_image, _load_font
+from tarveri.services.card_service import CardService
 
 
 @pytest.mark.asyncio
@@ -32,7 +33,7 @@ async def test_card_data_generation_verified_student(tmp_path):
         member.guild_permissions.administrator = False
         member.roles = []
         member.premium_since = None
-        member.joined_at = datetime(2024, 5, 10, 12, 0, 0, tzinfo=timezone.utc)
+        member.joined_at = datetime(2024, 5, 10, 12, 0, 0, tzinfo=UTC)
 
         data = await service.get_user_card_data(guild, member)
 
@@ -81,7 +82,7 @@ async def test_card_data_generation_branch_campus_and_level_from_roles(tmp_path)
         r_degree.name = "Degree"
         member.roles = [r_focs, r_penang, r_degree]
         member.premium_since = None
-        member.joined_at = datetime(2023, 9, 1, tzinfo=timezone.utc)
+        member.joined_at = datetime(2023, 9, 1, tzinfo=UTC)
 
         data = await service.get_user_card_data(guild, member)
 
@@ -120,7 +121,7 @@ async def test_card_data_generation_approved_guest(tmp_path):
         member.guild_permissions.administrator = False
         member.roles = []
         member.premium_since = None
-        member.joined_at = datetime(2025, 1, 15, tzinfo=timezone.utc)
+        member.joined_at = datetime(2025, 1, 15, tzinfo=UTC)
 
         data = await service.get_user_card_data(guild, member)
 
@@ -161,7 +162,7 @@ async def test_card_data_badges_admin_booster_veteran_voucher(tmp_path):
         member.name = "seniormod"
         member.guild_permissions.administrator = True
         member.roles = []
-        member.premium_since = datetime(2025, 2, 1, tzinfo=timezone.utc)
+        member.premium_since = datetime(2025, 2, 1, tzinfo=UTC)
         # Joined 200 days ago
         member.joined_at = datetime.now(get_configured_tz()) - timedelta(days=200)
 
@@ -194,7 +195,7 @@ async def test_render_card_image_dimensions_and_png_buffer(tmp_path):
         member.guild_permissions.administrator = False
         member.roles = []
         member.premium_since = None
-        member.joined_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        member.joined_at = datetime(2024, 1, 1, tzinfo=UTC)
 
         # Create dummy avatar image bytes
         dummy_av = Image.new("RGBA", (128, 128), (255, 100, 100, 255))

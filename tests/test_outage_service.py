@@ -1,15 +1,11 @@
-import asyncio
-import os
-import signal
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import discord
 
 from tarveri.config import Settings
 from tarveri.database import Database
-from tarveri.services.outage_service import OutageService, DEFAULT_PROBE_TARGETS
+from tarveri.services.outage_service import DEFAULT_PROBE_TARGETS, OutageService
 
 
 @pytest.mark.asyncio

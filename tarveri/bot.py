@@ -13,8 +13,15 @@ from discord.ext import commands
 
 from tarveri.cogs.admin_cog import AdminCog
 from tarveri.cogs.card_cog import CardCog
-from tarveri.cogs.guest_cog import GuestCog, GuestReviewThreadView, VerificationGatewayView
-from tarveri.cogs.verification_cog import StudentLifecycleResolutionView, VerificationCog
+from tarveri.cogs.guest_cog import (
+    GuestCog,
+    GuestReviewThreadView,
+    VerificationGatewayView,
+)
+from tarveri.cogs.verification_cog import (
+    StudentLifecycleResolutionView,
+    VerificationCog,
+)
 from tarveri.config import Settings, setup_logger
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter

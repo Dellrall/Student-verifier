@@ -1,14 +1,14 @@
-import asyncio
-from datetime import date, datetime
 import logging
 import os
 import tarfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import date
+from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
 
-from tarveri.config import DailyRotatingFileHandler, Settings, setup_logger
+from tarveri.cogs.admin_cog import AdminCog
+from tarveri.config import DailyRotatingFileHandler, Settings
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.log_service import (
@@ -21,7 +21,6 @@ from tarveri.services.log_service import (
     parse_log_date,
 )
 from tarveri.services.verification_service import VerificationService
-from tarveri.cogs.admin_cog import AdminCog
 
 
 def test_get_10day_period_decade_grouping():
@@ -101,7 +100,7 @@ def test_daily_rotating_file_handler(tmp_path):
 
     log_path1 = os.path.join(logs_dir, "testbot-2026-09-10.log")
     assert os.path.exists(log_path1)
-    with open(log_path1, "r", encoding="utf-8") as f:
+    with open(log_path1, encoding="utf-8") as f:
         content = f.read()
     assert "First daily message" in content
 
@@ -116,7 +115,7 @@ def test_daily_rotating_file_handler(tmp_path):
 
     log_path2 = os.path.join(logs_dir, "testbot-2026-09-11.log")
     assert os.path.exists(log_path2)
-    with open(log_path2, "r", encoding="utf-8") as f:
+    with open(log_path2, encoding="utf-8") as f:
         content2 = f.read()
     assert "Second daily message on next day" in content2
 

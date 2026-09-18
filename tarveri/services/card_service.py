@@ -6,9 +6,9 @@ Renders high-quality, privacy-safe campus ID cards and passports.
 from __future__ import annotations
 
 import asyncio
+import functools
 import io
 import logging
-import math
 import os
 from datetime import datetime
 from typing import Any
@@ -19,16 +19,12 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from tarveri.config import (
     CAMPUS_ROLE_NAMES,
     CAMPUS_ROLES,
-    FACULTY_ALIASES,
-    FACULTY_COLORS,
     FACULTY_ROLES,
-    GUEST_ROLE_COLOR,
     GUEST_ROLE_PATTERN,
     STUDY_LEVEL_ROLE_NAMES,
     STUDY_LEVEL_ROLES,
     format_card_expiry_display,
     get_configured_tz,
-    parse_card_expiry_date,
 )
 from tarveri.database import Database
 from tarveri.utils import parse_db_timestamp
@@ -119,9 +115,6 @@ FONT_CANDIDATES = (
         "C:\\Windows\\Fonts\\segoeui.ttf",
     ]
 )
-
-
-import functools
 
 
 @functools.lru_cache(maxsize=32)
@@ -224,12 +217,10 @@ class CardService:
             badges.append("○ UNVERIFIED")
 
         # Admin / Staff badge
-        is_admin = False
         if isinstance(member, discord.Member):
             if member.guild_permissions.administrator or any(
                 getattr(r, "name", "") == self.admin_role_name for r in member.roles
             ):
-                is_admin = True
                 badges.append("★ STAFF")
 
             # Server Booster badge

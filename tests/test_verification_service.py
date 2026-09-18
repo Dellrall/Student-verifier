@@ -1,11 +1,13 @@
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import discord
 import pytest
-from tarveri.services.verification_service import VerificationService, RoleSyncResult
+
+from tarveri.config import hash_student_id
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
-from tarveri.config import hash_student_id
+from tarveri.services.verification_service import RoleSyncResult, VerificationService
 
 
 @pytest.mark.asyncio

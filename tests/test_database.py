@@ -1,7 +1,9 @@
 import os
-import pytest
 import sqlite3
+
 import aiosqlite
+import pytest
+
 from tarveri.database import Database
 
 
@@ -85,7 +87,11 @@ async def test_database_backup(tmp_path):
 
 @pytest.mark.asyncio
 async def test_database_backup_rotation(tmp_path):
-    from tarveri.database import rotate_backups, rotate_daily_backups, rotate_update_backups, list_backups
+    from tarveri.database import (
+        list_backups,
+        rotate_daily_backups,
+        rotate_update_backups,
+    )
     db_file = str(tmp_path / "original_rot.db")
     backup_dir = str(tmp_path / "backups_rot")
     os.makedirs(backup_dir, exist_ok=True)
@@ -167,7 +173,7 @@ async def test_database_restore_from_compressed_archive(tmp_path):
     await db.set_guild_review_channel(777, 1003)
 
     # Create backup with max_backups=0 to automatically compress into archives/
-    backup_path = await db.create_backup(backup_dir=backup_dir, subfolder="daily", max_backups=0)
+    await db.create_backup(backup_dir=backup_dir, subfolder="daily", max_backups=0)
     archives_dir = os.path.join(backup_dir, "daily", "archives")
     assert os.path.exists(archives_dir)
     arch_files = [f for f in os.listdir(archives_dir) if f.endswith(".gz")]
@@ -343,7 +349,7 @@ async def test_guest_tickets_reason_giver_and_comments(tmp_path):
 async def test_database_backwards_compatibility_migration(tmp_path):
     """Verifies that an existing database created with an older legacy schema migrates smoothly without losing data."""
     db_file = str(tmp_path / "legacy_v1.db")
-    
+
     # Manually create a legacy v1 schema database with minimal columns
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
@@ -644,7 +650,7 @@ async def test_database_campus_and_level_columns_and_details(tmp_path):
     try:
         user_id = 77701
         await db.record_verification(user_id, "hash_77701", "WM", campus_code="W", level_code="D")
-        
+
         details = await db.get_verification_details(user_id)
         assert details is not None
         assert details["faculty_code"] == "WM"
@@ -661,7 +667,7 @@ async def test_database_campus_and_level_columns_and_details(tmp_path):
 @pytest.mark.asyncio
 async def test_database_backfill_legacy_verifications(tmp_path):
     db_file = str(tmp_path / "backfill_test.db")
-    
+
     # 1. Manually create legacy database with NULL campus_code
     async with aiosqlite.connect(db_file) as conn:
         await conn.execute(

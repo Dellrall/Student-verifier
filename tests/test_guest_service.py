@@ -1,6 +1,7 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
 import discord
+import pytest
 
 from tarveri.database import Database
 from tarveri.services.guest_service import GuestService, generate_code_string

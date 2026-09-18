@@ -65,7 +65,7 @@ def main() -> None:
             h_str = str(h_id) if h_id else "Auto-detect"
             r_str = str(r_id) if r_id else "Auto-detect"
             role_str = str(g_role) if g_role else "Guest"
-            print(f"{str(g_id):<20} | {w_str:<18} | {h_str:<18} | {role_str:<15} | {r_str:<18}")
+            print(f"{g_id!s:<20} | {w_str:<18} | {h_str:<18} | {role_str:<15} | {r_str:<18}")
         print("-" * 105)
 
     conn.close()

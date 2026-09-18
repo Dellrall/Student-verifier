@@ -13,6 +13,7 @@ from tarveri.config import now_formatted
 
 if TYPE_CHECKING:
     from discord.ext import commands
+
     from tarveri.database import Database
 
 logger = logging.getLogger("tarveri")
@@ -112,7 +113,7 @@ class OutageService:
                 self._last_probe_latency_ms = latency_ms
                 self._last_probe_time = time.monotonic()
                 return True, latency_ms
-            except (asyncio.TimeoutError, OSError):
+            except (TimeoutError, OSError):
                 continue
             except Exception as e:
                 logger.debug(f"Connectivity probe to {host}:{port} failed: {e}")

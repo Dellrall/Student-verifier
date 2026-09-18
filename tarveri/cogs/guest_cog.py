@@ -6,16 +6,21 @@ and private thread review orchestration.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 import logging
 import time
+from datetime import datetime
 from typing import Any
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from tarveri.config import FACULTY_ROLE_NAMES, get_configured_tz, is_expiry_date_anomalous, parse_card_expiry_date
+from tarveri.config import (
+    FACULTY_ROLE_NAMES,
+    get_configured_tz,
+    is_expiry_date_anomalous,
+    parse_card_expiry_date,
+)
 from tarveri.database import Database
 from tarveri.services.guest_service import GuestService
 from tarveri.services.verification_service import VerificationService
@@ -67,9 +72,7 @@ def get_admin_role_or_fallback(guild: discord.Guild, configured_role_name: str =
                     or getattr(perms, "moderate_members", False)
                     or getattr(perms, "kick_members", False)
                     or getattr(perms, "ban_members", False)
-                ):
-                    return r
-                elif alias in ("tarveri admin", "server admin", "admin", "administrator"):
+                ) or alias in ("tarveri admin", "server admin", "admin", "administrator"):
                     return r
 
     for r in reversed(roles):
@@ -142,7 +145,7 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
         current_yy = str(datetime.now().year)[-2:]
         self.student_id.placeholder = f"e.g. {current_yy}WMD09867 or {int(current_yy)-1:02d}PMR12345"
         self.card_expiry.placeholder = f"e.g. 10/{(int(current_yy) + 2) % 100:02d} (Optional)"
-        
+
         is_global_email_active = bool(
             self.email_service and getattr(self.email_service, "is_enabled", False) is True
         )
@@ -174,7 +177,10 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
             is_anomalous, anomaly_reason = is_expiry_date_anomalous(iso_expiry, student_id=student_id_val)
             if is_anomalous:
                 await interaction.response.defer(ephemeral=True)
-                from tarveri.cogs.verification_cog import ExpiryAnomalyConfirmView, build_expiry_anomaly_embed
+                from tarveri.cogs.verification_cog import (
+                    ExpiryAnomalyConfirmView,
+                    build_expiry_anomaly_embed,
+                )
 
                 db = getattr(self.verification_service, "db", None)
                 embed = build_expiry_anomaly_embed(
@@ -226,8 +232,8 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
         should_send_otp = is_email_active and student_email_val and (guild_email_required or not restrict_smtp)
         if should_send_otp:
             await interaction.response.defer(ephemeral=True)
-            from tarveri.config import mask_email
             from tarveri.cogs.verification_cog import OtpVerificationPromptView
+            from tarveri.config import mask_email
 
             server_name = interaction.guild.name if interaction.guild else "TARUMT Community"
             send_result = await self.email_service.generate_and_send_otp(
@@ -284,11 +290,13 @@ class StudentVerificationModal(discord.ui.Modal, title="🎓 TARUMT Student Veri
                     card_exp = details.get("card_expiry_date")
                     today_iso = datetime.now(get_configured_tz()).strftime("%Y-%m-%d")
                     if card_exp and card_exp < today_iso:
-                        from tarveri.cogs.verification_cog import StudentLifecycleResolutionView
+                        from tarveri.cogs.verification_cog import (
+                            StudentLifecycleResolutionView,
+                        )
 
                         view = StudentLifecycleResolutionView(self.verification_service, db)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed checking card expiration in guest gateway: %s", exc)
 
         if view:
             await interaction.followup.send(resp, view=view, ephemeral=True)
@@ -465,8 +473,8 @@ class RejectReasonModal(discord.ui.Modal, title="🛑 Rejection Reason"):
             disabled_view = discord.ui.View()
             try:
                 await self.message.edit(embed=embed, view=disabled_view)
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as exc:
+                logger.debug("Failed to edit review message after reject: %s", exc)
 
         await interaction.followup.send(reply_msg, ephemeral=True)
 
@@ -477,8 +485,8 @@ class RejectReasonModal(discord.ui.Modal, title="🛑 Rejection Reason"):
             await asyncio.sleep(5)
             try:
                 await interaction.channel.edit(locked=True, archived=True)
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as exc:
+                logger.debug("Failed to lock/archive thread after reject: %s", exc)
 
 
 class CloseTicketModal(discord.ui.Modal, title="🔒 Close Ticket (Without Kicking)"):
@@ -515,8 +523,8 @@ class CloseTicketModal(discord.ui.Modal, title="🔒 Close Ticket (Without Kicki
                 disabled_view = discord.ui.View()
                 try:
                     await self.message.edit(embed=embed, view=disabled_view)
-                except discord.HTTPException:
-                    pass
+                except discord.HTTPException as exc:
+                    logger.debug("Failed to edit review message after close: %s", exc)
 
             await interaction.followup.send(reply_msg, ephemeral=True)
 
@@ -534,8 +542,8 @@ class CloseTicketModal(discord.ui.Modal, title="🔒 Close Ticket (Without Kicki
                 await asyncio.sleep(5)
                 try:
                     await interaction.channel.edit(locked=True, archived=True)
-                except discord.HTTPException:
-                    pass
+                except discord.HTTPException as exc:
+                    logger.debug("Failed to lock/archive thread after close: %s", exc)
         else:
             await interaction.followup.send(reply_msg, ephemeral=True)
 
@@ -569,8 +577,8 @@ class VouchModal(discord.ui.Modal, title="🤝 Confirm Referral Vouch"):
             view = GuestReviewThreadView(self.guest_service)
             try:
                 await self.message.edit(embed=embed, view=view)
-            except discord.HTTPException:
-                pass
+            except discord.HTTPException as exc:
+                logger.debug("Failed to edit review message after vouch: %s", exc)
 
         await interaction.followup.send("✅ Your vouch statement has been recorded! Waiting for Admin team approval.", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
@@ -768,8 +776,8 @@ class GuestReviewThreadView(discord.ui.View):
                 disabled_view = discord.ui.View()
                 try:
                     await interaction.message.edit(embed=embed, view=disabled_view)
-                except discord.HTTPException:
-                    pass
+                except discord.HTTPException as exc:
+                    logger.debug("Failed to edit review message on approve: %s", exc)
 
             await interaction.followup.send(msg, ephemeral=True)
             schedule_ttl_delete(interaction, delay=60.0)
@@ -780,8 +788,8 @@ class GuestReviewThreadView(discord.ui.View):
                 await asyncio.sleep(5)
                 try:
                     await interaction.channel.edit(locked=True, archived=True)
-                except discord.HTTPException:
-                    pass
+                except discord.HTTPException as exc:
+                    logger.debug("Failed to lock/archive thread on approve: %s", exc)
         else:
             await interaction.followup.send(msg, ephemeral=True)
             schedule_ttl_delete(interaction, delay=60.0)

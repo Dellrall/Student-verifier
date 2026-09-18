@@ -4,15 +4,19 @@ Unit and integration tests for EmailService, AES-256 email encryption, OTP lifec
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime
 import time
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
 from cryptography.fernet import Fernet
 
+from tarveri.cogs.verification_cog import (
+    AlumniEmailConfirmationView,
+    StudentOtpModal,
+    VerificationModal,
+)
 from tarveri.config import (
     Settings,
     decrypt_email,
@@ -26,13 +30,6 @@ from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.email_service import EmailService
 from tarveri.services.verification_service import VerificationService
-from tarveri.cogs.verification_cog import (
-    AlumniEmailConfirmationView,
-    OtpVerificationPromptView,
-    StudentOtpModal,
-    VerificationModal,
-    build_alumni_email_confirm_embed,
-)
 
 
 def test_email_crypto_helpers():
@@ -583,7 +580,7 @@ async def test_otp_slash_command_flow(tmp_path):
     assert "This server has not mandated email verification" in interaction.response.send_message.call_args[0][0]
 
     # 2. Generate OTP for user
-    res = await email_svc.generate_and_send_otp(user_id, "24WMD07777", "24wmd07777@student.tarc.edu.my", server_name="Test Guild")
+    await email_svc.generate_and_send_otp(user_id, "24WMD07777", "24wmd07777@student.tarc.edu.my", server_name="Test Guild")
     otp_code = email_svc.sent_emails[0]["otp"]
 
     # 3. Invalid OTP submission

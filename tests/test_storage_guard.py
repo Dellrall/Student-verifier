@@ -1,6 +1,4 @@
-import asyncio
-import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -9,7 +7,6 @@ from tarveri.database import Database
 from tarveri.services.storage_guard_service import (
     StorageGuardService,
     StorageLimitExceededError,
-    StorageUsage,
 )
 
 

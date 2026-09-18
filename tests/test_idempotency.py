@@ -1,11 +1,11 @@
 import asyncio
-import os
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
+
 import discord
+import pytest
 
 from tarveri.cogs.admin_cog import AdminCog
-from tarveri.config import FACULTY_ROLE_NAMES, SRC_ROLES
+from tarveri.config import SRC_ROLES
 from tarveri.database import Database
 from tarveri.rate_limiter import RateLimiter
 from tarveri.services.guest_service import GuestService
@@ -139,7 +139,7 @@ async def test_concurrent_src_roles_restoration_idempotency(tmp_path):
         service.restore_src_roles(guild)
         for _ in range(5)
     ]
-    results = await asyncio.gather(*tasks)
+    await asyncio.gather(*tasks)
 
     # Total created across all tasks should equal number of SRC roles (8)
     assert guild.create_role.call_count == len(SRC_ROLES)

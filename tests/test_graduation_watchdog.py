@@ -5,9 +5,8 @@ Verifies periodic background monitoring, expiry alerts, cooldowns, and exception
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import pytest
@@ -114,7 +113,7 @@ async def test_watchdog_respects_7day_cooldown(setup_env):
     id_hash = hash_student_id("22WMR99999", "secret_salt")
     expired_date = "2024-10-31"
 
-    recent_prompt = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    recent_prompt = (datetime.now(UTC) - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
 
     await db.record_verification(
         discord_user_id=user_id,

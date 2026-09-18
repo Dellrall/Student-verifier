@@ -1,10 +1,11 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
 import discord
+import pytest
 from discord import app_commands
+
 from tarveri.cogs.admin_cog import AdminCog, is_admin_or_has_role
 from tarveri.cogs.admin_dashboard import (
-    AdminCategorySelect,
     AdminDashboardView,
     AlumniRevokeModal,
     GuestRoleModal,
@@ -627,7 +628,7 @@ async def test_admin_close_ticket_in_thread(tmp_path):
     guild.get_thread.return_value = thread
 
     # Create open guest ticket in DB
-    ticket_id = await db.create_guest_ticket(
+    await db.create_guest_ticket(
         guild_id=guild.id,
         applicant_id=111222,
         channel_id=thread.id,
@@ -675,7 +676,7 @@ async def test_admin_close_ticket_with_ticket_number(tmp_path):
     guild.id = 54321
 
     # Create ticket with seq 42
-    ticket_id = await db.create_guest_ticket(
+    await db.create_guest_ticket(
         guild_id=guild.id,
         applicant_id=333444,
         channel_id=888777,

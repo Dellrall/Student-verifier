@@ -4,18 +4,18 @@ Configuration management, constants, and cryptographic/formatting utilities.
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import hmac
 import logging
 import os
 import re
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import zoneinfo
-from logging.handlers import RotatingFileHandler
-from typing import Final
+from dataclasses import dataclass
+from datetime import UTC, datetime, timezone
+from typing import Any, Final
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -337,11 +337,11 @@ def get_configured_tz(tz_name: str | None = None) -> zoneinfo.ZoneInfo | timezon
         or "Asia/Kuala_Lumpur"
     ).strip()
     if raw.lower() in ("auto", "local", "system", ""):
-        return datetime.now().astimezone().tzinfo or timezone.utc
+        return datetime.now().astimezone().tzinfo or UTC
     try:
         return zoneinfo.ZoneInfo(raw)
     except Exception:
-        return datetime.now().astimezone().tzinfo or timezone.utc
+        return datetime.now().astimezone().tzinfo or UTC
 
 
 def now_formatted(tz_name: str | None = None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
@@ -534,12 +534,6 @@ class Settings:
                     "TARVERI_EMAIL_ENCRYPTION_KEY is required when email verification is enabled. "
                     'Generate one with: python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
                 )
-
-        if not email_encryption_key:
-            try:
-                email_encryption_key = Fernet.generate_key().decode()
-            except Exception:
-                pass
 
         return cls(
             bot_token=bot_token,
@@ -889,9 +883,6 @@ def validate_student_id(raw_id: str) -> tuple[bool, str, str | None, str | None]
     return info.is_valid, info.student_id, info.faculty_code, info.faculty_role
 
 
-import calendar
-
-
 def parse_card_expiry_date(raw_date: str | None) -> str | None:
     """
     Parses and normalizes student card expiry date strings into ISO format (YYYY-MM-DD).
@@ -918,7 +909,7 @@ def parse_card_expiry_date(raw_date: str | None) -> str | None:
         "FEB": 2, "FEBRUARY": 2,
         "MAR": 3, "MARCH": 3,
         "APR": 4, "APRIL": 4,
-        "MAY": 5, "MAY": 5,
+        "MAY": 5,
         "JUN": 6, "JUNE": 6,
         "JUL": 7, "JULY": 7,
         "AUG": 8, "AUGUST": 8,
@@ -928,7 +919,7 @@ def parse_card_expiry_date(raw_date: str | None) -> str | None:
         "DEC": 12, "DECEMBER": 12,
     }
 
-    max_year = datetime.now().year + 100
+    max_year = datetime.now(get_configured_tz()).year + 100
 
     # 1. Check ISO full date YYYY-MM-DD or YYYY/MM/DD
     iso_full_match = re.match(r"^(\d{4})[-/\.](\d{1,2})[-/\.](\d{1,2})$", cleaned)
@@ -1062,7 +1053,7 @@ def is_expiry_date_anomalous(
     except Exception:
         return False, None
 
-    current_year = datetime.now().year
+    current_year = datetime.now(get_configured_tz()).year
 
     # 1. Check relative to intake year if student_id is provided
     if student_id and len(student_id) >= 2 and student_id[:2].isdigit():

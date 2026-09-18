@@ -1111,7 +1111,7 @@ class AdminCog(commands.Cog, name="Admin"):
 
             latest_log_path = daily_logs[0]["path"]
             try:
-                with open(latest_log_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(latest_log_path, encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()
                 tail_lines = lines[-15:] if len(lines) > 15 else lines
                 content = "".join(tail_lines)
@@ -1303,7 +1303,6 @@ class AdminCog(commands.Cog, name="Admin"):
         await interaction.response.defer(ephemeral=True)
 
         try:
-            guild = interaction.guild if (guild_only or clean_duplicates) else None
             if clean_duplicates and interaction.guild:
                 self.bot.tree.clear_commands(guild=interaction.guild)
 
@@ -1428,8 +1427,8 @@ class AdminCog(commands.Cog, name="Admin"):
                     )
                     if inspect.isawaitable(res):
                         await res
-                except (discord.HTTPException, Exception):
-                    pass
+                except (discord.HTTPException, Exception) as exc:
+                    logger.debug("Failed sending thread closure message: %s", exc)
 
                 # Try to update the review embed on the root message
                 try:
@@ -1443,8 +1442,8 @@ class AdminCog(commands.Cog, name="Admin"):
                         res = starter_msg.edit(embed=embed, view=discord.ui.View())
                         if inspect.isawaitable(res):
                             await res
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed updating starter message embed: %s", exc)
 
                 await asyncio.sleep(1)
                 try:
@@ -1456,8 +1455,8 @@ class AdminCog(commands.Cog, name="Admin"):
                         )
                         if inspect.isawaitable(res):
                             await res
-                except (discord.HTTPException, Exception):
-                    pass
+                except (discord.HTTPException, Exception) as exc:
+                    logger.debug("Failed locking/archiving thread: %s", exc)
 
                 if hasattr(guest_svc, "_cleanup_channel_overwrites"):
                     await guest_svc._cleanup_channel_overwrites(interaction.guild, ticket_data)
@@ -1512,8 +1511,8 @@ class AdminCog(commands.Cog, name="Admin"):
                     )
                     if inspect.isawaitable(res):
                         await res
-                except (discord.HTTPException, Exception):
-                    pass
+                except (discord.HTTPException, Exception) as exc:
+                    logger.debug("Failed sending thread closure message: %s", exc)
 
                 # Try to update the review embed on the root message if found in guest_cog
                 try:
@@ -1528,9 +1527,9 @@ class AdminCog(commands.Cog, name="Admin"):
                         if starter_msg and starter_msg.author.id == self.bot.user.id and hasattr(starter_msg, "edit"):
                             res = starter_msg.edit(embed=embed, view=discord.ui.View())
                             if inspect.isawaitable(res):
-                                await res
-                except Exception:
-                    pass
+                                 await res
+                except Exception as exc:
+                    logger.debug("Failed updating starter message embed: %s", exc)
 
                 await asyncio.sleep(2)
                 try:
@@ -1538,8 +1537,8 @@ class AdminCog(commands.Cog, name="Admin"):
                         res = thread.edit(locked=True, archived=True, reason=f"TARVeri: Ticket closed by {interaction.user}")
                         if inspect.isawaitable(res):
                             await res
-                except (discord.HTTPException, Exception):
-                    pass
+                except (discord.HTTPException, Exception) as exc:
+                    logger.debug("Failed locking/archiving thread: %s", exc)
 
             await interaction.followup.send(reply_msg, ephemeral=True)
         else:

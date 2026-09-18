@@ -5,10 +5,10 @@ General utility functions for TARVeri.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, tzinfo
 import logging
 import re
 import time
+from datetime import datetime, tzinfo
 
 import discord
 
@@ -146,7 +146,6 @@ def parse_db_timestamp(ts_str: str | None, tz: tzinfo | None = None) -> datetime
 
 class CircuitBreakerError(Exception):
     """Raised when an operation is attempted while the circuit breaker is OPEN."""
-    pass
 
 
 class AsyncCircuitBreaker:

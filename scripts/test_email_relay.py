@@ -9,7 +9,6 @@ Usage:
 
 import argparse
 import asyncio
-import os
 import sys
 from pathlib import Path
 
@@ -22,7 +21,7 @@ from dotenv import load_dotenv
 # Load .env file
 load_dotenv(repo_root / ".env")
 
-from tarveri.config import Settings, mask_email
+from tarveri.config import Settings
 from tarveri.services.email_service import EmailService
 
 

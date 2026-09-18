@@ -1,11 +1,11 @@
 # 🏗️ Architecture, Security & Disaster Recovery
 
-TARVeri is designed with a zero-knowledge security posture, non-blocking asynchronous I/O, automated failover circuit breakers, and continuous cloud backup.
+TARVeri is designed with a privacy-first security posture, HMAC-SHA256 blind indexing, authenticated encryption at rest, non-blocking asynchronous I/O, automated failover circuit breakers, and continuous cloud backup.
 
 ---
 
 ## 📋 Table of Contents
-1. [Zero-Knowledge Security Architecture](#zero-knowledge-security-architecture)
+1. [Blind Indexing & Cryptographic Architecture](#blind-indexing--cryptographic-architecture)
 2. [Dual-Relay Email & Circuit Breaker](#dual-relay-email--circuit-breaker)
 3. [SQLite Concurrency & WAL Checkpoint](#sqlite-concurrency--wal-checkpoint)
 4. [Litestream Continuous Cloud Replication](#litestream-continuous-cloud-replication)
@@ -15,10 +15,10 @@ TARVeri is designed with a zero-knowledge security posture, non-blocking asynchr
 
 ---
 
-## 1. Zero-Knowledge Security Architecture
+## 1. Blind Indexing & Cryptographic Architecture
 
-- **HMAC-SHA256 Blind Indexing**: Student IDs and email addresses are hashed with a salted secret (`TARVERI_ID_HASH_SECRET`). Lookups and duplicate prevention are executed purely on hashes without storing or querying raw PII.
-- **Fernet AES-256 Symmetric Encryption**: Raw email strings are encrypted with AES-128-CBC + HMAC-SHA256 before disk writes.
+- **HMAC-SHA256 Blind Indexing**: Student IDs and email addresses are hashed with a high-entropy salted secret (`TARVERI_ID_HASH_SECRET`). Lookups and duplicate prevention are executed purely on hashes without storing or querying raw PII. *(Note: Because student IDs have low entropy, `TARVERI_ID_HASH_SECRET` must be kept secret and high-entropy)*.
+- **Fernet Authenticated Encryption**: Raw email strings are encrypted with AES-128-CBC + HMAC-SHA256 authenticated symmetric encryption (Fernet) before disk writes.
 - **Timing-Attack Resistance**: OTP validation uses `secrets.compare_digest()` for constant-time comparison.
 
 ---
