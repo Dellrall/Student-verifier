@@ -111,7 +111,7 @@ class RoleManager:
                 try:
                     await self.db.record_bot_created_role(guild.id, role.id, role_name)
                 except Exception as e:
-                    logger.debug("Could not record bot created role: %s", e)
+                    logger.warning("Could not record bot created role: %s", e, exc_info=True)
 
                 await self.db.log(
                     "INFO",

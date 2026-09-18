@@ -538,18 +538,25 @@ class Database:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
-        """
-        Async context manager providing atomic SQLite transaction semantics.
-        Automatically commits on successful block exit, and rolls back on exception.
+        """Async context manager providing atomic SQLite transaction semantics.
+
+        Supports nested transaction calls via depth tracking.
+        Automatically commits on the outermost block exit, and rolls back on exception.
         """
         if not self._conn:
             raise RuntimeError("Database connection is not open.")
+
+        self._tx_depth = getattr(self, "_tx_depth", 0) + 1
         try:
             yield self._conn
-            await self._conn.commit()
+            if self._tx_depth == 1:
+                await self._conn.commit()
         except Exception:
-            await self._conn.rollback()
+            if self._conn:
+                await self._conn.rollback()
             raise
+        finally:
+            self._tx_depth -= 1
 
     async def checkpoint_wal(self) -> None:
         """Flushes and truncates the SQLite write-ahead log (WAL) into the main database file."""

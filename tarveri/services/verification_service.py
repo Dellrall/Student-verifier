@@ -283,7 +283,7 @@ class VerificationService:
                     try:
                         await self.db.record_bot_created_role(guild.id, role.id, src_name)
                     except Exception as e:
-                        logger.debug(f"Could not record bot created SRC role: {e}")
+                        logger.warning("Could not record bot created SRC role: %s", e, exc_info=True)
                     stats["created"] += 1
                     await self.db.log(
                         "INFO",
@@ -1249,7 +1249,7 @@ class VerificationService:
                         student_email_hash=email_hash,
                     )
                 except Exception as exc:
-                    logger.debug("Failed updating verification details during refresh: %s", exc)
+                    logger.warning("Failed updating verification details during refresh: %s", exc, exc_info=True)
                 summary = self.format_role_summary(sync_result)
                 return summary or "ℹ️ You're already verified and up to date in every server I share with you."
 
@@ -1284,29 +1284,30 @@ class VerificationService:
             # Persist if role was granted or user already held the role in at least one server
             if sync_result.verified_in or sync_result.already_had_role_in:
                 try:
-                    await self.db.record_verification(
-                        user.id,
-                        id_hash,
-                        faculty_code,
-                        campus_code=campus_code,
-                        level_code=level_code,
-                        card_expiry_date=iso_expiry_date,
-                        student_email_encrypted=email_encrypted,
-                        student_email_hash=email_hash,
-                    )
-                    active_servers = [
-                        entry[1] if len(entry) == 3 else entry[0]
-                        for entry in (sync_result.verified_in + sync_result.already_had_role_in)
-                    ]
-                    email_log_str = f", email: {mask_email(clean_email)}" if email_hash and raw_email else ""
-                    await self.db.log(
-                        "INFO",
-                        "VERIFIED",
-                        f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}{email_log_str}) "
-                        f"→ active in {active_servers}",
-                        user_id=user.id,
-                        guild=guild_ctx,
-                    )
+                    async with self.db.transaction():
+                        await self.db.record_verification(
+                            user.id,
+                            id_hash,
+                            faculty_code,
+                            campus_code=campus_code,
+                            level_code=level_code,
+                            card_expiry_date=iso_expiry_date,
+                            student_email_encrypted=email_encrypted,
+                            student_email_hash=email_hash,
+                        )
+                        active_servers = [
+                            entry[1] if len(entry) == 3 else entry[0]
+                            for entry in (sync_result.verified_in + sync_result.already_had_role_in)
+                        ]
+                        email_log_str = f", email: {mask_email(clean_email)}" if email_hash and raw_email else ""
+                        await self.db.log(
+                            "INFO",
+                            "VERIFIED",
+                            f"{user} (ID: {user.id}) verified (student ID masked: {mask_student_id(student_id)}{email_log_str}) "
+                            f"→ active in {active_servers}",
+                            user_id=user.id,
+                            guild=guild_ctx,
+                        )
                 except (sqlite3.IntegrityError, aiosqlite.IntegrityError) as e:
                     # Rollback assigned roles if database collision occurs
                     for entry in sync_result.verified_in:
@@ -1456,7 +1457,7 @@ class VerificationService:
                     await self.db.update_verification_details(discord_user_id, campus_code=existing_campus_code)
                     c_code = existing_campus_code
                 except Exception as exc:
-                    logger.debug("Failed updating campus code in reconciliation: %s", exc)
+                    logger.warning("Failed updating campus code in reconciliation: %s", exc, exc_info=True)
 
             if not c_code:
                 c_code = default_campus
@@ -1490,7 +1491,7 @@ class VerificationService:
                     await self.db.update_verification_details(discord_user_id, level_code=existing_level_code)
                     l_code = existing_level_code
                 except Exception as exc:
-                    logger.debug("Failed updating study level code in reconciliation: %s", exc)
+                    logger.warning("Failed updating study level code in reconciliation: %s", exc, exc_info=True)
 
             if not l_code and default_level:
                 l_code = default_level
@@ -1838,7 +1839,8 @@ class VerificationService:
         # Pre-fetch bot-created role IDs from DB for this guild
         try:
             bot_created_ids = await self.db.get_bot_created_role_ids(guild.id)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to fetch bot-created role IDs for guild %s: %s", guild.id, exc, exc_info=True)
             bot_created_ids = set()
 
         guild_roles = list(getattr(guild, "roles", []))
@@ -1971,7 +1973,7 @@ class VerificationService:
                         try:
                             await self.db.delete_bot_created_role(red_role.id)
                         except Exception as exc:
-                            logger.debug("Failed deleting bot-created role from DB tracking: %s", exc)
+                            logger.warning("Failed deleting bot-created role from DB tracking: %s", exc, exc_info=True)
                         stats["deleted_roles"] += 1
                         detail_msg = f"Deleted bot-created duplicate role '{red_role.name}' (migrated {len(red_members)} member(s) to '{primary_role.name}')"
                         stats["details"].append(detail_msg)

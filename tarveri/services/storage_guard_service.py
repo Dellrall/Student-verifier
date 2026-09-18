@@ -207,7 +207,7 @@ class StorageGuardService:
                 )
                 sentry_sdk.capture_exception(error)
         except Exception as e:
-            logger.debug(f"Could not report storage event to Sentry: {e}")
+            logger.warning(f"Could not report storage event to Sentry: {e}", exc_info=True)
 
     async def _self_heal_storage(self) -> int:
         """Performs emergency storage reclamation."""
@@ -218,20 +218,20 @@ class StorageGuardService:
             # 1. Truncate SQLite WAL
             await self.db.checkpoint_wal()
         except Exception as e:
-            logger.warning(f"Storage guard failed to checkpoint WAL: {e}")
+            logger.warning(f"Storage guard failed to checkpoint WAL: {e}", exc_info=True)
 
         try:
             # 2. Prune old audit logs (keep 30 days)
             await self.db.prune_audit_logs(older_than_days=30)
         except Exception as e:
-            logger.warning(f"Storage guard failed to prune audit logs: {e}")
+            logger.warning(f"Storage guard failed to prune audit logs: {e}", exc_info=True)
 
         try:
             # 3. Rotate backups keeping only top 3
             from tarveri.database import rotate_backups
             rotate_backups(self.settings.backup_dir, max_backups=max(3, self.settings.max_backups // 2))
         except Exception as e:
-            logger.warning(f"Storage guard failed to prune backups: {e}")
+            logger.warning(f"Storage guard failed to prune backups: {e}", exc_info=True)
 
         after = self.get_storage_usage().total_bytes
         reclaimed = max(0, before - after)

@@ -461,6 +461,12 @@ class EmailService:
                     await self._primary_breaker.record_failure()
             except Exception as e:
                 primary_err = str(e)
+                logger.warning(
+                    "Primary SMTP relay exception while sending to %s: %s",
+                    mask_email(to_email),
+                    e,
+                    exc_info=True,
+                )
                 await self._primary_breaker.record_failure()
 
         # 2. Check if Fallback Direct SMTP Server is configured

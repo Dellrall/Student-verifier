@@ -209,7 +209,7 @@ class OutageService:
                                     f"Emergency graceful shutdown triggered after {elapsed:.1f}s continuous outage. {probe_desc}.",
                                 )
                         except Exception as exc:
-                            logger.debug("Failed logging emergency outage shutdown to db: %s", exc)
+                            logger.warning("Failed logging emergency outage shutdown to db: %s", exc, exc_info=True)
 
                         asyncio.create_task(self.bot.close(), name="tarveri_outage_graceful_shutdown")
                         break

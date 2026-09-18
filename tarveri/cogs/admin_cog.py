@@ -1123,6 +1123,7 @@ class AdminCog(commands.Cog, name="Admin"):
                     ephemeral=True,
                 )
             except Exception as e:
+                logger.warning("Failed to read daily log file: %s", e, exc_info=True)
                 await interaction.followup.send(f"❌ Failed to read log file: {e}", ephemeral=True)
             schedule_ttl_delete(interaction, delay=90.0)
 
@@ -1320,6 +1321,7 @@ class AdminCog(commands.Cog, name="Admin"):
                 ephemeral=True,
             )
         except Exception as e:
+            logger.warning("Failed to sync commands: %s", e, exc_info=True)
             await interaction.followup.send(f"❌ Failed to sync commands: {e}", ephemeral=True)
         schedule_ttl_delete(interaction, delay=60.0)
 

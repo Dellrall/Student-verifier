@@ -1010,6 +1010,7 @@ class AdminDashboardView(ui.View):
             )
             schedule_ttl_delete(interaction, delay=90.0)
         except Exception as e:
+            logger.warning("Failed to read log file for admin dashboard: %s", e, exc_info=True)
             await interaction.response.send_message(f"❌ Failed to read log file: {e}", ephemeral=True)
 
     async def _on_deploy_here_clicked(self, interaction: discord.Interaction) -> None:
